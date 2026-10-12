@@ -30,6 +30,7 @@ Suggests:
     bit64,
     callr,
     jsonlite,
+    methods,
     testthat (>= 3.0.0),
     tibble,
     vctrs
