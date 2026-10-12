@@ -14,11 +14,11 @@ only unfinished requests; explicit RPC/poll provides recovery. Warnings are
 collected into responses while preserving `last.warning`, including `warn=2`.
 This is a practical function-frame gate, not a general proof of prompt waiting,
 modal-state exclusion, or transparent user-interrupt propagation. Its documented
-limits were accepted by the design reviewer. External review conditionally
-approved the Linux evidence and practical gate, but made verification of the
-interrupt alternative a prerequisite to transport implementation. The new
-`gated_restore` results below await the design reviewer's confirmation; they
-do not constitute an adoption decision.
+limits were accepted by the design reviewer. After the required interrupt
+comparison and an independent 41-case Linux rerun, the reviewer approved
+`gated_restore` for Phase 5 on 2026-10-12. Started requests that fail with an
+interrupt terminate with an error response and are never automatically retried.
+Windows and macOS evidence is still required separately.
 
 ## Reproduce
 
@@ -224,7 +224,7 @@ modes. Arbitrary S3/S4 methods, ALTREP access, finalizers, external resources,
 recursive event loops, and nonterminating methods are not generally isolated
 or proved safe by these fixtures.
 
-## Interrupt-variant comparison: awaiting design confirmation
+## Interrupt-variant comparison: approved replacement
 
 Linux comparison artifacts:
 
@@ -279,9 +279,10 @@ All replacement observations had `bare_evaluations=0`. Normal probes recorded
 one evaluation per gate check; the injected pre-evaluation error intentionally
 recorded zero. No END macro, explicit `onintr`, private pending-state inspection
 or mutation, or copied GPL implementation was added to the replacement path.
-The observed delivery and completion order supports submitting this variant
-for adoption. It does not prove pending-interrupt absence or universal
-interrupt transparency, and requires the design reviewer's confirmation.
+The design reviewer approved this replacement on 2026-10-12 and independently
+reran all 41 gated_restore cases successfully. Phase 5 uses this restore-only
+gate. This evidence does not prove pending-interrupt absence or universal
+interrupt transparency; Windows and macOS outcomes remain unverified.
 
 
 ## Approved processing rule and known limits
@@ -307,9 +308,10 @@ four remaining limits as part of the contract:
    its Browse prompt. The reviewer accepted this as comparable to ordinary
    prompting when no function frame is suspended; the gate does not identify
    all modal states.
-2. An interrupt during the short gate inspection can be caught by its containment
-   boundary while an outer calculation continues. The pause hook demonstrates
-   this limit; its frequency during the normal, unpaused inspection is unknown.
+2. The original BEGIN/END gate can absorb an outer interrupt. The approved
+   restore-only gate fixes that checked Linux case. At an idle prompt, an
+   interrupt caught after dequeue terminates that request before or during its
+   method; respond with an interrupted error and never automatically retry it.
 3. Windows may dispatch `WM_TIMER` during frame-free top-level calculation and
    permit execution between calculation steps. This remains an unverified
    limit candidate requiring Windows manual validation.
@@ -319,17 +321,18 @@ four remaining limits as part of the contract:
 
 These limits no longer represent unresolved blockers to the design decision.
 Successful observations and later's reference approach support a practical
-contract, not a universal R/frontend safety guarantee. The external review is conditional: the interrupt verification and design
-confirmation must precede Phase 5 transport implementation.
+contract, not a universal R/frontend safety guarantee. The required interrupt
+verification and design confirmation are complete for the checked Linux cases.
 
-### Required interrupt-variant check before transport
+### Approved interrupt variant for transport
 
 External review promoted the interrupt alternative from an optional improvement
 to a prerequisite to Phase 5. The independent `gated_restore` experiment below
 implements the proposed save/TRUE/evaluate/restore path. It retains the original
-BEGIN/END control and all its observed counterexamples. The replacement needs
-the design reviewer's confirmation before production adoption; this experiment
-does not advance transport implementation or settle Windows/macOS support.
+BEGIN/END control and all its observed counterexamples. The replacement was
+approved after the independent Linux rerun; production
+adoption must retain the stated terminal-failure semantics. This experiment
+does not implement transport or settle Windows/macOS support.
 
 
 ### Follow-on host, UI, and platform requirements
@@ -347,52 +350,112 @@ execution. A caught method error/interrupt must become an error response to its
 requester. Native markers and one-byte request codes here are experiment
 instrumentation, not that production protocol.
 
-## Windows and macOS: unverified
+## Manual Windows and macOS evidence workflow
 
-Neither OS was executed here. The Windows branch is uncompiled and unvalidated.
-It creates an `HWND_MESSAGE` window and a one-shot `SetTimer` byte on the main
-thread, using the same frame gate and drain. This experiment does not provide a
-Windows host nudge sender: manually arm `"~"` after a deferral, or repeat a short
-one-shot nudge timer from an external host during testing. Nudges must never be
-new requests. EOF is a POSIX pipe-specific case.
+Windows/macOS results have not been collected in this environment. The workflow
+`.github/workflows/event-spike-manual.yaml` runs only with `workflow_dispatch`;
+there are no push, pull-request, or scheduled triggers. A human must publish the
+reviewed files to the private repository, select **Manual event-loop
+observations** in Actions, choose `windows`, `macos`, or `both`, and click **Run
+workflow**. The workflow must exist on the default branch for the dispatch UI to
+be available. The human monitors the run and downloads the corresponding
+`event-spike-<platform>-<attempt>` artifacts; agents do not start or monitor it.
+See [GitHub's manual-run instructions](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
 
-From the repository root in interactive Rgui with Rtools:
+The workflow uses current major action releases checked against the official
+repositories: [checkout](https://github.com/actions/checkout),
+[setup-python](https://github.com/actions/setup-python),
+[upload-artifact](https://github.com/actions/upload-artifact), and
+[setup-r](https://github.com/r-lib/actions/tree/v2/setup-r). setup-r selects the
+Rtools version suitable for the requested release of R and adds its tools to
+PATH. The experiment installs only jsonlite and the optional ConPTY driver; it
+does not install or test the public package. All scripts use the independent
+`R CMD SHLIB` build and write under the artifact directory.
 
-```r
-source("r-pkg/dev/event-spike/build.R")
-dll_path <- spike_build()
-source("r-pkg/dev/event-spike/fixtures.R")
-spike_setup(dll_path, mode = "gated")
-spike_capture()
-spike_arm(300L, "a")
-spike_arm(100L, "a"); Sys.sleep(1)
-spike_arm(100L, "~")              # retry pending work after returning
-spike_arm(500L, "a"); readline("Answer: ")
-spike_arm(100L, "~")
-local({spike_arm(500L, "a"); browser()}) # test invisible(42), then c
-spike_arm(100L, "~")
-spike_arm(500L, "a"); browser()   # distinct bare-browser limit
-spike_arm(100L, "a"); for (j in seq_len(50000000L)) spike_loop_value <- j
-spike$collect_warnings <- TRUE; options(warn = 2); spike_capture()
-spike_arm(100L, "w")
-spike_report(file.path(tempdir(), "spike-state.json"))
-spike_teardown()
+To run on an existing Windows or macOS installation from the repository root:
+
+```sh
+python r-pkg/dev/event-spike/run-os.py --output /path/to/fresh/evidence-directory
+python r-pkg/dev/event-spike/run-os.py --validate /path/to/fresh/evidence-directory
 ```
 
-These are separate scenarios for fresh processes, not one assertion script.
-During the frame-free `for`, record whether `WM_TIMER` is dispatched before the
-loop completes and whether the gate reads zero while calculation is active.
-Windows may pump messages from interrupt checks, allowing such execution; this
-is an unverified limit candidate, not a claimed Windows result. Record the
-frontend's interrupt control (e.g. Esc in Rgui), callback/queue recovery, source
-removal before unload, and a delay after unload. Test request codes `r`, `e`,
-`i`, `c`, `k`, `h`, `t`, and `p` separately. The `r` fixture arms a nested timer
-on Windows. The macros' short gate pause/fault hook can be configured through
-`spike_native("spike_gate_fault", 200L, 0L)` before the event, but its Windows
-SIGINT/control behavior is likewise unverified.
+Use a fresh output directory. Windows needs R/Rtools, jsonlite, Python 3.13,
+and preferably `python -m pip install 'pywinpty>=3,<4'`. macOS needs command-line
+R, jsonlite, Python, and a working compiler. Version ranges and moving runner
+labels intentionally select the current platform; the artifact metadata records
+the resolved R/toolchain, OS, image version, Python, and run URL for comparison.
 
-The Python runner can be attempted on macOS command-line R. A passing run would
-not validate R.app, RStudio, or another frontend's event scheduling/liveness.
+### Windows measurements
+
+Each scenario uses a fresh process and compares `direct`, original `gated`, and
+approved `gated_restore`:
+
+- **Rscript:** `windows-top-level.R` is passed directly to Rscript as a file.
+  Its 50-million-iteration `for` is not wrapped in a function, `local()`, or
+  `source()`. Entry `sys.nframe()` must be zero. A one-shot timer supplies exactly
+  one `a` request. Record whether the callback ran in the loop, its gate depth,
+  and the loop-boundary native counters. Execution during a zero-frame loop is
+  an observation of a known limit candidate, not a test failure. Separate sleep
+  and lifecycle cases check positive-frame deferral, source stop, cancelling an
+  armed timer, DLL unload, and survival after unload.
+- **Rterm:** `windows_runner.py` first forces ConPTY using pywinpty's public
+  `PtyProcess.spawn`/`Backend.ConPTY` interfaces. If construction/startup fails,
+  it records the reason and tries `Rterm --ess --interactive` with an open stdin
+  pipe and an isolated console. Each result records the actual driver. Prompt,
+  framed sleep/readline/browser, bare browser, self-close, and interrupt cases
+  keep emitted records separate from input echo. Framed waits defer under the
+  gates; bare browser behavior remains an observation.
+- **Recovery:** a deferred request receives a REPL-armed one-shot `~` timer,
+  never a second `a`. If that does not progress, use explicit `spike_poll()` and
+  record that fallback. Rscript's nudge fires during another sleep and can remain
+  deferred, so its explicit poll is recorded separately. Execution/cleanup
+  counts and terminal nudge checks detect duplicate requests.
+- **Interrupts:** a detached helper attempts `AttachConsole` followed by
+  `GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0)` in the child's console. If it cannot
+  attach to ConPTY, pywinpty `sendintr()` sends control byte 0x03 instead. Record
+  both the attempted method and observed delivery: an API success alone is not
+  delivery evidence. The first unrelated expression is one finite sleep plus a
+  completion marker, before R diagnostics. Ordinary outer Ctrl-C is the control
+  case. Pause-hook gate cases compare outer delivery, request disposition,
+  suspension restoration, terminal retry behavior, and resource recovery. If
+  delivery cannot be established, mark the interrupt scenario unverified while
+  still requiring its resource checks.
+- **Rgui:** `R_PROFILE_USER` loads `windows-rgui-profile.R` and arms a delayed
+  timer before the first prompt. The callback records the method and gate depth,
+  stops the native source, writes JSON, and exits with `q()`. It does not unload
+  a DLL whose callback is executing; unload/guard recovery are checked by the
+  separate Rscript/Rterm cases. A hard 15-second timeout kills the owned process
+  tree. No callback file means this frontend is unverified, not passed. Esc is
+  always unverified.
+
+The ConPTY interfaces and backend enum were checked against
+[pywinpty's public wrapper](https://github.com/andfoy/pywinpty/blob/main/winpty/ptyprocess.py)
+and [backend definitions](https://github.com/andfoy/pywinpty/blob/main/winpty/enums.py).
+The detached helper uses the documented constraint that a
+[console control event](https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent)
+requires a shared console; CTRL_C_EVENT cannot be targeted to a nonzero process
+group. It never broadcasts an interrupt in the runner's shared console.
+
+### macOS measurements and artifact interpretation
+
+macOS executes the existing POSIX `run.py` matrix for all three comparison modes.
+R.app, RStudio, and arf are unverified. The native C source is unchanged by this
+workflow; no Windows fix is inferred from Linux checks.
+
+`results.json` contains observed cases with assertion results and unverified
+cases with explicit reasons. `metadata.json` records the environment; per-case
+`transcript.txt`, state snapshots, DLL build logs, and `runner.log` retain the
+trace. The workflow uploads evidence even if preparation or assertions fail.
+Missing results, empty observations, empty build/transcript files, incomplete
+mandatory Rscript comparisons, or failed resource assertions fail validation.
+An unavailable optional frontend/interrupt is not counted as an observed pass.
+
+All child waits have timeouts; forced cleanup targets only owned process trees.
+The job also has a 25-minute limit. Hard job cancellation can interrupt artifact
+upload, so a missing artifact is not a successful run. A human must return the
+run URL and downloaded evidence for the OS acceptance record. A green workflow
+means the asserted experiments and evidence checks passed; it does not certify
+all frontends or universal callback safety.
 
 ## Provenance and primary references
 

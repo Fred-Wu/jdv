@@ -1,0 +1,83 @@
+name: Manual event-loop observations
+
+'on':
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Frontends to observe (manual execution only)
+        type: choice
+        default: both
+        options:
+          - both
+          - windows
+          - macos
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      SPIKE_OUTPUT: ${{ github.workspace }}/artifacts/event-spike-${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Initialize evidence directory
+        if: ${{ inputs.platform == 'both' || inputs.platform == matrix.platform }}
+        shell: bash
+        run: |
+          mkdir -p "$SPIKE_OUTPUT"
+          printf 'Runner OS: %s\nImage OS: %s\nImage version: %s\nRun: %s/%s/actions/runs/%s\n' "$RUNNER_OS" "$ImageOS" "$ImageVersion" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$SPIKE_OUTPUT/bootstrap.txt"
+      - uses: r-lib/actions/setup-r@v2
+        if: ${{ inputs.platform == 'both' || inputs.platform == matrix.platform }}
+        with:
+          r-version: release
+          windows-path-include-rtools: true
+      - uses: actions/setup-python@v7
+        if: ${{ inputs.platform == 'both' || inputs.platform == matrix.platform }}
+        with:
+          python-version: '3.13'
+      - name: Install experiment dependencies
+        if: ${{ inputs.platform == 'both' || inputs.platform == matrix.platform }}
+        shell: Rscript {0}
+        run: |
+          install.packages("jsonlite")
+      - name: Check observation disposition
+        if: ${{ inputs.platform == 'both' || inputs.platform == matrix.platform }}
+        shell: bash
+        run: python -m unittest discover -s r-pkg/dev/event-spike -p 'test_driver_logic.py'
+      - name: Install ConPTY driver
+        if: ${{ matrix.platform == 'windows' && (inputs.platform == 'both' || inputs.platform == 'windows') }}
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python -m pip install 'pywinpty>=3,<4' 2>&1 | tee "$SPIKE_OUTPUT/conpty-install.txt"
+      - name: Observe frontends and save evidence
+        if: ${{ inputs.platform == 'both' || inputs.platform == matrix.platform }}
+        shell: bash
+        run: python r-pkg/dev/event-spike/run-os.py --output "$SPIKE_OUTPUT"
+      - name: Validate evidence completeness
+        if: ${{ always() && (inputs.platform == 'both' || inputs.platform == matrix.platform) }}
+        shell: bash
+        run: python r-pkg/dev/event-spike/run-os.py --validate "$SPIKE_OUTPUT"
+      - name: Save logs even on failure
+        if: ${{ always() && (inputs.platform == 'both' || inputs.platform == matrix.platform) }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: event-spike-${{ matrix.platform }}-${{ github.run_attempt }}
+          path: ${{ env.SPIKE_OUTPUT }}
+          if-no-files-found: error
+          retention-days: 14
