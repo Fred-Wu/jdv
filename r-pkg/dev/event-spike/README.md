@@ -52,6 +52,27 @@ and each case's `transcript.txt`/`state.json`. Fault cases also save
 directory. The runner copies C into that directory and runs `R CMD SHLIB` there;
 it never creates object files in the package source tree.
 
+The standalone `spike_build()` entry point builds from a temporary working
+directory with relative `event_spike.c` and DLL operands. Absolute Windows
+paths must not enter make's build operands: its shell can consume backslashes
+even after the outer R invocation was quoted. The builder restores its caller's
+working directory and Windows `PKG_LIBS` on normal return and failure, and
+returns an absolute DLL path with forward slashes. Existing output directories
+are accepted without a directory-creation warning; their copied source must
+still be fresh.
+
+Run its focused regression separately with:
+
+```sh
+Rscript --vanilla r-pkg/dev/event-spike/test-build.R /path/to/fresh/builder-evidence
+```
+
+This test performs real compilation in an existing directory containing spaces,
+an intentional compile failure with directory restoration, and simulated
+Windows command/flag restoration checks. Simulated DLL files do not establish
+a successful Windows build; the manually dispatched Windows workflow must
+be rerun to obtain actual compiler and event-loop evidence.
+
 Each case starts a fresh, genuinely interactive R process with a controlling
 PTY and an inherited pipe. An external process supplies request bytes; Ctrl-C
 is the PTY terminal interrupt byte. The runner labels states from deliberate
