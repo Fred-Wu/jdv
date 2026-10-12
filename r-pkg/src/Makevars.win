@@ -1,0 +1,2 @@
+PKG_CPPFLAGS = -Icjson
+OBJECTS = init.o cjson/cJSON.o
