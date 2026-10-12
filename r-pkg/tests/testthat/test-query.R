@@ -777,3 +777,29 @@ test_that("explicit integer row names are converted only after page slicing", {
   )
   expect_identical(snapshot_table(x)$schema, holder$schema)
 })
+
+test_that(
+  "all ordered numeric predicates preserve infinity and missing rules",
+  {
+    x <- data.frame(n = c(-Inf, 1, 1, Inf, NaN, NA_real_))
+    holder <- paged_table(x)
+    snapshot <- query_wire_snapshot(snapshot_table(x))
+    expected <- list(lt = 1L, le = 1:3, gt = 4L, ge = 2:4)
+    for (op in names(expected)) {
+      filter <- list(op = op, col = 0L, value = 1)
+      expect_identical(query_indices(holder, filter = filter), expected[[op]])
+      expect_identical(
+        snapshot_indices(snapshot, filter = filter),
+        expected[[op]]
+      )
+    }
+    expect_query_code(
+      query_indices(
+        holder,
+        filter = list(op = "between", col = 0L, lower = 2, upper = 1)
+      ),
+      "invalid_request"
+    )
+    expect_query_code(query_page(holder, cols = 1 + 1i), "invalid_request")
+  }
+)
