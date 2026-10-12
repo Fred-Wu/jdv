@@ -25,10 +25,10 @@ column_schema <- function(x, name = "", position = 0L) {
     "other"
   }
   sortable <- !structural &&
-    !type %in% c("list", "int64") &&
+    type != "list" &&
     !typeof(x) %in% c("complex", "raw")
   filterable <- !structural &&
-    !type %in% c("list", "int64") &&
+    type != "list" &&
     !typeof(x) %in% c("complex", "raw")
   schema <- list(
     position = as.integer(position),
@@ -321,11 +321,6 @@ column_extract <- function(
     )
   }
   for (channel in channels) {
-    if (schema$type == "int64") {
-      errors[[channel]] <- "integer64 support is not available yet."
-      if (channel == "display") data$display <- rep("<integer64>", n)
-      next
-    }
     if (channel == "display") {
       display_fun <- if (is.matrix(x)) {
         col_display.matrix

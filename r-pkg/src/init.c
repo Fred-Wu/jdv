@@ -1,7 +1,14 @@
 #include <R.h>
 #include <R_ext/Rdynload.h>
+#include "int64.h"
 
 static const R_CallMethodDef CallEntries[] = {
+    {"C_jdv_int64_is_na", (DL_FUNC)&C_jdv_int64_is_na, 1},
+    {"C_jdv_int64_values", (DL_FUNC)&C_jdv_int64_values, 1},
+    {"C_jdv_int64_rank", (DL_FUNC)&C_jdv_int64_rank, 1},
+    {"C_jdv_int64_order", (DL_FUNC)&C_jdv_int64_order, 2},
+    {"C_jdv_int64_eq", (DL_FUNC)&C_jdv_int64_eq, 2},
+    {"C_jdv_int64_between", (DL_FUNC)&C_jdv_int64_between, 3},
     {NULL, NULL, 0}
 };
 

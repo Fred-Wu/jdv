@@ -34,7 +34,7 @@ test_that("the reference type matrix has independent channels", {
   x[["a.b$c@d"]] <- c(FALSE, TRUE)
   x$list <- list(list(number = 1L, value = 3 - 4i), NULL)
   x$complex_matrix <- I(matrix(c(1 + 2i, NA_complex_), ncol = 1L))
-  x$integer64 <- structure(c(1, NA_real_), class = "integer64")
+  x$integer64 <- int64_fixture(c("1", NA_character_))
   original <- serialize(x, NULL)
   model <- table_model(x)
   expect_length(model$schema, 17L)
@@ -92,13 +92,18 @@ test_that("the reference type matrix has independent channels", {
     expect_false(results[[i]]$schema$sortable)
     expect_false(results[[i]]$schema$filterable)
   }
-  for (i in 15:17) {
+  for (i in 15:16) {
     expect_false(results[[i]]$schema$sortable)
     expect_false(results[[i]]$schema$filterable)
     expect_null(results[[i]]$data$values)
     expect_null(results[[i]]$data$sortKey)
   }
-  expect_identical(results[[17L]]$data$display, rep("<integer64>", 2L))
+  expect_true(results[[17L]]$schema$sortable)
+  expect_true(results[[17L]]$schema$filterable)
+  expect_identical(results[[17L]]$data$display, c("1", "NA"))
+  expect_identical(results[[17L]]$data$values, c("1", NA_character_))
+  expect_identical(results[[17L]]$data$na, c(FALSE, TRUE))
+  expect_identical(results[[17L]]$data$sortKey, c(1L, NA_integer_))
   expect_identical(serialize(x, NULL), original)
 })
 
