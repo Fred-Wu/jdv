@@ -6,13 +6,16 @@ from the package build by `^dev$`. There is no new package API, Imports, Rcpp,
 C++, or native worker thread. Build products and transcripts stay outside the
 repository.
 
-The current proposal for design review is synchronous Snapshot extraction and
-Paged reception into a bounded native queue, with execution through a
-`busy == 0 && sys.nframe() == 0` gate and host nudges. Explicit synchronous
-RPC/poll remains the recovery path for frontends where the gate cannot progress.
+The design reviewer approved the processing conditions below on 2026-10-12.
+Snapshot extraction is synchronous inside `jdv_view()`. Paged requests enter a
+bounded native queue and run only after a per-request `busy == 0` and
+`R_BaseEnv` `sys.nframe() == 0` check, inside `R_ToplevelExec`. The host nudges
+only unfinished requests; explicit RPC/poll provides recovery. Warnings are
+collected into responses while preserving `last.warning`, including `warn=2`.
 This is a practical function-frame gate, not a general proof of prompt waiting,
-modal-state exclusion, or transparent user-interrupt propagation. The limits
-below require an explicit adoption decision.
+modal-state exclusion, or transparent user-interrupt propagation. Its documented
+limits were accepted by the design reviewer. External review is pending;
+transport implementation must wait for external review approval.
 
 ## Reproduce
 
@@ -134,6 +137,10 @@ observed on 2026-10-12.
 - Earlier gate discovery and fault traces:
   `/tmp/jdv-event-spike-i4ogqt18/` and `/tmp/jdv-event-spike-v08yxjd3/`.
 
+The design reviewer separately reported an independent gated rerun with 37/37
+checks passing. That is reviewer-provided evidence, distinct from this
+implementation session's runs listed above.
+
 PASS means the experiment completed its observation and resource checks. It
 also includes checks that known limitations were recorded; it does not label
 every observed path safe for production.
@@ -195,30 +202,66 @@ modes. Arbitrary S3/S4 methods, ALTREP access, finalizers, external resources,
 recursive event loops, and nonterminating methods are not generally isolated
 or proved safe by these fixtures.
 
-## Proposal and adoption limits
+## Approved processing rule and known limits
 
-The newly tested practical frame gate addresses the original framed
-sleep/readline/debugger counterexamples without making users poll after every
-request in this command-line Linux frontend. Propose synchronous Snapshot
-extraction plus Paged bounded reception/queue, per-request frame-zero gate, and
-host retry. Preserve explicit RPC/poll as the fallback and let an integrating
-frontend choose its own intentional execution boundary.
+The design reviewer approved these conditions for transport implementation:
 
-The proposal is conditional on design review of the observed tradeoffs. Frame
-zero does not distinguish the bare browser prompt from normal console waiting.
-It also does not exclude all active top-level evaluation on every OS. The short
-gate's containment boundary can consume a user interrupt during an outer
-calculation. No private context manipulation or pending-interrupt repair is
-attempted here. If these limits are unacceptable, synchronous RPC/poll remains
-the conservative alternative; generic Paged requests would then wait for a user
-or frontend poll, with an explicit UX cost.
+- Snapshot: extract synchronously within the `jdv_view()` call.
+- Paged: receive bounded native bytes into the C queue. Before each request,
+  require a clear native busy guard and scalar integer zero from
+  `R_tryEval(sys.nframe(), R_BaseEnv)`; then evaluate within `R_ToplevelExec`.
+  Retain requests while the gate is closed.
+- Retry and recovery: the host sends nudges only while requests are unfinished.
+  Preserve explicit RPC/poll, including embedded `jdv_rpc`, for frontends that
+  cannot progress through the gate.
+- Warnings: collect through `withCallingHandlers` and `muffleWarning` into the
+  response, preserving `last.warning` even with `warn=2`.
 
-A frontend that keeps a function frame active even while waiting can leave the
-gate closed indefinitely. More nudges do not fix this liveness limitation;
-explicit integration through RPC/poll is needed. Successful Linux recovery and
-later's reference approach are empirical support for a practical contract,
-not a universal R/frontend execution guarantee. Adoption and transport changes
-remain subject to the design review.
+The original framed sleep/readline/debugger counterexamples are addressed by
+this practical gate in the tested Linux frontend. The design reviewer accepted
+four remaining limits as part of the contract:
+
+1. Bare top-level `browser()` has zero function frames and allows execution at
+   its Browse prompt. The reviewer accepted this as comparable to ordinary
+   prompting when no function frame is suspended; the gate does not identify
+   all modal states.
+2. An interrupt during the short gate inspection can be caught by its containment
+   boundary while an outer calculation continues. The pause hook demonstrates
+   this limit; its frequency during the normal, unpaused inspection is unknown.
+3. Windows may dispatch `WM_TIMER` during frame-free top-level calculation and
+   permit execution between calculation steps. This remains an unverified
+   limit candidate requiring Windows manual validation.
+4. A frontend that keeps a function frame active while waiting can close the
+   gate indefinitely. More nudges do not solve this liveness limit; explicit
+   RPC/poll integration is the recovery path.
+
+These limits no longer represent unresolved blockers to the design decision.
+Successful observations and later's reference approach support a practical
+contract, not a universal R/frontend safety guarantee. The external review
+must approve the design before Phase 5 transport implementation begins.
+
+### Optional interrupt experiment during transport implementation
+
+The design reviewer suggested a nonblocking Phase 5 improvement experiment:
+save the publicly declared `R_interrupts_suspended` value, set it to TRUE for
+the probe, evaluate, and restore its previous value without the END macro or
+an explicit `onintr` call. Keep unwind cleanup and leave private pending state
+untouched. This may allow the outer code's next ordinary interrupt check to
+deliver the interrupt.
+
+Adopt that alternative only after the existing pause hook verifies that the
+outer `OUTER_DONE` marker is absent and cleanup/recovery still work. If it does
+not pass, retain the current documented limit. The present prototype and its
+recorded results still use the BEGIN/END boundary described above.
+
+### Follow-on host, UI, and platform requirements
+
+The host and UI need to represent pending R responses as busy/awaiting R,
+stop nudges after terminal completion or disconnect, and display warnings
+collected in responses. Windows manual checks must cover timer dispatch during
+top-level calculation and interruption. Frontend validation must cover modal
+behavior, frame-held waiting, and the explicit RPC/poll fallback; Linux CLI
+results cannot establish those outcomes for other frontends or OSes.
 
 ## Windows and macOS: unverified
 
