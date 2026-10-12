@@ -53,7 +53,7 @@ format.spike_column <- function(x, ...) {
       "spike_start",
       spike$fd,
       spike$callback,
-      spike$mode == "direct"
+      match(spike$mode, c("direct", "poll", "task", "gated")) - 1L
     )
   }
   if (action == "p") {
@@ -71,18 +71,43 @@ spike_callback <- function(code) {
   spike$action <- code
   spike_marker(paste0("METHOD_BEGIN|", code))
   column <- structure(c(3, 1, 2), class = "spike_column")
-  spike$display <- format(column)
-  spike$keys <- xtfrm(column)
+  evaluate <- function() {
+    spike$display <- format(column)
+    spike$keys <- xtfrm(column)
+  }
+  warnings <- character()
+  if (isTRUE(spike$collect_warnings)) {
+    withCallingHandlers(
+      evaluate(),
+      warning = function(w) {
+        warnings <<- c(warnings, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      }
+    )
+  } else {
+    evaluate()
+  }
+  spike$responses[[length(spike$responses) + 1L]] <- list(
+    code = code,
+    warnings = unname(as.list(warnings))
+  )
   spike_marker(paste0("METHOD_DONE|", code))
   invisible(NULL)
 }
 
 spike_setup <- function(dll_path, fd = -1L, mode = "direct") {
-  stopifnot(mode %in% c("direct", "poll", "task"))
+  stopifnot(mode %in% c("direct", "poll", "task", "gated"))
   stopifnot(requireNamespace("jsonlite", quietly = TRUE))
   spike$dll <- dyn.load(dll_path)
   spike$symbols <- lapply(
-    c("spike_start", "spike_stop", "spike_poll", "spike_arm", "spike_status"),
+    c(
+      "spike_start",
+      "spike_stop",
+      "spike_poll",
+      "spike_arm",
+      "spike_status",
+      "spike_gate_fault"
+    ),
     function(name) getNativeSymbolInfo(name, spike$dll)$address
   )
   names(spike$symbols) <- c(
@@ -90,7 +115,8 @@ spike_setup <- function(dll_path, fd = -1L, mode = "direct") {
     "spike_stop",
     "spike_poll",
     "spike_arm",
-    "spike_status"
+    "spike_status",
+    "spike_gate_fault"
   )
   spike$mode <- mode
   spike$fd <- as.integer(fd)
@@ -98,8 +124,15 @@ spike_setup <- function(dll_path, fd = -1L, mode = "direct") {
   spike$xtfrm_calls <- 0L
   spike$outer_warnings <- 0L
   spike$task_errors <- 0L
+  spike$collect_warnings <- FALSE
+  spike$responses <- list()
   spike$callback <- spike_callback
-  spike_native("spike_start", spike$fd, spike$callback, mode == "direct")
+  spike_native(
+    "spike_start",
+    spike$fd,
+    spike$callback,
+    match(mode, c("direct", "poll", "task", "gated")) - 1L
+  )
   if (mode == "task") {
     addTaskCallback(
       function(expr, value, ok, visible) {
@@ -164,6 +197,7 @@ spike_report <- function(path) {
     ),
     close_source_active = spike$close_source_active,
     callbacks_after_interrupt = spike$callbacks_after_interrupt,
+    responses = spike$responses,
     callbacks = getTaskCallbackNames()
   )
   writeLines(jsonlite::toJSON(result, auto_unbox = TRUE, null = "null"), path)

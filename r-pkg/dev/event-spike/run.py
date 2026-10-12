@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import re
 import termios
 import threading
 import time
@@ -20,7 +21,11 @@ SCENARIOS = [
     "prompt", "sleep", "readline", "browser", "browser_eval", "reentry", "stop", "warning",
     "interrupt", "interrupt_nested", "outer_interrupt", "state_pure", "state_mutation", "outer_handlers",
     "eof", "self_close", "self_close_error", "self_close_wait", "restart", "recursive_poll", "lifetime", "burst", "continuous",
+    "top_sleep", "top_readline", "top_browser", "top_browser_eval", "top_loop",
+    "warning_collected", "warning_collected_warn2",
+    "gated_batch", "global_mask", "gate_error", "gate_noninteger", "gate_nonscalar", "gate_interrupt", "gate_interrupt_outer",
 ]
+GATED_ONLY = {"gated_batch", "global_mask", "gate_error", "gate_noninteger", "gate_nonscalar", "gate_interrupt", "gate_interrupt_outer"}
 
 
 def r_string(value):
@@ -32,6 +37,10 @@ class Session:
         self.folder = folder
         self.text = ""
         self.closed = False
+        self.mode = mode
+        self.auto_nudge = True
+        self.requests_sent = 0
+        self.last_nudge = 0
         read_fd, self.write_fd = os.pipe()
         os.set_inheritable(read_fd, True)
         pid, master = pty.fork()
@@ -63,13 +72,29 @@ class Session:
         if self.write_fd is None:
             raise RuntimeError("event source is closed")
         os.write(self.write_fd, code.encode())
+        if code != "~": self.requests_sent += len(code)
+
+    def outstanding(self):
+        complete = self.text.count("SPIKE_NATIVE|COMPLETED|")
+        dropped = self.text.count("SPIKE_NATIVE|DROPPED|")
+        return max(0, self.requests_sent - complete - dropped)
+
+    def maybe_nudge(self):
+        if (self.mode == "gated" and self.auto_nudge and self.write_fd is not None
+                and self.outstanding() and time.monotonic() - self.last_nudge >= 0.05):
+            try:
+                self.event("~")
+            except BrokenPipeError:
+                self.auto_nudge = False
+            self.last_nudge = time.monotonic()
 
     def read_for(self, seconds):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            ready, _, _ = select.select([self.master], [], [], max(0, deadline - time.monotonic()))
+            self.maybe_nudge()
+            ready, _, _ = select.select([self.master], [], [], min(0.05, max(0, deadline - time.monotonic())))
             if not ready:
-                return
+                continue
             try:
                 chunk = os.read(self.master, 65536)
             except OSError as error:
@@ -152,7 +177,111 @@ def run_case(dll, mode, scenario, folder):
     assertions = {}
     try:
         session = Session(dll, mode, folder)
-        if scenario in ("prompt", "state_pure", "lifetime"):
+        if scenario in ("top_sleep", "top_readline", "top_browser", "top_browser_eval"):
+            start = len(session.text)
+            if scenario == "top_sleep":
+                session.send("Sys.sleep(0.6)\n")
+                session.read_for(0.05)
+            elif scenario == "top_readline":
+                session.send('readline("SPIKE_READLINE> ")\n')
+                session.wait_for("SPIKE_READLINE> ", start=start)
+            else:
+                session.send("browser()\n")
+                session.wait_for("Browse[1]>", start=start)
+            session.event("a")
+            session.wait_for("SPIKE_NATIVE|RECEIVED|a", start=start)
+            session.read_for(0.15)
+            if scenario == "top_browser_eval":
+                browse_start = len(session.text)
+                session.send("invisible(42)\n")
+                session.wait_for("Browse[1]>", start=browse_start)
+                session.read_for(0.02)
+            observations["dispatched_while_waiting"] = "SPIKE|METHOD_DONE|a" in session.text[start:]
+            if scenario == "top_readline":
+                session.send("answer\n")
+            elif scenario in ("top_browser", "top_browser_eval"):
+                session.send("c\n")
+            else:
+                session.read_for(0.5)
+            if mode == "poll": session.command("spike_poll()")
+            elif mode == "task": session.command("invisible(1)")
+            session.wait_for("SPIKE|METHOD_DONE|a", start=start)
+        elif scenario == "top_loop":
+            start = len(session.text)
+            session.send('spike_marker("LOOP_WAIT"); for (j in seq_len(50000000L)) spike_loop_value <- j; spike_marker("LOOP_DONE")\n')
+            session.wait_for("SPIKE|LOOP_WAIT", start=start)
+            session.read_for(0.05)
+            session.event("a")
+            session.wait_for("SPIKE|LOOP_DONE", start=start, timeout=12)
+            session.wait_for("SPIKE_NATIVE|RECEIVED|a", start=start)
+            observations["input_dispatched_inside_top_level_loop"] = safe_order(
+                session.text[start:], "SPIKE_NATIVE|RECEIVED|a", "SPIKE|LOOP_DONE"
+            )
+            if mode == "poll": session.command("spike_poll()")
+            elif mode == "task": session.command("invisible(1)")
+            session.wait_for("SPIKE|METHOD_DONE|a", start=start)
+        elif scenario in ("warning_collected", "warning_collected_warn2"):
+            session.command('spike$collect_warnings <- TRUE')
+            if scenario == "warning_collected_warn2": session.command("options(warn = 2)")
+            session.command("spike_capture()")
+            session.trigger("w", mode)
+        elif scenario == "global_mask":
+            session.command('sys.nframe <- function() stop("global mask must not execute")')
+            session.trigger("a", mode)
+        elif scenario == "gated_batch":
+            session.event("a" * 24)
+            deadline = time.monotonic() + 8
+            while session.outstanding():
+                if time.monotonic() >= deadline: raise RuntimeError("Batch did not complete")
+                session.read_for(0.05)
+            observations["batch_finished_without_poll"] = True
+        elif scenario == "gate_interrupt_outer":
+            session.auto_nudge = False
+            session.command('spike_native("spike_gate_fault", 200L, 0L)')
+            session.send('local({spike_marker("OUTER_WAIT"); Sys.sleep(1); spike_marker("OUTER_DONE")})\n')
+            session.wait_for("SPIKE|OUTER_WAIT")
+            session.event("a")
+            session.wait_for("SPIKE_NATIVE|GATE_SUSPEND_WAIT")
+            pause_start = len(session.text)
+            session.send("\x03")
+            session.wait_for("SPIKE_NATIVE|GATE|", start=pause_start)
+            session.read_for(1.2)
+            observations["outer_continued_after_gate_interrupt"] = "SPIKE|OUTER_DONE" in session.text
+            path = folder / "deferred-state.json"
+            session.command(f"spike_report({r_string(path)})")
+            deferred = json.loads(path.read_text())
+            observations["deferred_state"] = deferred["native"]
+            assertions["outer_gate_fault_observed_with_positive_frame"] = deferred["native"]["bare_nframe"] > 0
+            assertions["fault_does_not_execute_or_consume_request"] = deferred["native"]["executed"] == 0 and deferred["native"]["pending"] == 1
+            session.auto_nudge = True
+            session.wait_for("SPIKE|METHOD_DONE|a")
+        elif scenario in ("gate_error", "gate_noninteger", "gate_nonscalar", "gate_interrupt"):
+            session.auto_nudge = False
+            fault = {"gate_error": 1, "gate_noninteger": 2, "gate_nonscalar": 3, "gate_interrupt": 0}[scenario]
+            pause = 200 if scenario == "gate_interrupt" else 0
+            session.command(f'spike_native("spike_gate_fault", {pause}L, {fault}L)')
+            session.event("a")
+            if scenario == "gate_interrupt":
+                session.wait_for("SPIKE_NATIVE|GATE_SUSPEND_WAIT")
+                session.send("\x03")
+            session.wait_for("SPIKE_NATIVE|GATE|0|-1|")
+            path = folder / "deferred-state.json"
+            session.command(f"spike_report({r_string(path)})")
+            deferred = json.loads(path.read_text())
+            observations["deferred_state"] = deferred["native"]
+            assertions["fault_does_not_execute_or_consume_request"] = (
+                deferred["native"]["executed"] == 0 and deferred["native"]["pending"] == 1
+            )
+            assertions["fault_restores_suspend_flag"] = deferred["native"]["interrupts_suspended"] == 0
+            session.auto_nudge = True
+            session.wait_for("SPIKE|METHOD_DONE|a")
+            session.send('local({spike_marker("POST_FAULT_WAIT"); Sys.sleep(5); spike_marker("POST_FAULT_DONE")})\n')
+            session.wait_for("SPIKE|POST_FAULT_WAIT")
+            session.send("\x03")
+            session.read_for(0.1)
+            session.command('invisible(1)')
+            assertions["ordinary_interrupt_still_effective"] = "SPIKE|POST_FAULT_DONE" not in session.text
+        elif scenario in ("prompt", "state_pure", "lifetime"):
             session.event("a")
             session.wait_for("SPIKE_NATIVE|RECEIVED|a")
             session.read_for(0.15)
@@ -232,7 +361,7 @@ def run_case(dll, mode, scenario, folder):
                 session.wait_for("SPIKE|METHOD_DONE|a", start=recovery_start)
             else:
                 session.trigger("a", mode)
-            observations["interrupt_consumed_by_background_wrapper"] = mode == "direct" and "SPIKE_NATIVE|FINISHED|i|0" in session.text
+            observations["interrupt_consumed_by_background_wrapper"] = mode in ("direct", "gated") and "SPIKE_NATIVE|FINISHED|i|0" in session.text
         elif scenario == "interrupt_nested":
             poll = "spike_poll(); " if mode == "poll" else ""
             session.send('local({spike_marker("OUTER_WAIT"); Sys.sleep(0.7); ' + poll + 'spike_marker("OUTER_DONE")})\n')
@@ -292,6 +421,7 @@ def run_case(dll, mode, scenario, folder):
         elif scenario in ("burst", "continuous"):
             if scenario == "burst":
                 os.write(session.write_fd, b"a" * 300)
+                session.requests_sent += 300
                 observations["sent_requests"] = 300
                 session.read_for(0.25)
             else:
@@ -304,7 +434,9 @@ def run_case(dll, mode, scenario, folder):
                     try:
                         while time.monotonic() < deadline:
                             try:
-                                sent[0] += os.write(session.write_fd, b"a" * 32)
+                                written = os.write(session.write_fd, b"a" * 32)
+                                sent[0] += written
+                                session.requests_sent += written
                             except BlockingIOError:
                                 pass
                             time.sleep(0.005)
@@ -327,6 +459,28 @@ def run_case(dll, mode, scenario, folder):
 
         result = session.report()
         native = result["native"]
+        if mode == "gated":
+            assertions["paired_nframe_matches"] = native["gate_pair_mismatch"] == 0
+            assertions["interrupt_suspend_restored"] = native["interrupts_suspended"] == 0
+            if scenario in ("sleep", "readline", "browser", "browser_eval", "outer_handlers"):
+                assertions["framed_wait_defers_until_outer_completion"] = (
+                    not observations["dispatched_before_outer_completion"] and native["max_nframe"] > 0
+                )
+            if scenario in ("top_sleep", "top_readline"):
+                assertions["unwrapped_wait_has_nonzero_frame_and_defers"] = (
+                    not observations["dispatched_while_waiting"] and native["max_nframe"] > 0
+                )
+            if scenario in ("top_browser", "top_browser_eval"):
+                assertions["frame_free_browser_counterexample_recorded"] = (
+                    observations["dispatched_while_waiting"] and native["max_nframe"] == 0
+                )
+            if scenario == "gated_batch":
+                assertions["nudge_resumes_after_drain_budget"] = native["nudges"] >= 2
+                assertions["nudge_does_not_duplicate_requests"] = native["executed"] == 24 and result["xtfrm_calls"] == 24
+            if scenario.startswith("gate_"):
+                assertions["gate_fault_then_request_recovers_once"] = native["gate_failures"] >= 1 and native["executed"] == 1 and result["xtfrm_calls"] == 1
+            if scenario == "global_mask": assertions["base_env_ignores_global_mask"] = result["xtfrm_calls"] == 1
+
         assertions["guard_is_clear"] = native["busy"] == 0 and native["closing"] == 0
         assertions["queue_capacity_respected"] = native["pending"] <= 256
         assertions["receive_budget_respected"] = native["max_receive_bytes"] <= 64
@@ -358,6 +512,12 @@ def run_case(dll, mode, scenario, folder):
             assertions["pure_method_preserves_rng_options_warnings"] = all(
                 result[key] for key in ("rng_unchanged", "options_unchanged", "warnings_unchanged")
             )
+        if scenario == "top_loop":
+            assertions["posix_input_not_dispatched_during_top_level_loop"] = not observations["input_dispatched_inside_top_level_loop"]
+        if scenario in ("warning_collected", "warning_collected_warn2"):
+            assertions["warning_collected_in_response"] = result["responses"][-1]["warnings"] == ["spike method warning"]
+            assertions["collected_warning_preserves_state"] = all(result[key] for key in ("rng_unchanged", "options_unchanged", "warnings_unchanged"))
+            assertions["warn_two_does_not_abort_collected_response"] = native["failed"] == 0 and result["xtfrm_calls"] == 1
         if scenario == "state_mutation":
             assertions["user_side_effects_are_visible"] = (
                 not result["rng_unchanged"] and not result["options_unchanged"] and result["user_global_changed"]
@@ -372,7 +532,7 @@ def run_case(dll, mode, scenario, folder):
         if scenario == "lifetime":
             completed_after_close = session.text.count("SPIKE|METHOD_DONE|a")
             assertions["closing_discards_pending_queue_work"] = (
-                completed_after_close == completed_before_close if mode != "direct" else True
+                completed_after_close == completed_before_close if mode not in ("direct", "gated") else True
             )
         try:
             session.event("a")
@@ -400,7 +560,7 @@ def run_case(dll, mode, scenario, folder):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--modes", default="direct,poll,task")
+    parser.add_argument("--modes", default="direct,poll,task,gated")
     parser.add_argument("--scenarios", default=",".join(SCENARIOS))
     args = parser.parse_args()
     if os.name != "posix":
@@ -419,11 +579,12 @@ def main():
         return build.returncode
     results = []
     for mode in args.modes.split(","):
-        if mode not in ("direct", "poll", "task"):
+        if mode not in ("direct", "poll", "task", "gated"):
             parser.error(f"Unknown mode: {mode}")
         for scenario in args.scenarios.split(","):
             if scenario not in SCENARIOS:
                 parser.error(f"Unknown scenario: {scenario}")
+            if scenario in GATED_ONLY and mode != "gated": continue
             result = run_case(dll, mode, scenario, output / f"{mode}-{scenario}")
             results.append(result)
             print(f"{'PASS' if result['passed'] else 'FAIL'} {mode}/{scenario}", flush=True)

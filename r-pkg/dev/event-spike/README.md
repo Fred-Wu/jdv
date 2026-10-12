@@ -1,214 +1,283 @@
 # Event-loop execution experiment
 
-This isolated experiment compares three paths for running user-defined
-`format()` and `xtfrm()` methods. It is excluded from the R package build by
-the existing `^dev$` rule. It adds no package API or runtime dependency. The C
-DLL is built outside the repository and must never be linked into `src/`.
+This standalone C DLL, R fixture, and Python PTY runner compare four paths for
+running user-defined `format()` and `xtfrm()` methods. The directory is excluded
+from the package build by `^dev$`. There is no new package API, Imports, Rcpp,
+C++, or native worker thread. Build products and transcripts stay outside the
+repository.
 
-The proposed production rule is to receive bounded native data at event
-boundaries and execute R methods only through an explicit, synchronous
-RPC/poll call, or a frontend that supplies an equally explicit execution
-boundary. Successful event-loop experiments do not establish that arbitrary
-methods can safely run whenever an input handler or timer fires.
+The current proposal for design review is synchronous Snapshot extraction and
+Paged reception into a bounded native queue, with execution through a
+`busy == 0 && sys.nframe() == 0` gate and host nudges. Explicit synchronous
+RPC/poll remains the recovery path for frontends where the gate cannot progress.
+This is a practical function-frame gate, not a general proof of prompt waiting,
+modal-state exclusion, or transparent user-interrupt propagation. The limits
+below require an explicit adoption decision.
 
-## Reproduce on Linux
+## Reproduce
 
-From the repository root, with R, a C compiler, Python 3, and the already
-suggested jsonlite package installed:
+From the repository root, with R, a C compiler, Python 3, and the existing
+suggested jsonlite package:
 
 ```sh
 arity format --check r-pkg/dev/event-spike
 python3 r-pkg/dev/event-spike/run.py
 ```
 
-The runner creates a new `/tmp/jdv-event-spike-*` directory, copies the C source
-there, runs `R CMD SHLIB`, and starts a fresh interactive R process per case.
-It uses a real controlling PTY and an inherited pipe file descriptor. Events
-come from the external Python process, and Ctrl-C is the terminal interrupt
-byte, not an R condition constructed by a fixture. The runner reads PTY output
-while waiting; every wait has a deadline and a failed case terminates its child.
-No R API is called from the Python producer thread.
-
-For a smaller rerun or a fresh, explicit output directory:
+The default command runs 127 distinct cases: 30 in each original mode and 37 in
+`gated`. The evidence recorded here is a 126-case full regression plus the final
+two-case targeted interrupt comparison, covering all 127 distinct cases.
 
 ```sh
-python3 r-pkg/dev/event-spike/run.py --modes direct,poll,task \
-  --scenarios browser_eval,interrupt,interrupt_nested,reentry,eof,burst,continuous
-python3 r-pkg/dev/event-spike/run.py --output /tmp/jdv-event-spike-new-run
+python3 r-pkg/dev/event-spike/run.py --modes gated \
+  --scenarios prompt,sleep,readline,browser,browser_eval,reentry,gated_batch,global_mask
+python3 r-pkg/dev/event-spike/run.py --modes gated \
+  --scenarios gate_error,gate_noninteger,gate_nonscalar,gate_interrupt,gate_interrupt_outer,outer_interrupt
+python3 r-pkg/dev/event-spike/run.py --modes direct,poll,task,gated \
+  --scenarios top_sleep,top_readline,top_browser,top_browser_eval,top_loop,warning_collected,warning_collected_warn2
 ```
 
-Use a new output directory for each run. `results.json` contains observations
-and checks; each case directory contains `transcript.txt` and `state.json`.
-`build.log` records the compiler invocation. Outputs are experimental evidence,
-not performance benchmarks. Console timing and continuous-producer byte counts
-vary between runs.
+A fresh `/tmp/jdv-event-spike-*` directory contains `build.log`, `results.json`,
+and each case's `transcript.txt`/`state.json`. Fault cases also save
+`deferred-state.json` before retry. `--output PATH` requires a new output
+directory. The runner copies C into that directory and runs `R CMD SHLIB` there;
+it never creates object files in the package source tree.
 
-## Execution paths and bounds
+Each case starts a fresh, genuinely interactive R process with a controlling
+PTY and an inherited pipe. An external process supplies request bytes; Ctrl-C
+is the PTY terminal interrupt byte. The runner labels states from deliberate
+markers and console interaction, rather than a method's call stack. It reads
+output while waiting, bounds waits, and terminates/reaps a child after startup
+or case failure. The producer thread used by one stress case calls no R API.
 
-| Mode | Event entry | R method execution |
+## Execution paths
+
+| Mode | Native event entry | R evaluation |
 | --- | --- | --- |
-| `direct` | Read pipe bytes, or consume a Windows timer byte | Drain inside `R_ToplevelExec` in the event callback |
-| `poll` | Queue C-owned bytes only | An explicit `spike_poll()` call using `R_UnwindProtect` |
-| `task` | Queue C-owned bytes only | `spike_poll()` inside an R `addTaskCallback` function |
+| `direct` | Read request bytes | Ungated `R_ToplevelExec` drain |
+| `poll` | Queue C-owned bytes only | Explicit poll using `R_UnwindProtect` |
+| `task` | Queue C-owned bytes only | Poll inside an R `addTaskCallback` |
+| `gated` | Queue bytes, then check the practical frame gate | `R_ToplevelExec` drain only after the gate allows each request |
 
-The POSIX handler receives at most 64 bytes per entry. Each drain executes at
-most eight requests per call. The C queue holds 256 request bytes; excess bytes
-are counted as dropped. Queue mode does not inspect or allocate R objects at
-the event entry, including ALTREP objects. Native diagnostic output is the only
-additional instrumentation at that entry. A remaining queue waits for the next
-drain; the direct experiment has no separate continuation scheduler.
+Reception is limited to 64 bytes per input-handler entry; the queue holds 256
+request bytes. Excess requests are counted as dropped. A drain starts at most
+eight requests. These bound work counts, not one method's execution time or
+native diagnostic I/O wall time. Queue-only reception does not inspect R
+objects, including ALTREP objects.
 
-These are bounds on bytes and request counts. They do not bound the execution
-time of one user method or the wall time of native diagnostic I/O. The spike's
-overflow counter is an observation mechanism; a production protocol would need
-an explicit overload response or backpressure policy.
+The gate evaluates a prebuilt `sys.nframe()` call with `R_tryEval` in
+`R_BaseEnv`, avoiding a function of that name in the global environment. It
+requires a nonmissing, nonnegative scalar integer zero and a clear native busy
+guard. Every request is checked separately, including after a method returns
+from nested event processing. Failed/invalid checks retain the pending request.
+Busy nested events only queue bytes.
 
-A busy flag prevents recursive evaluation. Nested events can queue bytes while
-a method sleeps. Normal return, error, and interrupt all clear the execution
-guard. A close requested inside a method removes its native event source immediately,
-then defers closure release until that execution exits. The close-and-sleep
-case checks `source_active=0` inside the method and a broken pipe on a later
-write, so an apparently recovered guard cannot conceal a readable-FD spin. Restart and recursive poll from a
-running method are explicitly rejected.
+For this experiment, the handler records both a bare `R_tryEval` measurement
+and a measurement inside an additional C-only `R_ToplevelExec` boundary. Their
+agreement is checked, and disagreement also defers execution. This tests the
+previously unverified assumption that a C top-level boundary necessarily hides
+the interrupted expression's function frames. It did not hide them in these
+R 4.6.1 observations. The bare diagnostic uses a preserved, prebuilt call and
+`R_tryEval`'s own exit boundary, without allocation before that evaluation.
 
-EOF removes the POSIX input handler and closes its descriptor. Pending bytes
-remain available to an explicit drain; EOF is not allowed to leave a readable
-handler spinning. Teardown removes the R task callback first, stops the native
-source second, and unloads the DLL last. The experiment also tests close followed
-by error, close followed by sleep while another byte arrives, and pending queue
-work cancelled before unload. It does not support a method forcibly unloading
-the currently executing DLL.
+### Short gate interrupt boundary
 
-## Linux observations
+The wrapped gate uses the interrupt macros from the public
+`R_ext/GraphicsDevice.h` header. Their definitions are not copied into this
+source. Only the short probe is temporarily suspended. `R_UnwindProtect`
+restores the previous publicly declared suspension flag if an allocation/error
+jumps before the macro finishes. The enclosing `R_ToplevelExec` contains an exit
+from the macro's END when a pending interrupt is delivered. A false return or
+invalid result defers the request. Cleanup neither inspects for delivery nor
+clears/redispatches private pending-interrupt state. Callback execution is not
+wrapped in this temporary suspension.
 
-Observed on 2026-10-12, Ubuntu 24.04.4 LTS, x86_64, R 4.6.1 (2026-06-24), GCC
-13.3.0. The final run's artifacts are under
-`/tmp/jdv-event-spike-l02l_ftn/`. The full run has 23 scenarios in each of three
-modes; all 69 cases completed their checks. Each subprocess must complete its observation and cleanup checks for the
-runner to report PASS. PASS does not mean that every observed mode is suitable
-for production: callback removal and consumed interrupts are recorded outcomes.
+The test-only one-shot hook can raise an error, produce a nonscalar/noninteger
+probe result, or pause inside BEGIN before END. The pause lets the PTY send an
+actual SIGINT inside that otherwise very small interval. It is disabled in
+normal operation and is not a production API. `gate_failures` records failed
+or abnormal/invalid checks; a false `R_ToplevelExec` return does not classify
+error versus interrupt.
 
-The external runner labels the execution state using deliberately placed
-markers and its own console interaction. It does not infer idle state from
-`sys.calls()`, a prompt string supplied to a method, or callback success.
+### Host retry and lifecycle
 
-| Scenario | Direct event execution | Explicit poll | Task callback |
-| --- | --- | --- | --- |
-| Prompt waiting | Executes without a console expression | Pending until poll | Pending until a normal expression completes |
-| `Sys.sleep()` | Executes before the outer expression completes | Pending until poll | Executes after the outer expression completes |
-| `readline()` | Executes while waiting for the answer | Pending until poll | Executes after the answer and outer expression complete |
-| `browser()`, continued with `c` | Executes while the debuggee is paused | Pending until poll | Executes after continuing the outer expression |
-| `browser()`, evaluate `invisible(42)` first | Executes while the debuggee is paused | Remains pending | Executes while the debuggee is still paused |
-| Nested event during a method's sleep | Reentry observed; second method deferred | Reentry only queues bytes | Reentry only queues bytes |
-| Method `stop()` | Background wrapper catches it; next request works | Error unwinds; next poll works | Fixture catches ordinary errors; callback remains registered |
-| Method warning | Warning behavior depends on the interrupted context | Normal warning behavior | Normal warning behavior within the callback |
-| Ctrl-C during a method | Wrapper consumes the interrupt; next request works | Interrupt propagates after native cleanup | Callback is removed; pending work recovers through explicit poll |
-| Ctrl-C in a method while outer code is active | Interrupted outer expression still completes | Outer expression does not reach its following marker | Method runs after outer completion; interrupt removes callback |
-| Ctrl-C in the outer sleep | Outer expression stops; later requests work | Pending work drains through poll | Pending work drains after the next successful expression |
-| Pure method state | RNG/options/warning state unchanged in checked cases | Same | Same |
-| Method changing RNG/options/globals | Changes remain visible | Changes remain visible | Changes remain visible |
-| EOF | Source removed; no repeated EOF events | Same; pending work remains drainable | Same |
-| Self-close, error after close, close while sleeping | Guard and source cleanup complete | Same | Same |
-| Restart or recursive poll within a method | Rejected, then next request works | Same | Same |
-| Callback removal and DLL unload | Source gone; later write gets broken pipe | Same; pending work discarded | Same; task callback removed before DLL unload |
-| 300-byte burst | Every byte executed or counted as dropped | Same | Same |
-| Continuous producer | Console expression completed during production | Same | Same |
+The runner acts as a host and sends the reserved `~` nudge byte at approximately
+50 ms intervals while requests have no terminal completion/drop marker. A
+nudge triggers another gate check without adding a request. The receive path
+consumes nudge bytes; it does not leave a deferred request represented by a hot
+file descriptor. All pending queue work, including work left after an
+eight-request drain, needs a later nudge or explicit poll.
 
-The 300-byte burst observed a receive maximum of 64 bytes and drain maximum of
-eight requests. Direct mode counted 12 dropped requests; queue modes counted
-44. Continuous runs also accounted for all bytes as executed, pending, or
-dropped, and respected both budgets. Counts are specific to these fixtures.
+A gate failure leaves its request unstarted. A request that has started and
+then exits abnormally is marked completed-with-failure and is not automatically
+requeued: a method may already have produced side effects. Nudge retries stop
+when completion/drop is observed or the source is closed. EOF removes the
+input handler and closes its descriptor, stopping automatic retries; already
+queued work remains available to an explicit poll.
 
-In the outer-handler fixture, the direct method's warning was not seen by the
-interrupted expression's `withCallingHandlers` handler. That warning also
-changed `last.warning` after the outer expression returned. A warning at an
-otherwise idle prompt did not produce the same saved warning state. Therefore,
-background wrapping does not give a transparent warning boundary.
+Normal return/error/interrupt clear the execution guard. Self-close stops the
+native source immediately but defers closure release until evaluation cleanup.
+The close-and-sleep case checks `source_active=0` inside the method and a broken
+pipe on an external write before the method returns. Restart/recursive poll
+while busy are rejected. Teardown removes the R task callback, stops the source,
+then unloads the DLL. Forced unload of an executing DLL is unsupported.
 
-After interrupting a task method, `getTaskCallbackNames()` returned an empty
-list in the dedicated recovery case. An explicit poll then executed the pending
-request with the native guard clear. This is an observed limit of the automatic
-path, not a reason to silently consume user interrupts.
+## Linux evidence
 
-## Processing rule proposed for design review
+Environment: Ubuntu 24.04.4 LTS, x86_64, R 4.6.1 (2026-06-24), GCC 13.3.0;
+observed on 2026-10-12.
 
-The strongest available boundary is a synchronous call made intentionally by
-the user or integrating frontend. Use event callbacks only to receive bounded
-native bytes and record pending requests. Calling an R method inside
-`R_ToplevelExec` contains nonlocal exits; it does not establish that the
-interrupted object or evaluator is at a safe point.
+- Full regression: `/tmp/jdv-event-spike-_o9ipzdg/`, 126/126 completed checks.
+  Original modes each ran 30 cases; gated ran 36, including the original 23.
+- Final targeted comparison: `/tmp/jdv-event-spike-11o91ofm/`, 2/2 completed
+  checks (`gate_interrupt_outer` and its normal `outer_interrupt` control).
+- Earlier gate discovery and fault traces:
+  `/tmp/jdv-event-spike-i4ogqt18/` and `/tmp/jdv-event-spike-v08yxjd3/`.
 
-A generic package cannot treat an event firing as proof of outermost console
-waiting. The task-callback alternative also does not supply that proof: this
-experiment ran it inside a browser REPL while the debuggee remained active, and
-an interrupt removed its registration. An idle flag set by a task callback and
-used by a later event would not solve either boundary problem. Automatic task
-processing needs an explicit participation contract and frontend-specific
-constraints before adoption; it is not the proposed default.
+PASS means the experiment completed its observation and resource checks. It
+also includes checks that known limitations were recorded; it does not label
+every observed path safe for production.
 
-For a viewer, this means that synchronous Snapshot extraction can proceed,
-while generic Paged event execution needs an explicit poll or a frontend-owned
-execution path. This proposal requires design review before transport work.
-The spike has not proved arbitrary S3/S4 methods, finalizers, recursive event
-loops, or ALTREP accesses safe. Even seemingly simple reads may execute user
-code. User methods can alter RNG, options, warning state, global variables,
-connections, and external resources; in-process wrappers cannot generally
-isolate or undo those effects.
+| Situation | Ungated direct | Explicit poll | Task callback | Function-frame gate |
+| --- | --- | --- | --- | --- |
+| Normal prompt | Runs immediately | Waits for poll | Waits for expression completion | Zero frames; runs immediately |
+| Framed `Sys.sleep()` | Runs before outer completion | Waits | Runs after outer completion | Positive frames; waits, then nudge runs it |
+| Framed `readline()` | Runs while waiting | Waits | Runs after answer/completion | Positive frames; waits for completion |
+| Browser with a suspended function | Runs while debuggee is paused | Waits | Runs after `c` | Positive frames; waits for `c` |
+| Evaluate `invisible(42)` inside that browser | Runs while paused | Waits | Runs while debuggee remains paused | Still positive frames; remains pending |
+| Bare top-level `Sys.sleep()` / `readline()` | Runs while waiting | Waits | Requires expression completion | One frame; remains pending until return |
+| Bare top-level `browser()` | Runs in browser prompt | Waits | Can run after a browser expression | Zero frames; **runs in browser prompt** |
+| Top-level 50-million-iteration `for` | POSIX input entry not dispatched until completion | Same | Same | Same; this is an event-loop observation, not a frame-gate proof |
+| Nested event during a method's sleep | Guard queues the second request | Queue only | Queue only | Queue only; fresh gate before the next method |
+| Method `stop()` / busy restart / recursive poll | Captured; next request works | Unwinds; next poll works | Fixture catches ordinary errors | Captured; next request works |
+| Ctrl-C in a method | Captured; can leave interrupted outer work running | Propagates after cleanup | Removes task registration | Callback stops; next request works; tested outer function had already completed |
+| Normal Ctrl-C in an outer sleep | Outer stops | Outer stops | Outer stops | Outer stops; next nudge drains pending work |
+| Ctrl-C inside short suspended gate while outer sleep is active | Not applicable | Not applicable | Not applicable | Gate fails/defer; **outer sleep continues** |
+| EOF / self-close / unload | Resources released | Same | Same, task removed before unload | Same |
 
-Observed recovery is evidence for these fixtures on this R/frontend/OS. The
-reason to select synchronous processing is its explicit call path and ordinary
-unwinding contract, not the number of passing tests.
+Bare and wrapped frame measurements agreed throughout all normal gated cases.
+Framed sleep/readline reached seven frames in these fixtures; framed browser
+reached six. Bare top-level sleep/readline reached one. A global
+`sys.nframe <- function() stop(...)` mask did not execute. Native reception and
+drain maxima remained at 64 bytes and eight requests. Burst/continuous producer
+cases accounted for every request as executed, pending, or dropped; a console
+expression completed while the finite producer was still running.
 
-## Windows and macOS
+The 24-request gated batch finished without poll: three bounded drain entries,
+24 gate checks, 24 executions, and no extra execution caused by nudges. For
+error/noninteger/nonscalar/SIGINT gate faults, the saved pre-retry state had
+`executed=0`, `pending=1`, clear busy guard, and suspension flag restored to zero.
+The next nudge executed the request exactly once. A subsequent ordinary outer
+Ctrl-C still stopped its expression.
 
-Windows and macOS were not executed in this environment. The Windows branch is
-provided as an uncompiled, unvalidated prototype. It creates an `HWND_MESSAGE`
-window on the main thread and uses `SetTimer`; each `WM_TIMER` consumes one
-C-owned byte and cancels that timer. It uses the same queue and drain guards.
-The PTY runner is POSIX-only; Windows manual testing requires an interactive
-frontend such as Rgui plus Rtools.
+The final outer-gate SIGINT case is a separate interrupt limit: before the
+injected END exit, the bare depth was seven. The wrapped gate returned invalid,
+the request stayed pending, and native cleanup restored the suspension flag;
+however, `OUTER_DONE` appeared after the outer sleep. The normal outer-interrupt
+control did not reach that marker. The hook enlarges the timing window to make
+it measurable; the normal gate does not pause. Its frequency in normal use is
+not measured, and this result must not be described as transparent interrupt
+propagation.
 
-From the repository root in an interactive R console:
+### Warnings and user side effects
+
+The existing raw-warning cases remain unchanged as counterexamples. Ungated
+execution during an outer sleep hid the warning from that expression's handler
+and changed `last.warning` after it returned. Warning-at-prompt behavior differed.
+
+The optional R wrapper uses `withCallingHandlers` and `muffleWarning`, collecting
+the warning text into the experimental response. In both `warn=0` and `warn=2`
+cases, all four paths collected `"spike method warning"`, completed `xtfrm()`,
+and preserved the sampled `last.warning`, RNG, and options state. This is
+warning handling within the request boundary, not a transaction around user
+code. Intentional method changes to RNG/options/globals remain visible in all
+modes. Arbitrary S3/S4 methods, ALTREP access, finalizers, external resources,
+recursive event loops, and nonterminating methods are not generally isolated
+or proved safe by these fixtures.
+
+## Proposal and adoption limits
+
+The newly tested practical frame gate addresses the original framed
+sleep/readline/debugger counterexamples without making users poll after every
+request in this command-line Linux frontend. Propose synchronous Snapshot
+extraction plus Paged bounded reception/queue, per-request frame-zero gate, and
+host retry. Preserve explicit RPC/poll as the fallback and let an integrating
+frontend choose its own intentional execution boundary.
+
+The proposal is conditional on design review of the observed tradeoffs. Frame
+zero does not distinguish the bare browser prompt from normal console waiting.
+It also does not exclude all active top-level evaluation on every OS. The short
+gate's containment boundary can consume a user interrupt during an outer
+calculation. No private context manipulation or pending-interrupt repair is
+attempted here. If these limits are unacceptable, synchronous RPC/poll remains
+the conservative alternative; generic Paged requests would then wait for a user
+or frontend poll, with an explicit UX cost.
+
+A frontend that keeps a function frame active even while waiting can leave the
+gate closed indefinitely. More nudges do not fix this liveness limitation;
+explicit integration through RPC/poll is needed. Successful Linux recovery and
+later's reference approach are empirical support for a practical contract,
+not a universal R/frontend execution guarantee. Adoption and transport changes
+remain subject to the design review.
+
+## Windows and macOS: unverified
+
+Neither OS was executed here. The Windows branch is uncompiled and unvalidated.
+It creates an `HWND_MESSAGE` window and a one-shot `SetTimer` byte on the main
+thread, using the same frame gate and drain. This experiment does not provide a
+Windows host nudge sender: manually arm `"~"` after a deferral, or repeat a short
+one-shot nudge timer from an external host during testing. Nudges must never be
+new requests. EOF is a POSIX pipe-specific case.
+
+From the repository root in interactive Rgui with Rtools:
 
 ```r
 source("r-pkg/dev/event-spike/build.R")
 dll_path <- spike_build()
 source("r-pkg/dev/event-spike/fixtures.R")
-spike_setup(dll_path, mode = "direct") # repeat in fresh processes for poll/task
+spike_setup(dll_path, mode = "gated")
 spike_capture()
-spike_arm(300L, "a")                  # prompt waiting
-spike_arm(100L, "a"); Sys.sleep(1)    # active outer evaluation
+spike_arm(300L, "a")
+spike_arm(100L, "a"); Sys.sleep(1)
+spike_arm(100L, "~")              # retry pending work after returning
 spike_arm(500L, "a"); readline("Answer: ")
-spike_arm(500L, "a"); browser()      # try invisible(42), then c
-spike_arm(100L, "r")                  # method arms another timer, then sleeps
-spike_arm(100L, "e")                  # stop, then send another a
-spike_arm(100L, "w")                  # warning
-spike_arm(100L, "i")                  # interrupt at INTERRUPT_WAIT
-spike_arm(100L, "s")                  # intentional RNG/options/global changes
-spike_poll()                         # required to drain in poll mode
+spike_arm(100L, "~")
+local({spike_arm(500L, "a"); browser()}) # test invisible(42), then c
+spike_arm(100L, "~")
+spike_arm(500L, "a"); browser()   # distinct bare-browser limit
+spike_arm(100L, "a"); for (j in seq_len(50000000L)) spike_loop_value <- j
+spike$collect_warnings <- TRUE; options(warn = 2); spike_capture()
+spike_arm(100L, "w")
 spike_report(file.path(tempdir(), "spike-state.json"))
 spike_teardown()
 ```
 
-Run each state separately: the examples are a menu of scenarios, not one test
-script. In poll mode, arm and allow the timer to fire before calling
-`spike_poll()`. In task mode, wait and then complete an expression. During the
-interrupt scenario, use the frontend's interrupt control (for example Esc in
-Rgui) and record exactly which control was used. Recheck task callback names,
-guards, and a subsequent request. Test self-close codes `c`, `k`, and `h` in
-separate sessions, and test `t`/`p` for restart/recursive poll rejection. On
-Windows, reentrant timer injection for `r` is supplied by the fixture; EOF is a
-POSIX pipe-specific scenario. Record window/timer destruction and a delay after
-DLL unload. None of these Windows results are claimed here.
+These are separate scenarios for fresh processes, not one assertion script.
+During the frame-free `for`, record whether `WM_TIMER` is dispatched before the
+loop completes and whether the gate reads zero while calculation is active.
+Windows may pump messages from interrupt checks, allowing such execution; this
+is an unverified limit candidate, not a claimed Windows result. Record the
+frontend's interrupt control (e.g. Esc in Rgui), callback/queue recovery, source
+removal before unload, and a delay after unload. Test request codes `r`, `e`,
+`i`, `c`, `k`, `h`, `t`, and `p` separately. The `r` fixture arms a nested timer
+on Windows. The macros' short gate pause/fault hook can be configured through
+`spike_native("spike_gate_fault", 200L, 0L)` before the event, but its Windows
+SIGINT/control behavior is likewise unverified.
 
-The Python runner can be attempted on macOS's command-line R. It does not
-validate R.app, IDE, or other frontend event-loop behavior even if that run
-passes.
+The Python runner can be attempted on macOS command-line R. A passing run would
+not validate R.app, RStudio, or another frontend's event scheduling/liveness.
 
-## Primary references
+## Provenance and primary references
 
-- [Writing R Extensions: condition handling and cleanup](https://cran.r-project.org/doc/manuals/r-release/R-exts.html#Condition-handling-and-cleanup-code): `R_ToplevelExec` introduces a new top-level context that hides the original condition handlers; `R_UnwindProtect` supplies cleanup during ordinary unwinding.
-- [Writing R Extensions: meshing event loops](https://cran.r-project.org/doc/manuals/r-release/R-exts.html#Meshing-event-loops): exceptional package use requires handler cleanup; event notification does not identify an evaluator state.
-- Installed `R_ext/eventloop.h` explicitly says the interface is not part of the API and can change without notice.
-- [R 4.6.1 POSIX event-loop source](https://svn.r-project.org/R/tags/R-4-6-1/src/unix/sys-std.c): the handler traversal saves the next pointer before invoking the current handler, supporting the EOF self-removal used here. This does not establish safety for deleting another queued handler.
-- [R 4.6.1 main-loop source](https://svn.r-project.org/R/tags/R-4-6-1/src/main/main.c): task callbacks use protected evaluation and can be removed after an abnormal exit; browser expression completion also reaches the task-handler path. These source observations describe this version, rather than a stable package execution guarantee.
+The gate is independently implemented using R public APIs, based on the
+approach in r-lib/later's `sys_nframe`/`at_top_level`. The read-only reference is
+later DESCRIPTION version `1.4.8.9000`, commit
+`f1d988deb5e9fd26b3af5adee6da454ae7386f9d`. No later function body is copied or
+transplanted. No GPL R source implementation or interrupt macro definition is
+copied, directly or through later. Public R headers are included and used as
+APIs. Source provenance is also documented beside `probe_gate` in C.
+
+- [later frame gate](https://github.com/r-lib/later/blob/f1d988deb5e9fd26b3af5adee6da454ae7386f9d/src/later.cpp) and [POSIX retry approach](https://github.com/r-lib/later/blob/f1d988deb5e9fd26b3af5adee6da454ae7386f9d/src/later_posix.cpp): inspected as references; not runtime dependencies.
+- [Writing R Extensions: cleanup and condition boundaries](https://cran.r-project.org/doc/manuals/r-release/R-exts.html#Condition-handling-and-cleanup-code): `R_ToplevelExec` contains nonlocal exits, while `R_UnwindProtect` supplies cleanup.
+- [Writing R Extensions: meshing event loops](https://cran.r-project.org/doc/manuals/r-release/R-exts.html#Meshing-event-loops): exceptional package use requires handler cleanup. Installed `R_ext/eventloop.h` states that it is not part of the API and may change.
+- [R 4.6.1 POSIX source](https://svn.r-project.org/R/tags/R-4-6-1/src/unix/sys-std.c) and [main-loop source](https://svn.r-project.org/R/tags/R-4-6-1/src/main/main.c): consulted for traversal/self-removal, task removal after abnormal exits, and browser task-handler behavior; implementation bodies are not copied.
