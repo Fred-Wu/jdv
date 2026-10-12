@@ -1,6 +1,6 @@
 # Event-loop execution experiment
 
-This standalone C DLL, R fixture, and Python PTY runner compare four paths for
+This standalone C DLL, R fixture, and Python PTY runner compare five paths for
 running user-defined `format()` and `xtfrm()` methods. The directory is excluded
 from the package build by `^dev$`. There is no new package API, Imports, Rcpp,
 C++, or native worker thread. Build products and transcripts stay outside the
@@ -14,8 +14,11 @@ only unfinished requests; explicit RPC/poll provides recovery. Warnings are
 collected into responses while preserving `last.warning`, including `warn=2`.
 This is a practical function-frame gate, not a general proof of prompt waiting,
 modal-state exclusion, or transparent user-interrupt propagation. Its documented
-limits were accepted by the design reviewer. External review is pending;
-transport implementation must wait for external review approval.
+limits were accepted by the design reviewer. External review conditionally
+approved the Linux evidence and practical gate, but made verification of the
+interrupt alternative a prerequisite to transport implementation. The new
+`gated_restore` results below await the design reviewer's confirmation; they
+do not constitute an adoption decision.
 
 ## Reproduce
 
@@ -27,9 +30,10 @@ arity format --check r-pkg/dev/event-spike
 python3 r-pkg/dev/event-spike/run.py
 ```
 
-The default command runs 127 distinct cases: 30 in each original mode and 37 in
-`gated`. The evidence recorded here is a 126-case full regression plus the final
-two-case targeted interrupt comparison, covering all 127 distinct cases.
+The default command runs 172 distinct cases: 30 in each original nongated mode
+and 41 in each gate variant. Historical frame-gate evidence includes a 126-case
+regression and a two-case supplement; the interrupt comparison is recorded
+separately below.
 
 ```sh
 python3 r-pkg/dev/event-spike/run.py --modes gated \
@@ -38,6 +42,8 @@ python3 r-pkg/dev/event-spike/run.py --modes gated \
   --scenarios gate_error,gate_noninteger,gate_nonscalar,gate_interrupt,gate_interrupt_outer,outer_interrupt
 python3 r-pkg/dev/event-spike/run.py --modes direct,poll,task,gated \
   --scenarios top_sleep,top_readline,top_browser,top_browser_eval,top_loop,warning_collected,warning_collected_warn2
+python3 r-pkg/dev/event-spike/run.py --modes gated,gated_restore \
+  --scenarios gate_interrupt_outer,gate_interrupt,outer_interrupt,gate_prior_true,gate_prior_true_error,gate_prior_true_noninteger,gate_prior_true_nonscalar
 ```
 
 A fresh `/tmp/jdv-event-spike-*` directory contains `build.log`, `results.json`,
@@ -60,7 +66,8 @@ or case failure. The producer thread used by one stress case calls no R API.
 | `direct` | Read request bytes | Ungated `R_ToplevelExec` drain |
 | `poll` | Queue C-owned bytes only | Explicit poll using `R_UnwindProtect` |
 | `task` | Queue C-owned bytes only | Poll inside an R `addTaskCallback` |
-| `gated` | Queue bytes, then check the practical frame gate | `R_ToplevelExec` drain only after the gate allows each request |
+| `gated` | Original BEGIN/END frame-gate control | Per-request gated `R_ToplevelExec` drain; paired diagnostic evaluation retained |
+| `gated_restore` | Save/TRUE/evaluate/restore frame gate | The same gated drain, with one evaluation and no END-triggered delivery |
 
 Reception is limited to 64 bytes per input-handler entry; the queue holds 256
 request bytes. Excess requests are counted as dropped. A drain starts at most
@@ -75,9 +82,9 @@ guard. Every request is checked separately, including after a method returns
 from nested event processing. Failed/invalid checks retain the pending request.
 Busy nested events only queue bytes.
 
-For this experiment, the handler records both a bare `R_tryEval` measurement
+For the original `gated` control, the handler records both a bare `R_tryEval` measurement
 and a measurement inside an additional C-only `R_ToplevelExec` boundary. Their
-agreement is checked, and disagreement also defers execution. This tests the
+agreement is checked, and disagreement also defers execution. This tested the
 previously unverified assumption that a C top-level boundary necessarily hides
 the interrupted expression's function frames. It did not hide them in these
 R 4.6.1 observations. The bare diagnostic uses a preserved, prebuilt call and
@@ -85,7 +92,7 @@ R 4.6.1 observations. The bare diagnostic uses a preserved, prebuilt call and
 
 ### Short gate interrupt boundary
 
-The wrapped gate uses the interrupt macros from the public
+The original wrapped gate uses the interrupt macros from the public
 `R_ext/GraphicsDevice.h` header. Their definitions are not copied into this
 source. Only the short probe is temporarily suspended. `R_UnwindProtect`
 restores the previous publicly declared suspension flag if an allocation/error
@@ -101,6 +108,21 @@ actual SIGINT inside that otherwise very small interval. It is disabled in
 normal operation and is not a production API. `gate_failures` records failed
 or abnormal/invalid checks; a false `R_ToplevelExec` return does not classify
 error versus interrupt.
+
+The `gated_restore` variant instead saves the public `R_interrupts_suspended`
+value, sets it to TRUE for `probe_frame_once`, and restores it directly. It uses
+no END macro or explicit interrupt delivery, and does not read or write private
+pending state. Its `R_UnwindProtect` cleanup restores the saved value on every
+exit. The prebuilt base-environment call is evaluated once per probe, with no
+bare diagnostic evaluation. Counters distinguish probe calls from the original
+control's extra diagnostic calls.
+
+A test-only setter checks restoration when the initial public flag is TRUE as
+well as FALSE. TRUE cases use finite pure methods without an interrupt while
+TRUE is held, check the saved value, then deliberately return to FALSE and
+check an ordinary interrupt. This does not claim delivery while a caller's own
+suspension remains active. Neither gate extends its temporary suspension across
+callback execution; the original caller's suspension value is inherited.
 
 ### Host retry and lifecycle
 
@@ -202,6 +224,66 @@ modes. Arbitrary S3/S4 methods, ALTREP access, finalizers, external resources,
 recursive event loops, and nonterminating methods are not generally isolated
 or proved safe by these fixtures.
 
+## Interrupt-variant comparison: awaiting design confirmation
+
+Linux comparison artifacts:
+
+- Primary outer/prompt/fault comparison: `/tmp/jdv-event-spike-vcnbpi7b/`,
+  12/12 cases completed checks across the original and replacement gates.
+- Original-TRUE restoration: `/tmp/jdv-event-spike-uozr16_g/`, 8/8 completed
+  checks, covering normal, injected error, noninteger, and nonscalar results.
+- Complete five-mode regression: `/tmp/jdv-event-spike-mbfpqyy0/`, 172/172
+  completed checks: 30 per nongated mode and 41 per gate variant. All original
+  gated cases remain in this matrix.
+- Strengthened prompt comparison: `/tmp/jdv-event-spike-lc8mvg24/`, 2/2
+  completed checks after combining the unrelated sleep and marker into one
+  top-level expression and asserting actual retry-state values.
+
+The test now records `GATE`/`GATE_SINGLE`, `STARTED`, `METHOD_BEGIN`, and
+`COMPLETED` separately. `executed` means a request was dequeued for an execution
+attempt, not that its R method began. A gate failure before dequeue retains the
+request; any abnormal exit after dequeue is a terminal failure and is not
+retried, even if no method entry occurred.
+
+| Actual Ctrl-C during the paused inspection | Original `gated` control | Single-evaluation `gated_restore` |
+| --- | --- | --- |
+| Outer `Sys.sleep`, positive depth | END delivered the interrupt inside the gate boundary; outer `OUTER_DONE` appeared | Gate returned positive depth and restored the flag; outer `OUTER_DONE` was absent |
+| Request state after that outer case | Unstarted, pending one | Unstarted, pending one; later nudge executed exactly once |
+| Prompt, zero depth | Gate failure before dequeue; pending one | Gate passed; after dequeue the callback boundary reported a terminal failure before `METHOD_BEGIN` |
+| First unrelated user expression | Finite sleep and completion marker succeeded | Same; no R status/diagnostic expression was evaluated first |
+| Subsequent recovery | Pending request executed once | Failed started request was not retried; a new distinct request succeeded |
+| Saved suspension FALSE/TRUE | Restored in checked normal/error/type/interrupt paths | Same |
+| Subsequent ordinary Ctrl-C | Still effective | Still effective |
+
+In the replacement prompt case, the pre-recovery snapshot had `executed=1`,
+`failed=1`, `pending=0`, `cleanups=1`, and no method entry. The first unrelated
+expression, `local({Sys.sleep(0.1); spike_marker("UNRELATED_DONE")})`, was sent
+before `spike_report` or another R diagnostic could consume an interrupt. Its
+marker cannot complete as a separate top-level expression after an interrupted
+sleep. A saved JSON snapshot after a retry delay retained one execution, one failure,
+one cleanup, zero pending requests, and unchanged method counters. Final
+assertions also required exactly one `STARTED|a` and `COMPLETED|a` marker and
+unchanged `METHOD_BEGIN|a` count. A new request `b` then completed, bringing the
+final counts to two attempts and one failure. These checks use actual state and
+markers rather than a command sentinel after an R assertion. This is a changed disposition from
+the original control, not a gate failure disguised as deferred success.
+
+For the replacement outer case, the pre-retry snapshot had `executed=0`,
+`pending=1`, depth seven, and the saved FALSE flag restored. The ordinary outer
+interrupt reached its computation rather than the gate's END boundary. The
+subsequent nudge produced one execution. Original-TRUE snapshots retained TRUE
+on normal return and error/type rejection, and rejected requests remained
+unstarted; the fixture then reset FALSE and confirmed ordinary Ctrl-C.
+
+All replacement observations had `bare_evaluations=0`. Normal probes recorded
+one evaluation per gate check; the injected pre-evaluation error intentionally
+recorded zero. No END macro, explicit `onintr`, private pending-state inspection
+or mutation, or copied GPL implementation was added to the replacement path.
+The observed delivery and completion order supports submitting this variant
+for adoption. It does not prove pending-interrupt absence or universal
+interrupt transparency, and requires the design reviewer's confirmation.
+
+
 ## Approved processing rule and known limits
 
 The design reviewer approved these conditions for transport implementation:
@@ -237,22 +319,18 @@ four remaining limits as part of the contract:
 
 These limits no longer represent unresolved blockers to the design decision.
 Successful observations and later's reference approach support a practical
-contract, not a universal R/frontend safety guarantee. The external review
-must approve the design before Phase 5 transport implementation begins.
+contract, not a universal R/frontend safety guarantee. The external review is conditional: the interrupt verification and design
+confirmation must precede Phase 5 transport implementation.
 
-### Optional interrupt experiment during transport implementation
+### Required interrupt-variant check before transport
 
-The design reviewer suggested a nonblocking Phase 5 improvement experiment:
-save the publicly declared `R_interrupts_suspended` value, set it to TRUE for
-the probe, evaluate, and restore its previous value without the END macro or
-an explicit `onintr` call. Keep unwind cleanup and leave private pending state
-untouched. This may allow the outer code's next ordinary interrupt check to
-deliver the interrupt.
+External review promoted the interrupt alternative from an optional improvement
+to a prerequisite to Phase 5. The independent `gated_restore` experiment below
+implements the proposed save/TRUE/evaluate/restore path. It retains the original
+BEGIN/END control and all its observed counterexamples. The replacement needs
+the design reviewer's confirmation before production adoption; this experiment
+does not advance transport implementation or settle Windows/macOS support.
 
-Adopt that alternative only after the existing pause hook verifies that the
-outer `OUTER_DONE` marker is absent and cleanup/recovery still work. If it does
-not pass, retain the current documented limit. The present prototype and its
-recorded results still use the BEGIN/END boundary described above.
 
 ### Follow-on host, UI, and platform requirements
 
@@ -262,6 +340,12 @@ collected in responses. Windows manual checks must cover timer dispatch during
 top-level calculation and interruption. Frontend validation must cover modal
 behavior, frame-held waiting, and the explicit RPC/poll fallback; Linux CLI
 results cannot establish those outcomes for other frontends or OSes.
+
+Production queues also require request identity, generation, and expiry;
+cancelled, expired, or stale requests must be rejected immediately before
+execution. A caught method error/interrupt must become an error response to its
+requester. Native markers and one-byte request codes here are experiment
+instrumentation, not that production protocol.
 
 ## Windows and macOS: unverified
 

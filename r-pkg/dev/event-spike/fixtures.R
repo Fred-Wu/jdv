@@ -53,7 +53,8 @@ format.spike_column <- function(x, ...) {
       "spike_start",
       spike$fd,
       spike$callback,
-      match(spike$mode, c("direct", "poll", "task", "gated")) - 1L
+      match(spike$mode, c("direct", "poll", "task", "gated", "gated_restore")) -
+        1L
     )
   }
   if (action == "p") {
@@ -96,7 +97,7 @@ spike_callback <- function(code) {
 }
 
 spike_setup <- function(dll_path, fd = -1L, mode = "direct") {
-  stopifnot(mode %in% c("direct", "poll", "task", "gated"))
+  stopifnot(mode %in% c("direct", "poll", "task", "gated", "gated_restore"))
   stopifnot(requireNamespace("jsonlite", quietly = TRUE))
   spike$dll <- dyn.load(dll_path)
   spike$symbols <- lapply(
@@ -106,7 +107,8 @@ spike_setup <- function(dll_path, fd = -1L, mode = "direct") {
       "spike_poll",
       "spike_arm",
       "spike_status",
-      "spike_gate_fault"
+      "spike_gate_fault",
+      "spike_set_suspend"
     ),
     function(name) getNativeSymbolInfo(name, spike$dll)$address
   )
@@ -116,7 +118,8 @@ spike_setup <- function(dll_path, fd = -1L, mode = "direct") {
     "spike_poll",
     "spike_arm",
     "spike_status",
-    "spike_gate_fault"
+    "spike_gate_fault",
+    "spike_set_suspend"
   )
   spike$mode <- mode
   spike$fd <- as.integer(fd)
@@ -131,7 +134,7 @@ spike_setup <- function(dll_path, fd = -1L, mode = "direct") {
     "spike_start",
     spike$fd,
     spike$callback,
-    match(mode, c("direct", "poll", "task", "gated")) - 1L
+    match(mode, c("direct", "poll", "task", "gated", "gated_restore")) - 1L
   )
   if (mode == "task") {
     addTaskCallback(

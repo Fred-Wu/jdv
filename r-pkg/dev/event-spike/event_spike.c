@@ -25,11 +25,12 @@
 #define NUDGE_BYTE ((unsigned char)'~')
 
 typedef struct {
-    int configured, source_active, busy, closing, background, gated;
+    int configured, source_active, busy, closing, background, gated, restore_only;
     int events, executed, failed, reentrant, dropped, eof, cleanups;
     int max_receive_bytes, max_drain_requests;
     int nudges, gate_checks, gate_deferred, gate_failures, gate_pair_mismatch;
     int bare_nframe, wrapped_nframe, max_nframe, gate_pause_ms, gate_fault;
+    int bare_evaluations, probe_evaluations;
     unsigned char queue[QUEUE_CAPACITY];
     int head, count;
     unsigned char current;
@@ -105,13 +106,14 @@ static void cleanup_execution(void *data, Rboolean jump)
 
 typedef struct {
     Rboolean previous_suspend;
-    int nframe, valid, fault, pause_ms;
+    int nframe, valid, fault, pause_ms, restore_only;
 } GateProbe;
 
 /* The unwrapped measurement uses a prebuilt call and R_tryEval's own boundary. */
 static int bare_nframe(void)
 {
     int error = 0;
+    state.bare_evaluations++;
     SEXP value = R_tryEval(state.frame_call, R_BaseEnv, &error);
     if (error || TYPEOF(value) != INTSXP || XLENGTH(value) != 1 ||
         INTEGER(value)[0] == NA_INTEGER || INTEGER(value)[0] < 0) return -1;
@@ -123,31 +125,51 @@ static int bare_nframe(void)
  * Independently implemented using R public APIs; no code copied from R
  * internals or later. Interrupt macros come from the public R header above.
  */
-static SEXP probe_gate(void *data)
+static SEXP probe_frame_once(void *data)
 {
     GateProbe *probe = (GateProbe *)data;
-    BEGIN_SUSPEND_INTERRUPTS {
-        if (probe->pause_ms) {
-            fprintf(stderr, "SPIKE_NATIVE|GATE_SUSPEND_WAIT\n");
-            fflush(stderr);
+    if (probe->pause_ms) {
+        fprintf(stderr, "SPIKE_NATIVE|GATE_SUSPEND_WAIT\n");
+        fflush(stderr);
 #ifdef _WIN32
-            Sleep((DWORD)probe->pause_ms);
+        Sleep((DWORD)probe->pause_ms);
 #else
-            usleep((useconds_t)probe->pause_ms * 1000);
+        usleep((useconds_t)probe->pause_ms * 1000);
 #endif
-        }
-        if (probe->fault == 1) Rf_error("Injected error inside suspended gate");
-        int error = 0;
-        SEXP value = PROTECT(R_tryEval(state.frame_call, R_BaseEnv, &error));
-        if (probe->fault == 2) value = PROTECT(Rf_mkString("not an integer"));
-        else if (probe->fault == 3) value = PROTECT(Rf_allocVector(INTSXP, 2));
-        if (!error && TYPEOF(value) == INTSXP && XLENGTH(value) == 1 &&
-            INTEGER(value)[0] != NA_INTEGER && INTEGER(value)[0] >= 0) {
-            probe->nframe = INTEGER(value)[0];
-            probe->valid = 1;
-        }
-        UNPROTECT(probe->fault == 2 || probe->fault == 3 ? 2 : 1);
+    }
+    if (probe->fault == 1) Rf_error("Injected error inside suspended gate");
+    int error = 0;
+    state.probe_evaluations++;
+    SEXP value = PROTECT(R_tryEval(state.frame_call, R_BaseEnv, &error));
+    if (probe->fault == 2) value = PROTECT(Rf_mkString("not an integer"));
+    else if (probe->fault == 3) value = PROTECT(Rf_allocVector(INTSXP, 2));
+    if (!error && TYPEOF(value) == INTSXP && XLENGTH(value) == 1 &&
+        INTEGER(value)[0] != NA_INTEGER && INTEGER(value)[0] >= 0) {
+        probe->nframe = INTEGER(value)[0];
+        probe->valid = 1;
+    }
+    UNPROTECT(probe->fault == 2 || probe->fault == 3 ? 2 : 1);
+    return R_NilValue;
+}
+
+/* Original BEGIN/END implementation remains the comparison control. */
+static SEXP probe_gate(void *data)
+{
+    BEGIN_SUSPEND_INTERRUPTS {
+        probe_frame_once(data);
     } END_SUSPEND_INTERRUPTS;
+    return R_NilValue;
+}
+
+/* Independent public-API experiment: restore the saved flag without delivery.
+ * No END macro, explicit interrupt delivery, or private pending-state access.
+ */
+static SEXP probe_gate_restore(void *data)
+{
+    GateProbe *probe = (GateProbe *)data;
+    R_interrupts_suspended = TRUE;
+    probe_frame_once(data);
+    R_interrupts_suspended = probe->previous_suspend;
     return R_NilValue;
 }
 
@@ -161,15 +183,18 @@ static void cleanup_gate(void *data, Rboolean jump)
 
 static void gate_boundary(void *data)
 {
-    R_UnwindProtect(probe_gate, data, cleanup_gate, data, NULL);
+    GateProbe *probe = (GateProbe *)data;
+    R_UnwindProtect(probe->restore_only ? probe_gate_restore : probe_gate,
+                    data, cleanup_gate, data, NULL);
 }
 
 static int gate_allows_execution(void)
 {
     if (state.busy) return 0;
     state.gate_checks++;
-    state.bare_nframe = bare_nframe();
-    GateProbe probe = {R_interrupts_suspended, -1, 0, state.gate_fault, state.gate_pause_ms};
+    state.bare_nframe = state.restore_only ? -1 : bare_nframe();
+    GateProbe probe = {R_interrupts_suspended, -1, 0, state.gate_fault,
+                       state.gate_pause_ms, state.restore_only};
     state.gate_fault = 0;
     state.gate_pause_ms = 0;
     Rboolean ok = R_ToplevelExec(gate_boundary, &probe);
@@ -177,12 +202,18 @@ static int gate_allows_execution(void)
     if (state.bare_nframe >= 0 && state.wrapped_nframe >= 0 &&
         state.bare_nframe != state.wrapped_nframe) state.gate_pair_mismatch++;
     if (state.wrapped_nframe > state.max_nframe) state.max_nframe = state.wrapped_nframe;
-    fprintf(stderr, "SPIKE_NATIVE|GATE|%d|%d|%d\n",
-            state.bare_nframe, state.wrapped_nframe, ok && probe.valid);
+    if (state.restore_only) {
+        fprintf(stderr, "SPIKE_NATIVE|GATE_SINGLE|%d|%d\n",
+                state.wrapped_nframe, ok && probe.valid);
+    } else {
+        fprintf(stderr, "SPIKE_NATIVE|GATE|%d|%d|%d\n",
+                state.bare_nframe, state.wrapped_nframe, ok && probe.valid);
+    }
     fflush(stderr);
-    if (!ok || !probe.valid || state.bare_nframe < 0 ||
-        state.bare_nframe != state.wrapped_nframe) state.gate_failures++;
-    if (!ok || !probe.valid || state.bare_nframe != 0 || probe.nframe != 0) {
+    int valid = ok && probe.valid && (state.restore_only ||
+                (state.bare_nframe >= 0 && state.bare_nframe == state.wrapped_nframe));
+    if (!valid) state.gate_failures++;
+    if (!valid || probe.nframe != 0) {
         state.gate_deferred++;
         return 0;
     }
@@ -199,6 +230,8 @@ static void drain_background(void)
         if (drained > state.max_drain_requests) state.max_drain_requests = drained;
         state.busy = 1;
         state.executed++;
+        fprintf(stderr, "SPIKE_NATIVE|STARTED|%c\n", state.current);
+        fflush(stderr);
         Rboolean ok = R_ToplevelExec(run_callback_background, NULL);
         cleanup_execution(NULL, !ok);
         fprintf(stderr, "SPIKE_NATIVE|FINISHED|%c|%d\n", state.current, ok);
@@ -322,8 +355,9 @@ static SEXP spike_start(SEXP fd, SEXP callback, SEXP mode)
     }
 #endif
     int path = Rf_asInteger(mode);
-    state.background = path == 0 || path == 3;
-    state.gated = path == 3;
+    state.background = path == 0 || path == 3 || path == 4;
+    state.gated = path == 3 || path == 4;
+    state.restore_only = path == 4;
     state.bare_nframe = state.wrapped_nframe = -1;
     state.frame_call = PROTECT(Rf_lang1(Rf_install("sys.nframe")));
     R_PreserveObject(state.frame_call);
@@ -404,19 +438,32 @@ static SEXP spike_gate_fault(SEXP pause, SEXP fault)
     return R_NilValue;
 }
 
+/* Test-only setter for checking restoration of both original public values. */
+static SEXP spike_set_suspend(SEXP value)
+{
+    int next = Rf_asLogical(value);
+    if (next == NA_LOGICAL) Rf_error("suspend must be TRUE or FALSE");
+    SEXP old = PROTECT(Rf_ScalarLogical(R_interrupts_suspended));
+    R_interrupts_suspended = next ? TRUE : FALSE;
+    UNPROTECT(1);
+    return old;
+}
+
 static SEXP spike_status(void)
 {
     const char *names[] = {"configured", "source_active", "busy", "closing", "pending",
                           "events", "executed", "failed", "reentrant", "dropped", "eof", "cleanups",
                           "max_receive_bytes", "max_drain_requests", "nudges", "gate_checks",
                           "gate_deferred", "gate_failures", "gate_pair_mismatch", "bare_nframe",
-                          "wrapped_nframe", "max_nframe", "interrupts_suspended"};
+                          "wrapped_nframe", "max_nframe", "interrupts_suspended",
+                          "bare_evaluations", "probe_evaluations"};
     int values[] = {state.configured, state.source_active, state.busy, state.closing, state.count,
                     state.events, state.executed, state.failed, state.reentrant, state.dropped,
                     state.eof, state.cleanups, state.max_receive_bytes, state.max_drain_requests,
                     state.nudges, state.gate_checks, state.gate_deferred, state.gate_failures,
                     state.gate_pair_mismatch, state.bare_nframe, state.wrapped_nframe,
-                    state.max_nframe, R_interrupts_suspended};
+                    state.max_nframe, R_interrupts_suspended, state.bare_evaluations,
+                    state.probe_evaluations};
     int n = sizeof(values) / sizeof(values[0]);
     SEXP result = PROTECT(Rf_allocVector(INTSXP, n));
     SEXP labels = PROTECT(Rf_allocVector(STRSXP, n));
@@ -436,6 +483,7 @@ static const R_CallMethodDef calls[] = {
     {"spike_arm", (DL_FUNC) &spike_arm, 2},
     {"spike_status", (DL_FUNC) &spike_status, 0},
     {"spike_gate_fault", (DL_FUNC) &spike_gate_fault, 2},
+    {"spike_set_suspend", (DL_FUNC) &spike_set_suspend, 1},
     {NULL, NULL, 0}
 };
 
