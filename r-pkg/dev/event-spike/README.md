@@ -19,8 +19,8 @@ comparison and an independent 41-case Linux rerun, the reviewer approved
 `gated_restore` for Phase 5 on 2026-10-12. Started requests that fail with an
 interrupt terminate with an error response and are never automatically retried.
 Windows hosted CLI evidence and the passing macOS CLI matrix are recorded below.
-Corrected Windows frontend driving, Windows interrupt delivery, and untested GUI
-frontends still need verification.
+Corrected Windows ConPTY driving and readline deferral passed the later run.
+Windows interrupt delivery and untested GUI frontends still need verification.
 
 ## Reproduce
 
@@ -366,7 +366,8 @@ does not implement transport or establish support for every Windows/macOS fronte
 The host and UI need to represent pending R responses as busy/awaiting R,
 stop nudges after terminal completion or disconnect, and display warnings
 collected in responses. Windows timer dispatch during top-level calculation is
-observed below; corrected readline driving and interruption still need checks.
+observed below; corrected ConPTY readline driving passed the later run, while
+Windows interruption still needs verification.
 Frontend validation must cover modal
 behavior, frame-held waiting, and the explicit RPC/poll fallback; Linux CLI
 results cannot establish those outcomes for other frontends or OSes.
@@ -492,7 +493,7 @@ run URL and downloaded evidence for the OS acceptance record. A green workflow
 means the asserted experiments and evidence checks passed; it does not certify
 all frontends or universal callback safety.
 
-### Windows hosted observations: 2026-10-12
+### Windows hosted observations: previous driver, 2026-10-12
 
 Evidence: [human-run workflow](https://github.com/eitsupi/jdv/actions/runs/38267807207)
 and its downloaded Windows artifact. Environment: Windows Server 2025
@@ -512,7 +513,8 @@ built successfully after the relative-operand builder correction.
   answer was treated as an R expression and produced an unknown-object error.
   Those traces did not demonstrate execution during a suspended readline.
   The previous ConPTY CRLF submission can add an empty input; the corrected
-  single-CR driver and answer-consumption checks require a new human-run test.
+  single-CR driver and answer-consumption checks were retested in the later
+  human-run workflow below.
 - All seven attempted Rterm interrupt cases were unverified because delivery
   could not be established. The three Rgui prompt attempts timed out without a
   callback result, and Rgui Esc was not automated. These are not passing
@@ -520,8 +522,32 @@ built successfully after the relative-operand builder correction.
 
 This artifact contains 38 entries: 25 observed passes, two observed failures,
 and eleven unverified cases. The workflow was not a complete success. The
-driver correction does not retroactively change the artifact's outcome, and
-Windows readline, interrupt, and Rgui acceptance remain open.
+driver correction does not retroactively change the artifact's outcome. The
+later run resolved these readline failures; Windows interrupt and Rgui behavior
+remain unverified.
+
+### Windows hosted observations: corrected driver, 2026-10-12
+
+Evidence: [human-run workflow](https://github.com/eitsupi/jdv/actions/runs/38270398258)
+at revision `706727e`, with the same Windows/R/Rtools/image environment listed
+above. All 27 observed cases passed: nine Rscript and eighteen Rterm cases.
+The artifact has 38 entries, including eleven explicitly unverified cases.
+
+All three ConPTY readline cases recorded actual `interactive()=TRUE`, emitted
+entry and prompt before the answer, and no premature completion. The saved
+answer was `SPIKE_READLINE_REPLY`, matching its confirmation marker. Direct
+execution ran during the suspended readline as its ungated control. Original
+gated and gated_restore had no `STARTED`, `METHOD_BEGIN`, or `METHOD_DONE` before
+the answer and passed their framed-deferral assertions. After the answer, a
+REPL-armed one-shot `~` timer resumed the pending request exactly once; no
+second request or explicit poll was needed. Resource and unload checks passed.
+
+The gated_restore Rscript loop again recorded a callback during the active
+top-level `for`, at iteration 2,134,016 of 50,000,000 with gate depth zero.
+This confirms the documented limit on this tested Windows Rscript frontend.
+The corrected-driver workflow succeeded, but all seven Rterm interrupt attempts
+still lacked established delivery. The three Rgui prompt attempts timed out,
+and Rgui Esc remained untested. Other frontends are not covered by this result.
 
 ### macOS hosted CLI observations: 2026-10-12
 
