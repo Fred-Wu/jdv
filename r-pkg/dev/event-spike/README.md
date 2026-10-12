@@ -18,7 +18,9 @@ limits were accepted by the design reviewer. After the required interrupt
 comparison and an independent 41-case Linux rerun, the reviewer approved
 `gated_restore` for Phase 5 on 2026-10-12. Started requests that fail with an
 interrupt terminate with an error response and are never automatically retried.
-Windows and macOS evidence is still required separately.
+Windows hosted CLI evidence and the passing macOS CLI matrix are recorded below.
+Corrected Windows frontend driving, Windows interrupt delivery, and untested GUI
+frontends still need verification.
 
 ## Reproduce
 
@@ -70,8 +72,8 @@ Rscript --vanilla r-pkg/dev/event-spike/test-build.R /path/to/fresh/builder-evid
 This test performs real compilation in an existing directory containing spaces,
 an intentional compile failure with directory restoration, and simulated
 Windows command/flag restoration checks. Simulated DLL files do not establish
-a successful Windows build; the manually dispatched Windows workflow must
-be rerun to obtain actual compiler and event-loop evidence.
+a successful Windows build. The hosted run below supplied actual compiler
+evidence; rerun the manual workflow after driver changes to collect new results.
 
 Each case starts a fresh, genuinely interactive R process with a controlling
 PTY and an inherited pipe. An external process supplies request bytes; Ctrl-C
@@ -303,7 +305,9 @@ or mutation, or copied GPL implementation was added to the replacement path.
 The design reviewer approved this replacement on 2026-10-12 and independently
 reran all 41 gated_restore cases successfully. Phase 5 uses this restore-only
 gate. This evidence does not prove pending-interrupt absence or universal
-interrupt transparency; Windows and macOS outcomes remain unverified.
+interrupt transparency. Windows interrupt delivery remains unverified. The
+passing macOS CLI interrupt fixtures and limited Windows non-interrupt
+observations below do not establish outcomes for other frontends.
 
 
 ## Approved processing rule and known limits
@@ -333,9 +337,10 @@ four remaining limits as part of the contract:
    restore-only gate fixes that checked Linux case. At an idle prompt, an
    interrupt caught after dequeue terminates that request before or during its
    method; respond with an interrupted error and never automatically retry it.
-3. Windows may dispatch `WM_TIMER` during frame-free top-level calculation and
-   permit execution between calculation steps. This remains an unverified
-   limit candidate requiring Windows manual validation.
+3. The hosted Windows Rscript observation below dispatched `WM_TIMER` during a
+   frame-free top-level `for`; the zero-frame gate admitted the callback before
+   calculation finished. A zero-frame gate cannot exclude all active top-level
+   computation on that tested frontend. Other OS/frontend results are separate.
 4. A frontend that keeps a function frame active while waiting can close the
    gate indefinitely. More nudges do not solve this liveness limit; explicit
    RPC/poll integration is the recovery path.
@@ -353,15 +358,16 @@ implements the proposed save/TRUE/evaluate/restore path. It retains the original
 BEGIN/END control and all its observed counterexamples. The replacement was
 approved after the independent Linux rerun; production
 adoption must retain the stated terminal-failure semantics. This experiment
-does not implement transport or settle Windows/macOS support.
+does not implement transport or establish support for every Windows/macOS frontend.
 
 
 ### Follow-on host, UI, and platform requirements
 
 The host and UI need to represent pending R responses as busy/awaiting R,
 stop nudges after terminal completion or disconnect, and display warnings
-collected in responses. Windows manual checks must cover timer dispatch during
-top-level calculation and interruption. Frontend validation must cover modal
+collected in responses. Windows timer dispatch during top-level calculation is
+observed below; corrected readline driving and interruption still need checks.
+Frontend validation must cover modal
 behavior, frame-held waiting, and the explicit RPC/poll fallback; Linux CLI
 results cannot establish those outcomes for other frontends or OSes.
 
@@ -373,7 +379,9 @@ instrumentation, not that production protocol.
 
 ## Manual Windows and macOS evidence workflow
 
-Windows/macOS results have not been collected in this environment. The workflow
+The Windows and macOS evidence below comes from artifacts supplied after human-run
+workflows. Local checks in this environment run on Linux; they do not establish
+new Windows or macOS outcomes. The workflow
 `.github/workflows/event-spike-manual.yaml` runs only with `workflow_dispatch`;
 there are no push, pull-request, or scheduled triggers. A human must publish the
 reviewed files to the private repository, select **Manual event-loop
@@ -421,11 +429,17 @@ approved `gated_restore`:
   armed timer, DLL unload, and survival after unload.
 - **Rterm:** `windows_runner.py` first forces ConPTY using pywinpty's public
   `PtyProcess.spawn`/`Backend.ConPTY` interfaces. If construction/startup fails,
-  it records the reason and tries `Rterm --ess --interactive` with an open stdin
-  pipe and an isolated console. Each result records the actual driver. Prompt,
+  it records the reason and tries `Rterm --ess` with an open stdin pipe and an
+  isolated console. It verifies actual `interactive()` and records it in
+  `frontend.json` and the case result. ConPTY submits one CR per input newline;
+  the pipe submits LF. Existing CRLF/CR are normalized once. Each result records
+  the actual driver. Prompt,
   framed sleep/readline/browser, bare browser, self-close, and interrupt cases
   keep emitted records separate from input echo. Framed waits defer under the
-  gates; bare browser behavior remains an observation.
+  gates; bare browser behavior remains an observation. Readline constructs its
+  prompt at runtime, records entry, and waits for the emitted prompt. Completion
+  before the host answers fails as a driver error, not a gate counterexample.
+  The answer must match both saved R state and an emitted confirmation marker.
 - **Recovery:** a deferred request receives a REPL-armed one-shot `~` timer,
   never a second `a`. If that does not progress, use explicit `spike_poll()` and
   record that fallback. Rscript's nudge fires during another sleep and can remain
@@ -461,7 +475,7 @@ group. It never broadcasts an interrupt in the runner's shared console.
 
 macOS executes the existing POSIX `run.py` matrix for all three comparison modes.
 R.app, RStudio, and arf are unverified. The native C source is unchanged by this
-workflow; no Windows fix is inferred from Linux checks.
+workflow; no native Windows scheduling conclusion is inferred from Linux checks.
 
 `results.json` contains observed cases with assertion results and unverified
 cases with explicit reasons. `metadata.json` records the environment; per-case
@@ -477,6 +491,48 @@ upload, so a missing artifact is not a successful run. A human must return the
 run URL and downloaded evidence for the OS acceptance record. A green workflow
 means the asserted experiments and evidence checks passed; it does not certify
 all frontends or universal callback safety.
+
+### Windows hosted observations: 2026-10-12
+
+Evidence: [human-run workflow](https://github.com/eitsupi/jdv/actions/runs/38267807207)
+and its downloaded Windows artifact. Environment: Windows Server 2025
+10.0.26100, image `win25-vs2026` / `20260925.250.1`, x86-64, R 4.6.1 ucrt,
+Rtools45 / GCC 14.3.0, Python 3.13.15, pywinpty 3.0.5. The independent DLL
+built successfully after the relative-operand builder correction.
+
+- Rscript completed all nine mode/scenario checks. In
+  `Rscript-gated_restore-top_loop/result.json`, the callback recorded
+  `phase="top_level_for"`, `iteration=1743872` of 50,000,000,
+  `gate_depth=0`, and one completed execution. This establishes the previously
+  proposed top-level calculation limit for this tested Windows Rscript setup.
+  It does not generalize to all Windows frontends or other OSes.
+- Sixteen Rterm cases passed; two gated readline cases failed under the previous
+  driver. Their traces show the real readline prompt followed by `OUTER_DONE`
+  before the host sent its answer, then zero-frame timer execution. The late
+  answer was treated as an R expression and produced an unknown-object error.
+  Those traces did not demonstrate execution during a suspended readline.
+  The previous ConPTY CRLF submission can add an empty input; the corrected
+  single-CR driver and answer-consumption checks require a new human-run test.
+- All seven attempted Rterm interrupt cases were unverified because delivery
+  could not be established. The three Rgui prompt attempts timed out without a
+  callback result, and Rgui Esc was not automated. These are not passing
+  frontend/interrupt observations.
+
+This artifact contains 38 entries: 25 observed passes, two observed failures,
+and eleven unverified cases. The workflow was not a complete success. The
+driver correction does not retroactively change the artifact's outcome, and
+Windows readline, interrupt, and Rgui acceptance remain open.
+
+### macOS hosted CLI observations: 2026-10-12
+
+Evidence: [human-run workflow](https://github.com/eitsupi/jdv/actions/runs/38266099556)
+and its downloaded macOS artifact. Environment: macOS 26.6.2 ARM64, image
+`macos26` / `20260907.0351.1`, R 4.6.1 (`aarch64-apple-darwin23`), Apple clang
+21.0.0, Python 3.13.15. The existing POSIX PTY runner completed all 112 observed
+cases: 30 direct, 41 original gated, and 41 gated_restore. All assertions passed,
+including the CLI interrupt fixtures. R.app was separately recorded as
+unverified; RStudio and arf were not driven. These are command-line frontend
+observations, not evidence for GUI event-loop or interrupt behavior.
 
 ## Provenance and primary references
 

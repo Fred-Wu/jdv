@@ -14,6 +14,40 @@ import time
 HERE = Path(__file__).resolve().parent
 MODES = ("direct", "gated", "gated_restore")
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+READLINE_PROMPT = "SPIKE_READLINE> "
+READLINE_REPLY = "SPIKE_READLINE_REPLY"
+
+
+def console_input(expression, conpty):
+    # A ConPTY terminal consumes CR as Enter; CRLF can submit an empty reply.
+    lines = expression.replace("\r\n", "\n").replace("\r", "\n")
+    return lines.replace("\n", "\r") if conpty else lines
+
+
+def emitted_count(text, marker, start=0):
+    # Native records can follow a waiting readline prompt on the same line.
+    prefix = r"(?:> |Browse\[\d+\]> |" + re.escape(READLINE_PROMPT) + r")?"
+    return len(re.findall(r"(?m)^" + prefix + re.escape(marker) + r"(?:\||\n|$)", text[start:]))
+
+
+def readline_wait_observation(text, start=0):
+    return {
+        "entry_seen": bool(emitted_count(text, "SPIKE|READLINE_ENTER", start)),
+        "prompt_seen": bool(re.search(r"(?m)^" + re.escape(READLINE_PROMPT), text[start:])),
+        "premature_completion": bool(emitted_count(text, "SPIKE|OUTER_DONE", start)),
+    }
+
+
+def readline_reply_accepted(text, value, expected=READLINE_REPLY, start=0):
+    return value == expected and bool(emitted_count(text, "SPIKE|READLINE_ANSWER|" + expected, start))
+
+
+def readline_expression():
+    # The complete prompt is constructed at runtime and absent from input echo.
+    return ('local({spike_arm(150L, "a"); spike_marker("READLINE_ENTER"); '
+            'spike$readline_answer <- readline(paste0("SPIKE_", "READLINE> ")); '
+            'spike_marker(paste0("READLINE_ANSWER|", spike$readline_answer)); '
+            'spike_marker("OUTER_DONE")})\n')
 
 
 def r_string(value):
@@ -79,7 +113,7 @@ class Session:
             from winpty import Backend, PtyProcess
             # ConPTY's enum is zero; force the environment too for pywinpty's
             # `backend or env` implementation, rather than its default backend.
-            self.proc = PtyProcess.spawn([str(rterm), "--vanilla", "--interactive"],
+            self.proc = PtyProcess.spawn([str(rterm), "--vanilla"],
                 backend=Backend.ConPTY, env={**os.environ, "PYWINPTY_BACKEND": "0"},
                 dimensions=(40, 160))
             self.driver = "ConPTY / pywinpty (forced backend=0)"
@@ -95,15 +129,22 @@ class Session:
                 except Exception:
                     pass
             self.text += "\n" + self.fallback_reason + "\n"
-            self.proc = subprocess.Popen([str(rterm), "--vanilla", "--ess", "--interactive"],
+            self.proc = subprocess.Popen([str(rterm), "--vanilla", "--ess"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NEW_CONSOLE)
             self.driver = "Rterm --ess / open stdin pipe / isolated console"
             self.reader = threading.Thread(target=self._read, args=(self.proc, self.driver), daemon=True)
             self.reader.start()
             self.wait_text("> ", start=len(self.text), timeout=10)
+        frontend_path = folder / "frontend.json"
         self.command(f"source({r_string(HERE / 'fixtures.R')}); "
-                     f"spike_setup({r_string(dll)}, mode={r_string(mode)}); spike_capture()")
+                     f"spike_setup({r_string(dll)}, mode={r_string(mode)}); spike_capture(); "
+                     f"writeLines(jsonlite::toJSON(list(interactive=interactive(), r_version=R.version.string), "
+                     f"auto_unbox=TRUE), {r_string(frontend_path)}); "
+                     'spike_marker(paste0("FRONTEND_INTERACTIVE|", interactive()))')
+        self.frontend_state = json.loads(frontend_path.read_text(encoding="utf-8"))
+        if not self.frontend_state["interactive"]:
+            raise RuntimeError("Driver frontend is not interactive; no valid Rterm modal observation")
 
     def _read(self, process, driver):
         try:
@@ -136,7 +177,7 @@ class Session:
 
     def marker_count(self, marker, start=0):
         # Match emitted records, never marker strings echoed in R commands.
-        return len(re.findall(r"(?m)^(?:> |Browse\[\d+\]> )?" + re.escape(marker) + r"(?:\||\n|$)", self.text[start:]))
+        return emitted_count(self.text, marker, start)
 
     def wait_marker(self, marker, start=0, timeout=8):
         until = time.monotonic() + timeout
@@ -147,10 +188,17 @@ class Session:
 
     def send(self, expression):
         if self.driver.startswith("ConPTY"):
-            self.proc.write(expression.replace("\n", "\r\n"))
+            self.proc.write(console_input(expression, conpty=True))
         else:
-            self.proc.stdin.write(expression.encode())
+            self.proc.stdin.write(console_input(expression, conpty=False).encode())
             self.proc.stdin.flush()
+
+    def wait_readline_prompt(self, start=0, timeout=8):
+        until = time.monotonic() + timeout
+        while not readline_wait_observation(self.text, start)["prompt_seen"]:
+            if time.monotonic() >= until:
+                raise TimeoutError("Waiting for emitted readline prompt; input echo is not a prompt")
+            self.read_for(0.05)
 
     def command(self, expression):
         start = len(self.text)
@@ -236,6 +284,8 @@ def rterm_case(rterm, dll, mode, scenario, folder):
         session = Session.__new__(Session)
         session.__init__(rterm, dll, mode, folder)
         result["driver"] = session.driver
+        result["frontend_state"] = session.frontend_state
+        assertions["frontend_is_interactive"] = session.frontend_state["interactive"]
         observations["conpty_fallback_reason"] = session.fallback_reason
         if scenario in ("prompt", "self_close"):
             code = "h" if scenario == "self_close" else "a"
@@ -249,8 +299,10 @@ def rterm_case(rterm, dll, mode, scenario, folder):
                 session.send('local({spike_arm(150L, "a"); spike_marker("WAITING"); Sys.sleep(0.8); spike_marker("OUTER_DONE")})\n')
                 session.wait_marker("SPIKE|WAITING", start)
             elif scenario == "readline":
-                session.send('local({spike_arm(150L, "a"); readline("SPIKE_READLINE> "); spike_marker("OUTER_DONE")})\n')
-                session.wait_text("SPIKE_READLINE> ", start)
+                # Build the prompt so its complete text is absent from input echo.
+                session.send(readline_expression())
+                session.wait_marker("SPIKE|READLINE_ENTER", start)
+                session.wait_readline_prompt(start)
             elif scenario == "browser":
                 session.send('local({spike_arm(150L, "a"); browser(); spike_marker("OUTER_DONE")})\n')
                 session.wait_text("Browse[1]>", start)
@@ -258,18 +310,42 @@ def rterm_case(rterm, dll, mode, scenario, folder):
                 session.send('spike_arm(150L, "a"); browser()\n')
                 session.wait_text("Browse[1]>", start)
             session.read_for(0.35)
-            session.wait_marker("SPIKE_NATIVE|RECEIVED|a", start)
-            observations["executed_while_waiting"] = bool(session.marker_count("SPIKE|METHOD_DONE|a", start))
-            if mode != "direct" and scenario != "top_browser":
-                assertions["framed_wait_defers"] = not observations["executed_while_waiting"]
             if scenario == "readline":
-                session.send("answer\n")
+                waiting = readline_wait_observation(session.text, start)
+                observations["readline_before_answer"] = waiting
+                assertions["readline_wait_open_before_answer"] = waiting["entry_seen"] and waiting["prompt_seen"] and not waiting["premature_completion"]
+                if waiting["premature_completion"]:
+                    raise RuntimeError("Driver premature readline completion before answer; not a native frame-gate counterexample")
+            session.wait_marker("SPIKE_NATIVE|RECEIVED|a", start)
+            if scenario == "readline":
+                waiting = readline_wait_observation(session.text, start)
+                observations["readline_before_answer"] = waiting
+                assertions["readline_wait_open_before_answer"] = waiting["entry_seen"] and waiting["prompt_seen"] and not waiting["premature_completion"]
+                if waiting["premature_completion"]:
+                    raise RuntimeError("Driver premature readline completion before answer; not a native frame-gate counterexample")
+            observations["executed_while_waiting"] = bool(session.marker_count("SPIKE|METHOD_DONE|a", start))
+            observations["execution_started_while_waiting"] = bool(
+                session.marker_count("SPIKE_NATIVE|STARTED|a", start) or
+                session.marker_count("SPIKE|METHOD_BEGIN|a", start)
+            )
+            if mode != "direct" and scenario != "top_browser":
+                assertions["framed_wait_defers"] = not observations["execution_started_while_waiting"] and not observations["executed_while_waiting"]
+            if scenario == "readline":
+                session.send(READLINE_REPLY + "\n")
+                session.wait_marker("SPIKE|READLINE_ANSWER|" + READLINE_REPLY, start)
             elif scenario in ("browser", "top_browser"):
                 session.send("c\n")
             else:
                 session.read_for(0.6)
             if scenario != "top_browser":
                 session.wait_marker("SPIKE|OUTER_DONE", start)
+            if scenario == "readline":
+                answer_path = folder / "readline-answer.json"
+                session.command('writeLines(jsonlite::toJSON(list(answer=spike$readline_answer), '
+                                f'auto_unbox=TRUE), {r_string(answer_path)})')
+                answer = json.loads(answer_path.read_text(encoding="utf-8"))["answer"]
+                observations["readline_answer"] = answer
+                assertions["answer_consumed_by_readline"] = readline_reply_accepted(session.text, answer, start=start)
         elif scenario in ("outer_interrupt", "gate_interrupt", "gate_interrupt_outer"):
             start = len(session.text)
             if scenario == "outer_interrupt":
@@ -342,6 +418,10 @@ def rterm_case(rterm, dll, mode, scenario, folder):
     except Exception as error:
         result["error"] = str(error)
         result.update(observations=observations, assertions=assertions)
+        if session is not None:
+            result["driver"] = getattr(session, "driver", None)
+            if hasattr(session, "frontend_state"):
+                result["frontend_state"] = session.frontend_state
     finally:
         if session is not None:
             try:
