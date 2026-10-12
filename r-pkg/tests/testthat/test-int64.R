@@ -237,6 +237,29 @@ test_that("installed integer64 extraction works without loading bit64", {
       )
       stopifnot(!"bit64" %in% loadedNamespaces())
       stopifnot(is.null(getS3method("format", "integer64", optional = TRUE)))
+      assign(
+        "format.jdv_fresh_int64",
+        function(x, ...) paste0("custom:", jdv:::col_values.integer64(x)),
+        .GlobalEnv
+      )
+      class(x) <- c("jdv_fresh_int64", "integer64")
+      holder <- jdv:::paged_table(structure(
+        list(x = x),
+        class = "data.frame",
+        row.names = 1:2
+      ))
+      page <- jdv:::query_page(holder, limit = 1L)
+      stopifnot(identical(
+        page$data$columns[[1L]]$data$display,
+        "custom:9223372036854775807"
+      ))
+      stopifnot(identical(
+        page$data$columns[[1L]]$data$values,
+        "9223372036854775807"
+      ))
+      class(x) <- c("jdv_fresh_no_format", "integer64")
+      stopifnot(identical(jdv:::col_display(x), c("9223372036854775807", "NA")))
+      stopifnot(!"bit64" %in% loadedNamespaces())
       TRUE
     },
     libpath = .libPaths()

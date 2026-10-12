@@ -1,0 +1,21 @@
+# Run from the repository root. The output records Paged registration overhead.
+devtools::load_all("r-pkg", quiet = TRUE)
+warm <- jdv:::paged_table(matrix(0, 10L, 2L))
+jdv:::query_dispose(warm)
+x <- matrix(0, 2000000L, 8L)
+tag <- tracemem(x)
+before <- gc()["Vcells", "used"]
+holder <- jdv:::paged_table(x)
+after <- gc()["Vcells", "used"]
+stopifnot(identical(tracemem(holder$source), tag))
+stopifnot(length(holder$column_cache) == 0L, length(holder$index_cache) == 0L)
+stopifnot(!"row_index" %in% names(holder))
+cat("source_bytes:", as.numeric(object.size(x)), "\n")
+cat("registration_vcells_delta_bytes:", (after - before) * 8, "\n")
+cat("same_source_tracemem:", tag, "\n")
+page <- jdv:::query_page(holder, limit = 2L, cols = c(0L, 7L))
+stopifnot(identical(page$data$row_index, 1:2))
+stopifnot(length(holder$column_cache) == 0L, length(holder$index_cache) == 0L)
+cat("page_two_rows_cache_entries:", length(holder$column_cache), "\n")
+jdv:::query_dispose(holder)
+untracemem(x)

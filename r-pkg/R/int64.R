@@ -5,6 +5,18 @@ col_values.integer64 <- function(x, ...) .Call(C_jdv_int64_values, x)
 #' @export
 #' @noRd
 col_display.integer64 <- function(x, ...) {
+  subclasses <- class(x)[seq_len(match("integer64", class(x)) - 1L)]
+  if (
+    any(vapply(
+      subclasses,
+      function(class) {
+        !is.null(utils::getS3method("format", class, optional = TRUE))
+      },
+      logical(1L)
+    ))
+  ) {
+    return(format(x, trim = TRUE, justify = "none"))
+  }
   values <- col_values.integer64(x)
   values[is.na(values)] <- "NA"
   values
