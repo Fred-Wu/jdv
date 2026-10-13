@@ -1,14 +1,27 @@
 # jdv: JSON Data Viewer
 
 jdv is an R table engine and data viewer under development. The R package
-bundles cJSON and has no runtime R package dependencies. Public viewer APIs
-will be added as the engine and transport are developed.
+bundles cJSON and has no runtime R package dependencies. Public viewer APIs are
+available through `jdv_view()` and `jdv_close()`.
 
 - `r-pkg/`: R package and bundled native code.
 - `server/`: reference host for R sessions and browser clients, developed
   alongside the browser interface in `server/web/`.
 - `spec/`: protocol contracts and shared semantic fixtures.
 - `tests/`: repository-level validation and integration checks.
+
+## Start the local viewer
+
+With Deno 2.8 or newer, start the reference server from its hosted URL without
+cloning the repository:
+
+```sh
+deno run -A --no-config https://raw.githubusercontent.com/eitsupi/jdv/main/server/main.ts
+```
+
+Open the URL from the server's single JSON ready line, then call
+`jdv::jdv_view(x)` in R. See [server/README.md](server/README.md) for the
+browser protocol, connection limits, and platform details.
 
 ## Local development
 
@@ -32,6 +45,7 @@ To refresh bundled cJSON v1.7.19 without a network connection:
 r-pkg/dev/vendor-cjson.sh --from-patched refs/jgd/r-pkg/src/cjson
 ```
 
-The script uses Git to apply patches. It verifies the version, reverses the four recorded local patches,
-and reapplies them before installing the source. Running it without arguments
-fetches the pinned upstream release with the GitHub CLI and applies the patches.
+The script uses Git to apply patches. It verifies the version, reverses the four
+recorded local patches, and reapplies them before installing the source. Running
+it without arguments fetches the pinned upstream release with the GitHub CLI and
+applies the patches.

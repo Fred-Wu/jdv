@@ -1,0 +1,304 @@
+import page from "./web/index.html" with { type: "text" };
+import app from "./web/app.js" with { type: "text" };
+import styles from "./web/style.css" with { type: "text" };
+import { type BrowserClient, Hub } from "./hub.ts";
+import { join } from "node:path";
+import {
+  cacheDirectory,
+  listenR,
+  preparePrivateDirectory,
+  removeIfOwned,
+  writeAtomicPrivate,
+} from "./platform.ts";
+
+interface Options {
+  mode: "default" | "tcp";
+  httpPort: number;
+  cacheDir: string;
+  token?: string;
+}
+
+const encoder = new TextEncoder();
+const MAX_BROWSER_MESSAGE_BYTES = 64 * 1024;
+
+export async function startServer(options: Options = parseOptions()): Promise<{
+  url: string;
+  socketPath: string;
+  discoveryPath: string;
+  close: () => Promise<void>;
+}> {
+  await preparePrivateDirectory(options.cacheDir);
+  const r = await listenR({ mode: options.mode, cacheDir: options.cacheDir });
+  const hub = new Hub();
+  let stopped = false;
+  const instance = crypto.randomUUID();
+  const pid = Deno.pid;
+
+  const acceptLoop = (async () => {
+    try {
+      for await (const connection of r.listener) hub.acceptR(connection);
+    } catch (error) {
+      if (!stopped) console.error(`R listener stopped: ${error}`);
+    }
+  })();
+  let http: Deno.HttpServer | undefined;
+  const discoveryPath = join(options.cacheDir, "discovery.json");
+  let port = 0;
+  let origin = "";
+  let onSigint: (() => void) | undefined;
+  let onSigterm: (() => void) | undefined;
+  const removeOwnSocket = async () => {
+    if (!r.socketPath.startsWith("unix://")) return;
+    try {
+      await Deno.remove(r.socketPath.slice("unix://".length));
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        console.error(`Could not remove R socket: ${error}`);
+      }
+    }
+  };
+
+  try {
+    let ready!: () => void;
+    const listening = new Promise<void>((resolve) => ready = resolve);
+    http = Deno.serve(
+      {
+        hostname: "127.0.0.1",
+        port: options.httpPort,
+        onListen(address) {
+          port = address.port;
+          origin = `http://127.0.0.1:${port}`;
+          ready();
+        },
+        onError(error) {
+          console.error(`HTTP request failed: ${error}`);
+          return new Response("Internal server error", { status: 500 });
+        },
+      },
+      (request) =>
+        handleHttp(request, hub, { port, origin, token: options.token }),
+    );
+    await listening;
+    const url = new URL(origin);
+    if (options.token) url.searchParams.set("token", options.token);
+    const advertisedUrl = url.href;
+    await writeAtomicPrivate(
+      discoveryPath,
+      JSON.stringify({
+        pid,
+        instance,
+        socketPath: r.socketPath,
+        httpUrl: advertisedUrl,
+      }),
+    );
+
+    const close = async () => {
+      if (stopped) return;
+      stopped = true;
+      if (onSigint) Deno.removeSignalListener("SIGINT", onSigint);
+      if (onSigterm) Deno.removeSignalListener("SIGTERM", onSigterm);
+      r.listener.close();
+      hub.close();
+      await http!.shutdown();
+      await removeIfOwned(discoveryPath, pid, instance);
+      await removeOwnSocket();
+      await acceptLoop;
+    };
+
+    onSigint = () =>
+      void close().catch((error) => console.error(`Shutdown failed: ${error}`));
+    Deno.addSignalListener("SIGINT", onSigint);
+    if (Deno.build.os !== "windows") {
+      onSigterm = () =>
+        void close().catch((error) =>
+          console.error(`Shutdown failed: ${error}`)
+        );
+      Deno.addSignalListener("SIGTERM", onSigterm);
+    }
+    console.log(
+      JSON.stringify({
+        url: advertisedUrl,
+        socketPath: r.socketPath,
+        discoveryPath,
+        pid,
+      }),
+    );
+    void http.finished.catch((error) => {
+      if (!stopped) console.error(`HTTP server stopped: ${error}`);
+    });
+    return {
+      url: advertisedUrl,
+      socketPath: r.socketPath,
+      discoveryPath,
+      close,
+    };
+  } catch (error) {
+    stopped = true;
+    if (onSigint) Deno.removeSignalListener("SIGINT", onSigint);
+    if (onSigterm) Deno.removeSignalListener("SIGTERM", onSigterm);
+    r.listener.close();
+    hub.close();
+    if (http) await http.shutdown().catch(() => undefined);
+    await removeIfOwned(discoveryPath, pid, instance);
+    await removeOwnSocket();
+    await acceptLoop;
+    throw error;
+  }
+}
+
+function handleHttp(
+  request: Request,
+  hub: Hub,
+  server: { port: number; origin: string; token?: string },
+): Response {
+  const host = request.headers.get("host");
+  if (!validHost(host, server.port)) {
+    return new Response("Invalid Host header", { status: 421 });
+  }
+  const requestOrigin = request.headers.get("origin");
+  if (requestOrigin && requestOrigin !== server.origin) {
+    return new Response("Invalid Origin header", { status: 403 });
+  }
+
+  const url = new URL(request.url);
+  if (url.pathname === "/ws") {
+    if (requestOrigin !== server.origin) {
+      return new Response("Invalid Origin header", { status: 403 });
+    }
+    if (server.token && url.searchParams.get("token") !== server.token) {
+      return new Response("Invalid viewer token", { status: 403 });
+    }
+    if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+      return new Response("WebSocket upgrade required", { status: 426 });
+    }
+    const { socket, response } = Deno.upgradeWebSocket(request);
+    const client: BrowserClient = {
+      send(value) {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify(value));
+        }
+      },
+      close() {
+        if (
+          socket.readyState === WebSocket.OPEN ||
+          socket.readyState === WebSocket.CONNECTING
+        ) socket.close();
+      },
+    };
+    socket.onopen = () => hub.attach(client);
+    socket.onmessage = (event) => {
+      if (
+        typeof event.data !== "string" ||
+        encoder.encode(event.data).byteLength > MAX_BROWSER_MESSAGE_BYTES
+      ) {
+        socket.close(1009, "Message is too large");
+        return;
+      }
+      let message: unknown;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        socket.close(1007, "Invalid JSON");
+        return;
+      }
+      if (!isObject(message)) {
+        socket.close(1007, "Expected a JSON object");
+        return;
+      }
+      hub.handleBrowser(client, message);
+    };
+    socket.onclose = () => hub.detach(client);
+    socket.onerror = () => hub.detach(client);
+    return response;
+  }
+
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return new Response("Method not allowed", {
+      status: 405,
+      headers: { allow: "GET, HEAD" },
+    });
+  }
+  const assets: Record<string, { body: string; type: string }> = {
+    "/": { body: page, type: "text/html; charset=utf-8" },
+    "/index.html": { body: page, type: "text/html; charset=utf-8" },
+    "/assets/app.js": { body: app, type: "text/javascript; charset=utf-8" },
+    "/assets/style.css": { body: styles, type: "text/css; charset=utf-8" },
+  };
+  const asset = assets[url.pathname];
+  if (!asset) return new Response("Not found", { status: 404 });
+  return new Response(request.method === "HEAD" ? null : asset.body, {
+    headers: {
+      "content-type": asset.type,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "content-security-policy":
+        `default-src 'self'; connect-src 'self' ws://127.0.0.1:${server.port}; style-src 'self'; script-src 'self'`,
+    },
+  });
+}
+
+function validHost(host: string | null, port: number): boolean {
+  if (!host) return false;
+  const accepted = new Set([
+    `127.0.0.1:${port}`,
+    `localhost:${port}`,
+    `[::1]:${port}`,
+  ]);
+  return accepted.has(host.toLowerCase());
+}
+
+function parseOptions(args = Deno.args): Options {
+  let mode: Options["mode"] = "default";
+  let httpPort = 0;
+  let cacheDir = Deno.env.get("JDV_CACHE_DIR") ?? cacheDirectory();
+  let token: string | undefined;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--tcp") {
+      mode = "tcp";
+    } else if (arg === "--http-port") {
+      httpPort = parsePort(args[++index], "HTTP port");
+    } else if (arg === "--cache-dir") {
+      const value = args[++index];
+      if (!value) throw new Error("--cache-dir requires a path.");
+      cacheDir = value;
+    } else if (arg === "--token") {
+      token = args[++index];
+      if (!token || token.length < 16) {
+        throw new Error("--token must contain at least 16 characters.");
+      }
+    } else if (arg === "--help" || arg === "-h") {
+      console.log(
+        "Usage: deno run [permissions] <URL>/server/main.ts [--tcp] [--http-port PORT] [--cache-dir PATH] [--token TOKEN]",
+      );
+      Deno.exit(0);
+    } else {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+  return { mode, httpPort, cacheDir, token };
+}
+
+function parsePort(value: string | undefined, label: string): number {
+  if (!value || !/^\d+$/.test(value)) {
+    throw new Error(`${label} must be an integer from 0 to 65535.`);
+  }
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error(`${label} must be an integer from 0 to 65535.`);
+  }
+  return port;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+if (import.meta.main) {
+  try {
+    await startServer();
+  } catch (error) {
+    console.error(error);
+    Deno.exitCode = 1;
+  }
+}
