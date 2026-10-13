@@ -195,14 +195,49 @@ col_sort_key.POSIXlt <- function(x, collation = "C", ...) {
 col_display.list <- function(x, ...) vapply(x, cell_preview, character(1L))
 #' @export
 col_display.matrix <- function(x, ...) {
+  if (ncol(x) > 100) {
+    return(rep(paste0("<matrix [1 x ", ncol(x), "]>"), nrow(x)))
+  }
   vapply(
     seq_len(nrow(x)),
     function(i) cell_preview(x[i, , drop = FALSE]),
     character(1L)
   )
+}
+
+.jdv_display_matrix_rows <- function(x, rows, budget) {
+  shape <- dim(x)
+  # cell_preview() uses this same summary for a packed row above its traversal
+  # budget, so preserve that result without copying a potentially huge row.
+  if (shape[[2L]] > 100) {
+    return(rep(paste0("<matrix [1 x ", shape[[2L]], "]>"), length(rows)))
+  }
+  .jdv_budget_charge(
+    budget,
+    as.double(length(rows)) * (64 + shape[[2L]] * 16),
+    "packed_matrix_display"
+  )
+  vapply(rows, function(i) cell_preview(x[i, , drop = FALSE]), character(1L))
+}
+
+.jdv_display_data_frame_rows <- function(x, rows, budget) {
+  packed_cells <- .jdv_packed_cells(x)
+  row_cells <- if (nrow(x)) packed_cells / nrow(x) else 0
+  if (ncol(x) > 100) {
+    return(rep(paste0("<data.frame [1 x ", ncol(x), "]>"), length(rows)))
+  }
+  .jdv_budget_charge(
+    budget,
+    as.double(length(rows)) * (64 + 16 * row_cells + 8 * ncol(x)),
+    "packed_frame_display"
+  )
+  vapply(rows, function(i) cell_preview(x[i, , drop = FALSE]), character(1L))
 }
 #' @export
 col_display.data.frame <- function(x, ...) {
+  if (ncol(x) > 100) {
+    return(rep(paste0("<data.frame [1 x ", ncol(x), "]>"), nrow(x)))
+  }
   vapply(
     seq_len(nrow(x)),
     function(i) cell_preview(x[i, , drop = FALSE]),
@@ -210,8 +245,22 @@ col_display.data.frame <- function(x, ...) {
   )
 }
 #' @export
-col_is_na.matrix <- function(x, ...) {
+col_is_na.matrix <- function(x, budget = NULL, ...) {
+  .jdv_budget_charge(
+    budget,
+    as.double(nrow(x)) * ncol(x) * 5,
+    "packed_matrix_missingness"
+  )
   if (!ncol(x)) rep(FALSE, nrow(x)) else rowSums(is.na(x)) == ncol(x)
+}
+
+.jdv_is_na_matrix_rows <- function(x, rows, budget) {
+  cells <- as.double(length(rows)) * ncol(x)
+  .jdv_budget_charge(budget, cells * 16, "packed_matrix_missingness")
+  if (!length(rows) || !ncol(x)) {
+    return(rep(FALSE, length(rows)))
+  }
+  vapply(rows, function(i) all(is.na(x[i, , drop = TRUE])), logical(1L))
 }
 #' @export
 col_is_na.data.frame <- function(x, ...) {
@@ -236,6 +285,43 @@ col_is_na.data.frame <- function(x, ...) {
     stop("Invalid packed column missingness.", call. = FALSE)
   }
   Reduce(`&`, masks)
+}
+
+.jdv_is_na_data_frame_rows <- function(x, rows, budget) {
+  dimensions <- vapply(
+    x,
+    function(column) .jdv_packed_cells(column),
+    numeric(1L)
+  )
+  row_cells <- if (nrow(x)) sum(dimensions) / nrow(x) else 0
+  .jdv_budget_charge(
+    budget,
+    as.double(length(rows)) * (16 * row_cells + 8 * ncol(x)),
+    "packed_frame_missingness"
+  )
+  if (!ncol(x)) {
+    return(rep(FALSE, length(rows)))
+  }
+  masks <- lapply(x, function(column) {
+    if (is.matrix(column)) {
+      .jdv_is_na_matrix_rows(column, rows, budget = NULL)
+    } else if (is.data.frame(column)) {
+      .jdv_is_na_data_frame_rows(column, rows, budget = NULL)
+    } else {
+      col_is_na(query_slice(column, rows))
+    }
+  })
+  Reduce(`&`, masks)
+}
+
+.jdv_packed_cells <- function(x) {
+  if (is.matrix(x)) {
+    return(as.double(nrow(x)) * ncol(x))
+  }
+  if (is.data.frame(x)) {
+    return(sum(vapply(x, .jdv_packed_cells, numeric(1L))))
+  }
+  as.double(length(x))
 }
 
 # A cell has a shared traversal budget; summaries avoid formatting huge objects.
@@ -292,7 +378,9 @@ column_extract <- function(
   x,
   channels = c("display", "na", "values", "sortKey"),
   collation = "C",
-  schema = column_schema(x)
+  schema = column_schema(x),
+  budget = NULL,
+  rows = NULL
 ) {
   channels <- match.arg(
     channels,
@@ -300,10 +388,12 @@ column_extract <- function(
     several.ok = TRUE
   )
   collation <- match.arg(collation, c("C", "locale"))
-  n <- column_size(x)
+  n <- if (is.null(rows)) column_size(x) else length(rows)
   data <- list()
   errors <- list()
+  budget <- budget %||% .jdv_budget(.jdv_max_work_bytes())
   structural <- is.matrix(x) || is.data.frame(x) || schema$type == "list"
+  reserved <- .jdv_preflight_column(x, schema, channels, budget, n = n)
   plain <- function(value) {
     !is.object(value) && is.null(dim(value)) && length(value) == n
   }
@@ -311,10 +401,27 @@ column_extract <- function(
     tryCatch(
       {
         value <- fun()
-        if (!valid(value)) stop("Invalid channel result.", call. = FALSE)
+        if (!valid(value)) {
+          stop("Invalid channel result.", call. = FALSE)
+        }
+        reserved_bytes <- if (channel %in% names(reserved)) {
+          reserved[[channel]]
+        } else {
+          0
+        }
+        actual <- .jdv_generated_bytes(
+          value,
+          reserved_bytes + .jdv_budget_remaining(budget)
+        )
+        if (actual > reserved_bytes) {
+          .jdv_budget_charge(budget, actual - reserved_bytes, "channel")
+        }
         value
       },
       error = function(e) {
+        if (inherits(e, "jdv_query_error") && e$code == "limit_exceeded") {
+          stop(e)
+        }
         errors[[channel]] <<- conditionMessage(e)
         NULL
       }
@@ -323,9 +430,15 @@ column_extract <- function(
   for (channel in channels) {
     if (channel == "display") {
       display_fun <- if (is.matrix(x)) {
-        col_display.matrix
+        function(value) {
+          selected_rows <- if (is.null(rows)) seq_len(nrow(value)) else rows
+          .jdv_display_matrix_rows(value, selected_rows, budget)
+        }
       } else if (is.data.frame(x)) {
-        col_display.data.frame
+        function(value) {
+          selected_rows <- if (is.null(rows)) seq_len(nrow(value)) else rows
+          .jdv_display_data_frame_rows(value, selected_rows, budget)
+        }
       } else {
         col_display
       }
@@ -344,9 +457,15 @@ column_extract <- function(
       }
     } else if (channel == "na") {
       na_fun <- if (is.matrix(x)) {
-        col_is_na.matrix
+        function(value) {
+          selected_rows <- if (is.null(rows)) seq_len(nrow(value)) else rows
+          .jdv_is_na_matrix_rows(value, selected_rows, budget)
+        }
       } else if (is.data.frame(x)) {
-        col_is_na.data.frame
+        function(value) {
+          selected_rows <- if (is.null(rows)) seq_len(nrow(value)) else rows
+          .jdv_is_na_data_frame_rows(value, selected_rows, budget)
+        }
       } else {
         col_is_na
       }
@@ -391,7 +510,10 @@ column_extract <- function(
         schema$sortable <- FALSE
       } else if (
         schema$type == "other" &&
-          any(!is.na(value) & (!is.finite(value) | abs(value) > 2^53))
+          {
+            .jdv_budget_charge(budget, 24 * n, "dense_sort_key")
+            any(!is.na(value) & (!is.finite(value) | abs(value) > 2^53))
+          }
       ) {
         value <- dense_key(value)
       }

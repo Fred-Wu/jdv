@@ -38,5 +38,16 @@ so a later registration starts with a new ID and generation one. Re-register
 after changing values held by a reference object because the lightweight
 fingerprint does not detect value-only changes. Paged tables capture
 \code{getOption("jdv.max_page_rows", 2000)} at registration; changing the option
-takes effect after re-registering the table.
+takes effect after re-registering the table. The defaults are 64 MiB for
+\code{jdv.max_work_bytes}, 32 MiB for \code{jdv.max_cache_bytes}, and 10 MiB for
+\code{jdv.snapshot_max_bytes}; \code{jdv.max_query_rows} defaults to 1,000,000 for sort
+and filter operations. Auto mode also uses \code{jdv.snapshot_max_cells} (default
+10,000) and caps the snapshot byte estimate by \code{jdv.max_message_bytes}; if
+Snapshot-only row-name metadata or snapshot construction exceeds its budget,
+Auto retries registration as Paged. Page, work, cache, and query-row settings
+are captured when a table is registered.
+Cache and operation work allowances are separate; these estimates do not
+bound total process memory, source storage, arbitrary user method
+allocations, R allocator and GC overhead, or transient R-internal string
+conversion and sorting scratch.
 }

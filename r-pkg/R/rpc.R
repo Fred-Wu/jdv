@@ -25,9 +25,7 @@ jdv_json_object <- function(x = list()) {
   structure(x, class = "jdv_json_object")
 }
 
-.jdv_json_values <- function(x) {
-  structure(as.list(unname(x)), class = "jdv_json_array")
-}
+.jdv_json_values <- function(x) structure(unname(x), class = "jdv_json_array")
 
 .jdv_option_limit <- function(name, default, minimum = 1) {
   value <- getOption(name, default)
@@ -54,15 +52,56 @@ jdv_json_object <- function(x = list()) {
   .jdv_option_limit("jdv.max_request_bytes", 1024^2, 128)
 }
 
-.jdv_json_encode <- function(x, limit = .jdv_max_message_bytes()) {
+.jdv_max_work_bytes <- function() {
+  .jdv_option_limit("jdv.max_work_bytes", 64 * 1024^2, 1024)
+}
+
+.jdv_snapshot_max_bytes <- function() {
+  .jdv_option_limit("jdv.snapshot_max_bytes", 10 * 1024^2, 1024)
+}
+
+.jdv_max_cache_bytes <- function() {
+  .jdv_option_limit("jdv.max_cache_bytes", 32 * 1024^2, 1024)
+}
+
+.jdv_max_query_rows <- function() {
+  .jdv_option_limit("jdv.max_query_rows", 1000000, 1)
+}
+
+.jdv_json_encode <- function(
+  x,
+  limit = .jdv_max_message_bytes(),
+  work_limit = .jdv_max_work_bytes()
+) {
   tryCatch(
-    .Call(C_jdv_json_encode, x, as.numeric(limit)),
+    .Call(C_jdv_json_encode, x, as.numeric(limit), as.numeric(work_limit)),
     error = function(e) {
       if (identical(conditionMessage(e), "jdv_json_output_limit")) {
-        query_error("limit_exceeded", "JSON message exceeds the byte limit.")
+        .jdv_budget_error(
+          "JSON message exceeds the configured output byte limit.",
+          "output",
+          auto_fallback = TRUE
+        )
+      }
+      if (identical(conditionMessage(e), "jdv_json_work_limit")) {
+        .jdv_budget_error(
+          "JSON construction exceeds the configured work byte budget.",
+          "native_work",
+          auto_fallback = TRUE
+        )
       }
       stop(e)
     }
+  )
+}
+
+.jdv_json_encode_error <- function(x) {
+  # Control responses have a separate, fixed allowance so the engine can
+  # report a work-budget failure even when the request exhausted that budget.
+  .jdv_json_encode(
+    x,
+    limit = max(1024, .jdv_max_message_bytes()),
+    work_limit = 64 * 1024
   )
 }
 
@@ -177,8 +216,14 @@ jdv_json_object <- function(x = list()) {
 }
 
 .jdv_open_content <- function(x, mode, collation, limits = list()) {
+  work_budget <- .jdv_budget(.jdv_max_work_bytes(), auto_fallback = TRUE)
   if (mode == "snapshot") {
-    snapshot <- snapshot_table(x, collation = collation, limits = limits)
+    snapshot <- snapshot_table(
+      x,
+      collation = collation,
+      limits = limits,
+      budget = work_budget
+    )
     row_names <- .jdv_explicit_row_names(x)
     return(list(
       mode = mode,
@@ -198,10 +243,16 @@ jdv_json_object <- function(x = list()) {
         },
         columns = lapply(snapshot$columns, .jdv_json_column, snapshot = TRUE)
       ),
+      work_used = work_budget$used,
       collation = collation
     ))
   }
-  holder <- paged_table(x, collation = collation, limits = limits)
+  holder <- paged_table(
+    x,
+    collation = collation,
+    limits = limits,
+    budget = work_budget
+  )
   list(
     mode = mode,
     source = x,
@@ -212,6 +263,7 @@ jdv_json_object <- function(x = list()) {
     schema = holder$schema,
     row_names = NULL,
     data = NULL,
+    work_used = work_budget$used,
     collation = collation
   )
 }
@@ -338,7 +390,17 @@ jdv_json_object <- function(x = list()) {
 #' after changing values held by a reference object because the lightweight
 #' fingerprint does not detect value-only changes. Paged tables capture
 #' `getOption("jdv.max_page_rows", 2000)` at registration; changing the option
-#' takes effect after re-registering the table.
+#' takes effect after re-registering the table. The defaults are 64 MiB for
+#' `jdv.max_work_bytes`, 32 MiB for `jdv.max_cache_bytes`, and 10 MiB for
+#' `jdv.snapshot_max_bytes`; `jdv.max_query_rows` defaults to 1,000,000 for sort
+#' and filter operations. Auto mode also uses `jdv.snapshot_max_cells` (default
+#' 10,000) and caps the snapshot byte estimate by `jdv.max_message_bytes`; if
+#' Snapshot-only row-name metadata or snapshot construction exceeds its budget,
+#' Auto retries registration as Paged. Page, work, cache, and query-row settings
+#' are captured when a table is registered. Cache and operation work allowances
+#' are separate; these estimates do not bound total process memory, source
+#' storage, arbitrary user method allocations, R allocator and GC overhead, or
+#' transient R-internal string conversion and sorting scratch.
 #' @return
 #' A list containing a table `id`, its `open` JSON message, and any pending
 #' transport notifications as JSON strings in `notifications` (for example, a
@@ -362,13 +424,46 @@ jdv_register <- function(
     query_error("invalid_request", "Expected a data frame or matrix.")
   }
   max_tables <- .jdv_option_limit("jdv.max_tables", 64)
-  limits <- list(page_rows = .jdv_option_limit("jdv.max_page_rows", 2000))
+  limits <- list(
+    page_rows = .jdv_option_limit("jdv.max_page_rows", 2000),
+    work_bytes = .jdv_max_work_bytes(),
+    cache_bytes = .jdv_max_cache_bytes(),
+    query_rows = .jdv_max_query_rows()
+  )
   max_message <- .jdv_max_message_bytes()
+  .jdv_metadata_budget(x, min(max_message, limits$work_bytes), snapshot = FALSE)
   actual_mode <- mode
   if (mode == "auto") {
     cells <- as.double(nrow(x)) * max(1, as.double(ncol(x)))
     snapshot_cells <- .jdv_option_limit("jdv.snapshot_max_cells", 10000, 0)
-    actual_mode <- if (cells <= snapshot_cells) "snapshot" else "paged"
+    estimate_limit <- min(max_message, .jdv_snapshot_max_bytes())
+    estimate <- if (cells <= snapshot_cells) {
+      .jdv_estimate_snapshot_bytes(x, cells, estimate_limit)
+    } else {
+      estimate_limit + 1
+    }
+    actual_mode <- if (cells <= snapshot_cells && estimate <= estimate_limit) {
+      "snapshot"
+    } else {
+      "paged"
+    }
+  }
+  if (actual_mode == "snapshot") {
+    tryCatch(
+      .jdv_metadata_budget(
+        x,
+        min(max_message, limits$work_bytes),
+        snapshot = TRUE,
+        auto_fallback_row_names = mode == "auto"
+      ),
+      error = function(e) {
+        if (mode == "auto" && isTRUE(e$details$auto_fallback)) {
+          actual_mode <<- "paged"
+        } else {
+          stop(e)
+        }
+      }
+    )
   }
   if (actual_mode == "snapshot" && 2 * as.double(nrow(x)) + 1 > max_message) {
     query_error(
@@ -382,11 +477,8 @@ jdv_register <- function(
       if (
         mode == "auto" &&
           actual_mode == "snapshot" &&
-          grepl(
-            "output limit|message exceeds",
-            conditionMessage(e),
-            ignore.case = TRUE
-          )
+          inherits(e, "jdv_query_error") &&
+          isTRUE(e$details$auto_fallback)
       ) {
         actual_mode <<- "paged"
         .jdv_open_content(x, actual_mode, collation, limits)
@@ -420,7 +512,11 @@ jdv_register <- function(
   generation <- if (is.null(previous)) 1 else previous$generation + 1
   descriptor <- .jdv_descriptor(content, id, generation, title)
   open <- tryCatch(
-    .jdv_json_encode(descriptor, max_message),
+    .jdv_json_encode(
+      descriptor,
+      max_message,
+      max(1, limits$work_bytes - content$work_used)
+    ),
     error = function(e) {
       if (
         mode == "auto" &&
@@ -452,7 +548,11 @@ jdv_register <- function(
         }
         generation <<- if (is.null(previous)) 1 else previous$generation + 1
         descriptor <<- .jdv_descriptor(content, id, generation, title)
-        .jdv_json_encode(descriptor, max_message)
+        .jdv_json_encode(
+          descriptor,
+          max_message,
+          max(1, limits$work_bytes - content$work_used)
+        )
       } else {
         stop(e)
       }
@@ -683,9 +783,19 @@ jdv_register <- function(
     cols <- params$cols
     offset <- if (is.null(params$offset)) 0 else params$offset
     limit <- if (is.null(params$limit)) 200 else params$limit
-    result <- query_page(entry$holder, offset, limit, sort, filter, cols)
+    budget <- .jdv_budget(entry$holder$limits$work_bytes)
+    result <- query_page(
+      entry$holder,
+      offset,
+      limit,
+      sort,
+      filter,
+      cols,
+      budget
+    )
+    work_used <- budget$used
     result$data$columns <- lapply(result$data$columns, .jdv_page_column)
-    return(list(
+    output <- list(
       table = entry$id,
       generation = entry$generation,
       total = result$total,
@@ -696,7 +806,9 @@ jdv_register <- function(
         row_index <- .jdv_json_values(row_index)
         if (!is.null(row_names)) row_names <- .jdv_json_values(row_names)
       })
-    ))
+    )
+    attr(output, "jdv_work_budget") <- budget
+    return(output)
   }
   query_error("method_not_found", "Unknown RPC method.")
 }
@@ -724,7 +836,7 @@ jdv_register <- function(
 .jdv_trim_page <- function(page, limit) {
   count <- min(as.integer(limit), length(page$data$row_index))
   take <- function(x) {
-    if (is.null(x) || !json_is_array(x)) {
+    if (is.null(x) || !(json_is_array(x) || inherits(x, "jdv_json_array"))) {
       return(x)
     }
     structure(x[seq_len(count)], class = class(x))
@@ -755,17 +867,17 @@ jdv_register <- function(
 jdv_rpc <- function(request) {
   parsed <- tryCatch(.jdv_json_parse(request), error = function(e) e)
   if (inherits(parsed, "error")) {
-    return(.jdv_json_encode(.jdv_response(NULL, error = parsed)))
+    return(.jdv_json_encode_error(.jdv_response(NULL, error = parsed)))
   }
   request_id <- NULL
   if (is.list(parsed) && "id" %in% names(parsed)) {
     request_id <- tryCatch(.jdv_request_id(parsed$id), error = function(e) e)
     if (inherits(request_id, "error")) {
-      return(.jdv_json_encode(.jdv_response(NULL, error = request_id)))
+      return(.jdv_json_encode_error(.jdv_response(NULL, error = request_id)))
     }
   }
   if (.jdv_state$rpc_depth > 0L) {
-    return(.jdv_json_encode(.jdv_response(
+    return(.jdv_json_encode_error(.jdv_response(
       request_id,
       error = structure(
         list(
@@ -808,6 +920,10 @@ jdv_rpc <- function(request) {
   if (is.null(request_id)) {
     return(NULL)
   }
+  work_budget <- if (is.list(result)) attr(result, "jdv_work_budget") else NULL
+  if (is.list(result)) {
+    attr(result, "jdv_work_budget") <- NULL
+  }
   response <- if (inherits(result, "error")) {
     if (!inherits(result, "jdv_query_error")) {
       code <- if (!is.null(result$code)) result$code else "r_error"
@@ -830,7 +946,17 @@ jdv_rpc <- function(request) {
     ))
   }
   encode_response <- function(value) {
-    tryCatch(.jdv_json_encode(value), error = function(e) e)
+    tryCatch(
+      .jdv_json_encode(
+        value,
+        work_limit = if (is.environment(work_budget)) {
+          .jdv_budget_remaining(work_budget)
+        } else {
+          .jdv_max_work_bytes()
+        }
+      ),
+      error = function(e) e
+    )
   }
   encoded <- encode_response(response)
   if (
@@ -897,5 +1023,5 @@ jdv_rpc <- function(request) {
       class = c("jdv_rpc_error", "error", "condition")
     )
   )
-  .jdv_json_encode(fallback, limit = max(1024, .jdv_max_message_bytes()))
+  .jdv_json_encode_error(fallback)
 }

@@ -48,7 +48,10 @@ query_limits <- function(limits = list()) {
     filter_bytes = 65536L,
     column_cache = 32L,
     channel_cache = 32L,
-    index_cache = 8L
+    index_cache = 8L,
+    work_bytes = .jdv_max_work_bytes(),
+    cache_bytes = .jdv_max_cache_bytes(),
+    query_rows = .jdv_max_query_rows()
   )
   if (
     !is.list(limits) ||
@@ -115,8 +118,9 @@ query_slice <- function(x, rows) {
   out
 }
 
-query_probe <- function(holder) {
+query_probe <- function(holder, budget = NULL) {
   x <- holder$source
+  budget <- budget %||% .jdv_budget(holder$limits$work_bytes)
   rows <- seq_len(min(holder$nrow, holder$limits$probe_rows))
   n <- holder$ncol
   column_names <- colnames(x)
@@ -126,36 +130,44 @@ query_probe <- function(holder) {
   channels <- c("display", "na", "values", "sortKey")
   shared <- if (is.matrix(x) && n) {
     query_try(function() {
-      column_extract(x[rows, 1L], channels, holder$collation)
+      column_extract(x[rows, 1L], channels, holder$collation, budget = budget)
     })
   } else {
     NULL
   }
+  probe_peak <- budget$used
   probes <- lapply(seq_len(n), function(i) {
+    budget$used <- 0
     result <- if (is.matrix(x)) {
       shared
     } else {
       column <- x[[i]]
       schema <- column_schema(column)
+      packed <- is.matrix(column) || is.data.frame(column)
       query_try(function() {
         column_extract(
-          query_slice(column, rows),
+          if (packed) column else query_slice(column, rows),
           channels,
           holder$collation,
-          schema
+          schema,
+          budget,
+          rows = if (packed) rows else NULL
         )
       })
     }
+    probe_peak <- max(probe_peak, budget$used)
     result$schema$name <- column_names[[i]]
     result$schema$position <- i - 1L
-    result
+    list(schema = result$schema, errors = result$errors)
   })
   holder$schema <- lapply(probes, `[[`, "schema")
   holder$probe_errors <- lapply(probes, `[[`, "errors")
+  budget$used <- probe_peak
+  holder$probe_work_used <- probe_peak
   invisible(holder)
 }
 
-paged_table <- function(x, collation = "C", limits = list()) {
+paged_table <- function(x, collation = "C", limits = list(), budget = NULL) {
   if (!is.data.frame(x) && !is.matrix(x)) {
     query_error("invalid_request", "Expected a data frame or matrix.")
   }
@@ -185,7 +197,8 @@ paged_table <- function(x, collation = "C", limits = list()) {
     !is.null(rownames(x))
   }
   query_clear(holder)
-  query_probe(holder)
+  budget <- budget %||% .jdv_budget(limits$work_bytes)
+  query_probe(holder, budget)
   holder
 }
 
@@ -194,6 +207,9 @@ query_clear <- function(holder) {
   holder$column_cache <- list()
   holder$channel_cache <- list()
   holder$index_cache <- list()
+  holder$cache_order <- character()
+  holder$cache_sizes <- numeric()
+  holder$cache_bytes <- 0
   invisible(holder)
 }
 
@@ -210,6 +226,52 @@ query_dispose <- function(holder) {
   invisible(NULL)
 }
 
+.jdv_cache_token <- function(name, key) paste(name, key, sep = "\034")
+
+.jdv_cache_estimate <- function(value, cap, depth = 0L) {
+  if (depth > 8L) {
+    return(cap + 1)
+  }
+  if (is.character(value)) {
+    return(128 + length(value) * 8 + .jdv_string_bytes(value, cap))
+  }
+  if (is.list(value)) {
+    bytes <- 128 + length(value) * 8
+    if (!is.null(names(value))) {
+      bytes <- bytes + .jdv_string_bytes(names(value), cap - bytes)
+    }
+    for (item in value) {
+      bytes <- bytes + .jdv_cache_estimate(item, cap - bytes, depth + 1L)
+      if (bytes > cap) return(cap + 1)
+    }
+    return(bytes)
+  }
+  per_element <- switch(
+    typeof(value),
+    logical = 4,
+    integer = 4,
+    double = 8,
+    raw = 1,
+    16
+  )
+  128 + as.double(length(value)) * per_element
+}
+
+.jdv_cache_evict <- function(holder, token) {
+  split <- strsplit(token, "\034", fixed = TRUE)[[1L]]
+  name <- split[[1L]]
+  key <- substring(token, nchar(name, type = "bytes") + 2L)
+  cache <- holder[[name]]
+  cache[key] <- NULL
+  holder[[name]] <- cache
+  if (token %in% names(holder$cache_sizes)) {
+    holder$cache_bytes <- holder$cache_bytes - holder$cache_sizes[[token]]
+  }
+  holder$cache_sizes <- holder$cache_sizes[names(holder$cache_sizes) != token]
+  holder$cache_order <- holder$cache_order[holder$cache_order != token]
+  invisible(NULL)
+}
+
 query_cache_get <- function(holder, name, key) {
   cache <- holder[[name]]
   at <- match(key, names(cache))
@@ -218,18 +280,45 @@ query_cache_get <- function(holder, name, key) {
   }
   value <- cache[[at]]
   holder[[name]] <- c(cache[-at], cache[at])
+  token <- .jdv_cache_token(name, key)
+  holder$cache_order <- c(
+    holder$cache_order[holder$cache_order != token],
+    token
+  )
   value
 }
 
 query_cache_set <- function(holder, name, key, value) {
+  token <- .jdv_cache_token(name, key)
+  key_bytes <- nchar(key, type = "bytes") + 64
+  bytes <- if (name == "column_cache" && !is.matrix(holder$source)) {
+    key_bytes
+  } else {
+    key_bytes + .jdv_cache_estimate(value, holder$limits$cache_bytes)
+  }
+  if (bytes > holder$limits$cache_bytes) {
+    return(value)
+  }
   cache <- holder[[name]]
-  cache[key] <- NULL
+  if (key %in% names(cache)) {
+    .jdv_cache_evict(holder, token)
+  }
+  cache <- holder[[name]]
   cache[key] <- list(value)
   capacity <- holder$limits[[name]]
-  if (length(cache) > capacity) {
-    cache <- utils::tail(cache, capacity)
-  }
   holder[[name]] <- cache
+  holder$cache_sizes[token] <- bytes
+  holder$cache_bytes <- holder$cache_bytes + bytes
+  holder$cache_order <- c(holder$cache_order, token)
+  while (length(holder[[name]]) > capacity) {
+    oldest <- holder$cache_order[
+      startsWith(holder$cache_order, paste0(name, "\034"))
+    ][[1L]]
+    .jdv_cache_evict(holder, oldest)
+  }
+  while (holder$cache_bytes > holder$limits$cache_bytes) {
+    .jdv_cache_evict(holder, holder$cache_order[[1L]])
+  }
   value
 }
 
@@ -241,11 +330,14 @@ query_col <- function(table, col) {
   as.integer(col) + 1L
 }
 
-query_column <- function(holder, j) {
+query_column <- function(holder, j, budget = NULL) {
   key <- as.character(j)
   cached <- query_cache_get(holder, "column_cache", key)
   if (!is.null(cached)) {
     return(cached)
+  }
+  if (is.matrix(holder$source)) {
+    .jdv_budget_charge(budget, as.double(holder$nrow) * 16, "matrix_column")
   }
   column <- query_try(function() {
     if (is.matrix(holder$source)) holder$source[, j] else holder$source[[j]]
@@ -259,15 +351,21 @@ query_column <- function(holder, j) {
   query_cache_set(holder, "column_cache", key, column)
 }
 
-query_channel <- function(holder, j, channel) {
+query_channel <- function(holder, j, channel, budget = NULL) {
   key <- paste(j, channel, sep = ":")
   cached <- query_cache_get(holder, "channel_cache", key)
   if (!is.null(cached)) {
     return(cached)
   }
-  column <- query_column(holder, j)
+  column <- query_column(holder, j, budget)
   result <- query_try(function() {
-    column_extract(column, channel, holder$collation, holder$schema[[j]])
+    column_extract(
+      column,
+      channel,
+      holder$collation,
+      holder$schema[[j]],
+      budget
+    )
   })
   if (is.null(result$data[[channel]])) {
     messages <- unlist(result$errors, use.names = FALSE)
@@ -316,13 +414,46 @@ query_sort <- function(table, sort) {
   result
 }
 
-query_indices <- function(holder, sort = list(), filter = NULL) {
+.jdv_filter_nodes <- function(node) {
+  if (is.null(node)) {
+    return(0L)
+  }
+  if (node$op %in% c("and", "or")) {
+    return(1L + sum(vapply(node$args, .jdv_filter_nodes, integer(1L))))
+  }
+  if (identical(node$op, "not")) {
+    return(1L + .jdv_filter_nodes(node$arg))
+  }
+  1L
+}
+
+query_indices <- function(holder, sort = list(), filter = NULL, budget = NULL) {
   query_alive(holder)
   sort <- query_sort(holder, sort)
   filter <- query_filter_validate(holder, filter)
+  budget <- budget %||% .jdv_budget(holder$limits$work_bytes)
   if (!length(sort) && is.null(filter)) {
+    # seq_len() is ALTREP on supported R versions and does not materialize a
+    # full row index for an unfiltered table.
     return(seq_len(holder$nrow))
   }
+  if (
+    holder$nrow > holder$limits$query_rows ||
+      as.double(holder$nrow) *
+        (16 + 24 * length(sort) + 6 * .jdv_filter_nodes(filter)) >
+        .jdv_budget_remaining(budget)
+  ) {
+    query_error(
+      "limit_exceeded",
+      "Sort and filter work exceeds the configured row or byte limit."
+    )
+  }
+  .jdv_budget_charge(
+    budget,
+    as.double(holder$nrow) *
+      (16 + 24 * length(sort) + 6 * .jdv_filter_nodes(filter)),
+    "query_index"
+  )
   key <- paste(
     as.character(serialize(list(sort, filter), NULL, version = 2L)),
     collapse = ""
@@ -334,20 +465,20 @@ query_indices <- function(holder, sort = list(), filter = NULL) {
   rows <- if (is.null(filter)) {
     seq_len(holder$nrow)
   } else {
-    which(query_try(function() query_filter_eval(holder, filter)))
+    which(query_try(function() query_filter_eval(holder, filter, budget)))
   }
   if (length(sort)) {
     keys <- lapply(sort, function(item) {
       j <- item$col + 1L
-      column <- query_column(holder, j)
+      column <- query_column(holder, j, budget)
       key <- if (
         holder$collation == "C" && !is.object(column) && is.character(column)
       ) {
         column[rows]
       } else {
-        query_channel(holder, j, "sortKey")$sortKey[rows]
+        query_channel(holder, j, "sortKey", budget)$sortKey[rows]
       }
-      missing <- query_channel(holder, j, "na")$na[rows]
+      missing <- query_channel(holder, j, "na", budget)$na[rows]
       key[missing] <- NA
       key
     })
@@ -376,7 +507,8 @@ query_page <- function(
   limit = 200L,
   sort = list(),
   filter = NULL,
-  cols = NULL
+  cols = NULL,
+  budget = NULL
 ) {
   query_alive(holder)
   offset <- query_integer(offset, "offset")
@@ -402,12 +534,25 @@ query_page <- function(
   if (length(js) > holder$limits$page_columns) {
     query_error("limit_exceeded", "Too many page columns.")
   }
-  indices <- query_indices(holder, sort, filter)
-  total <- length(indices)
-  count <- min(limit, max(0, total - offset))
-  rows <- indices[offset + seq_len(count)]
+  budget <- budget %||% .jdv_budget(holder$limits$work_bytes)
+  has_query <- length(sort) > 0L || !is.null(filter)
+  if (has_query) {
+    indices <- query_indices(holder, sort, filter, budget)
+    total <- length(indices)
+    count <- min(limit, max(0, total - offset))
+    rows <- if (count) indices[offset + seq_len(count)] else integer()
+  } else {
+    total <- holder$nrow
+    count <- min(limit, max(0, total - offset))
+    rows <- if (count) seq.int(offset + 1, length.out = count) else integer()
+  }
+  .jdv_budget_charge(budget, 8 * length(rows), "page_rows")
   columns <- lapply(js, function(j) {
-    column <- if (is.matrix(holder$source)) {
+    packed_column <- is.data.frame(holder$source) &&
+      (is.matrix(holder$source[[j]]) || is.data.frame(holder$source[[j]]))
+    column <- if (packed_column) {
+      holder$source[[j]]
+    } else if (is.matrix(holder$source)) {
       query_try(function() holder$source[rows, j])
     } else {
       query_slice(holder$source[[j]], rows)
@@ -417,11 +562,14 @@ query_page <- function(
         column,
         c("display", "na", "values"),
         holder$collation,
-        holder$schema[[j]]
+        holder$schema[[j]],
+        budget,
+        rows = if (packed_column) rows else NULL
       )
     })
   })
   row_names <- if (holder$explicit_row_names) {
+    .jdv_budget_charge(budget, 8 * length(rows), "row_names")
     if (is.matrix(holder$source)) {
       rownames(holder$source)[rows]
     } else {
@@ -430,11 +578,13 @@ query_page <- function(
   } else {
     NULL
   }
-  list(
+  result <- list(
     total = total,
     total_unfiltered = holder$nrow,
     offset = offset,
     limit = limit,
     data = list(row_index = rows, row_names = row_names, columns = columns)
   )
+  attr(result, "jdv_work_budget") <- budget
+  result
 }

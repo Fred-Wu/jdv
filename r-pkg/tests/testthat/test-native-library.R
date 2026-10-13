@@ -13,6 +13,12 @@ test_that("the native library registers only its private routines", {
       "C_jdv_json_encode"
     )
   )
+  expect_identical(
+    getDLLRegisteredRoutines(dll)[[".Call"]][["C_jdv_json_encode"]][[
+      "numParameters"
+    ]],
+    3L
+  )
   expect_error(.Call("C_jdv_int64_values", int64_fixture("1"), PACKAGE = "jdv"))
   expect_error(getNativeSymbolInfo("cJSON_Version", PACKAGE = "jdv"))
 })

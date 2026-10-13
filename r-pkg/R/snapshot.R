@@ -1,6 +1,6 @@
 # A reference consumer of materialized channels, independent of Paged order and
 # filter evaluation. It deliberately uses scalar comparison and a merge sort.
-snapshot_table <- function(x, collation = "C", limits = list()) {
+snapshot_table <- function(x, collation = "C", limits = list(), budget = NULL) {
   limits <- query_limits(limits)
   if (!is.data.frame(x) && !is.matrix(x)) {
     query_error("invalid_request", "Expected a data frame or matrix.")
@@ -11,6 +11,21 @@ snapshot_table <- function(x, collation = "C", limits = list()) {
   if (!identical(collation, "C") && !identical(collation, "locale")) {
     query_error("invalid_request", "Invalid collation.")
   }
+  budget <- budget %||% .jdv_budget(.jdv_max_work_bytes())
+  .jdv_metadata_budget(
+    x,
+    min(.jdv_max_message_bytes(), budget$limit),
+    snapshot = TRUE
+  )
+  .jdv_snapshot_raw_preflight(x, budget)
+  # table_model extracts matrix columns. Charge before those copies occur.
+  if (is.matrix(x)) {
+    .jdv_budget_charge(
+      budget,
+      as.double(nrow(x)) * ncol(x) * 16,
+      "matrix_snapshot_columns"
+    )
+  }
   model <- query_try(function() table_model(x), "invalid_request")
   columns <- lapply(
     seq_along(model$columns),
@@ -19,7 +34,8 @@ snapshot_table <- function(x, collation = "C", limits = list()) {
         model$columns[[j]],
         c("display", "na", "values", "sortKey", "text"),
         collation,
-        model$schema[[j]]
+        model$schema[[j]],
+        budget
       )
     }
   )

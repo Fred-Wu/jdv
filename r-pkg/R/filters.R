@@ -31,6 +31,9 @@ query_string <- function(value, limit) {
   ) {
     query_error("invalid_request", "Expected one nonmissing string.")
   }
+  if (nchar(value, type = "bytes") > limit) {
+    query_error("limit_exceeded", "Query string is too long.")
+  }
   value <- enc2utf8(unname(value))
   if (nchar(value, type = "bytes") > limit) {
     query_error("limit_exceeded", "Query string is too long.")
@@ -300,9 +303,9 @@ query_fold <- function(x) {
   )
 }
 
-query_number_data <- function(holder, j) {
+query_number_data <- function(holder, j, budget = NULL) {
   schema <- holder$schema[[j]]
-  data <- query_channel(holder, j, "values")
+  data <- query_channel(holder, j, "values", budget)
   values <- data$values
   if (schema$type == "number" && !is.null(data$special)) {
     values[which(data$special == "pos_inf")] <- Inf
@@ -315,27 +318,33 @@ query_number_data <- function(holder, j) {
   values
 }
 
-query_filter_eval <- function(holder, node) {
+query_filter_eval <- function(holder, node, budget = NULL) {
   op <- node$op
   if (op %in% c("and", "or")) {
     result <- rep(op == "and", holder$nrow)
     for (arg in node$args) {
-      value <- query_filter_eval(holder, arg)
+      value <- query_filter_eval(holder, arg, budget)
       result <- if (op == "and") result & value else result | value
     }
     return(result)
   }
   if (op == "not") {
-    return(!query_filter_eval(holder, node$arg))
+    return(!query_filter_eval(holder, node$arg, budget))
   }
   j <- node$col + 1L
-  missing <- query_channel(holder, j, "na")$na
+  missing <- query_channel(holder, j, "na", budget)$na
   if (op == "is_na") {
     return(missing)
   }
   type <- holder$schema[[j]]$type
   if (op %in% c("contains", "starts_with", "ends_with", "text_equals")) {
-    text <- query_fold(query_channel(holder, j, "text")$text)
+    text_data <- query_channel(holder, j, "text", budget)$text
+    .jdv_budget_charge(
+      budget,
+      .jdv_generated_bytes(text_data, .jdv_budget_remaining(budget)),
+      "filter_text_fold"
+    )
+    text <- query_fold(text_data)
     value <- query_fold(node$value)
     result <- switch(
       op,
@@ -345,7 +354,7 @@ query_filter_eval <- function(holder, node) {
       text_equals = text == value
     )
   } else if (op %in% c("is_true", "is_false", "in")) {
-    values <- query_channel(holder, j, "values")$values
+    values <- query_channel(holder, j, "values", budget)$values
     result <- switch(
       op,
       is_true = values == TRUE,
@@ -353,14 +362,14 @@ query_filter_eval <- function(holder, node) {
       "in" = values %in% node$values
     )
   } else if (type == "int64") {
-    column <- query_column(holder, j)
+    column <- query_column(holder, j, budget)
     result <- if (op == "eq") {
       int64_eq(column, node$value)
     } else {
       int64_between(column, node$lower, node$upper)
     }
   } else {
-    values <- query_number_data(holder, j)
+    values <- query_number_data(holder, j, budget)
     result <- switch(
       op,
       eq = values == node$value,

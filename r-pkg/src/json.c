@@ -3,6 +3,7 @@
 #include <R_ext/Arith.h>
 #include <R_ext/Utils.h>
 #include <ctype.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,8 +20,12 @@ typedef struct {
     size_t size;
     size_t capacity;
     size_t limit;
+    size_t work_limit;
+    size_t work_used;
+    size_t tree_charge;
     cJSON *tree;
     char *printed;
+    size_t printed_capacity;
     int streamed_columns;
 } output_state;
 
@@ -37,6 +42,8 @@ static void parse_cleanup(void *data, Rboolean jump)
     state->tree = NULL;
 }
 
+static void work_charge(output_state *state, size_t amount);
+
 static void output_cleanup(void *data, Rboolean jump)
 {
     output_state *state = (output_state *)data;
@@ -45,7 +52,7 @@ static void output_cleanup(void *data, Rboolean jump)
     state->data = NULL;
     cJSON_Delete(state->tree);
     state->tree = NULL;
-    cJSON_free(state->printed);
+    free(state->printed);
     state->printed = NULL;
 }
 
@@ -437,16 +444,21 @@ SEXP C_jdv_json_parse(SEXP input, SEXP max_bytes)
 
 static void append_bytes(output_state *state, const char *data, size_t n)
 {
-    size_t needed = state->size + n;
-    if (needed > state->limit) Rf_error("jdv_json_output_limit");
+    size_t needed;
+    if (n > state->limit - state->size) Rf_error("jdv_json_output_limit");
+    needed = state->size + n;
     if (needed > state->capacity) {
         size_t capacity = state->capacity ? state->capacity : 256;
+        size_t old_charge = state->capacity + (state->data ? 1 : 0);
         while (capacity < needed) {
             if (capacity > state->limit / 2) { capacity = state->limit; break; }
             capacity *= 2;
         }
+        if (capacity > SIZE_MAX - 1) Rf_error("jdv_json_work_limit");
+        work_charge(state, capacity + 1);
         char *next = (char *)realloc(state->data, capacity + 1);
         if (!next) Rf_error("Unable to allocate JSON output.");
+        state->work_used -= old_charge;
         state->data = next;
         state->capacity = capacity;
     }
@@ -460,6 +472,38 @@ static void append_char(output_state *state, char value)
     append_bytes(state, &value, 1);
 }
 
+static void work_charge(output_state *state, size_t amount)
+{
+    if (amount > state->work_limit - state->work_used)
+        Rf_error("jdv_json_work_limit");
+    state->work_used += amount;
+}
+
+static void tree_charge(output_state *state, size_t amount)
+{
+    work_charge(state, amount);
+    state->tree_charge += amount;
+}
+
+static size_t checked_multiply(size_t value, size_t factor)
+{
+    if (factor != 0 && value > SIZE_MAX / factor)
+        Rf_error("jdv_json_work_limit");
+    return value * factor;
+}
+
+static size_t translated_string_charge(output_state *state, SEXP charsxp)
+{
+    size_t input_size = (size_t)LENGTH(charsxp);
+    size_t charge = checked_multiply(input_size, 8);
+    /* UTF-8 translation may coexist with the cJSON-owned copy. Four bytes per
+     * input byte conservatively covers expansion; count both at peak. R's own
+     * transient conversion scratch is outside this native work budget. */
+    if (charge > SIZE_MAX - sizeof(cJSON) - 2)
+        Rf_error("jdv_json_work_limit");
+    return charge + sizeof(cJSON) + 2;
+}
+
 static int is_object(SEXP value)
 {
     SEXP names = Rf_getAttrib(value, R_NamesSymbol);
@@ -468,7 +512,7 @@ static int is_object(SEXP value)
     return 0;
 }
 
-static cJSON *create_atomic(SEXP value, R_xlen_t i)
+static cJSON *create_atomic(output_state *state, SEXP value, R_xlen_t i)
 {
     switch (TYPEOF(value)) {
     case LGLSXP:
@@ -483,7 +527,9 @@ static cJSON *create_atomic(SEXP value, R_xlen_t i)
     case STRSXP:
         if (STRING_ELT(value, i) == NA_STRING) return cJSON_CreateNull();
         {
-            const char *text = Rf_translateCharUTF8(STRING_ELT(value, i));
+            SEXP charsxp = STRING_ELT(value, i);
+            tree_charge(state, translated_string_charge(state, charsxp));
+            const char *text = Rf_translateCharUTF8(charsxp);
             if (!valid_utf8_cstr(text)) Rf_error("Invalid UTF-8 in JSON output.");
             return cJSON_CreateString(text);
         }
@@ -493,13 +539,15 @@ static cJSON *create_atomic(SEXP value, R_xlen_t i)
     return NULL;
 }
 
-static cJSON *new_container(SEXP value)
+static cJSON *new_container(output_state *state, SEXP value)
 {
+    tree_charge(state, sizeof(cJSON));
     return is_object(value) ? cJSON_CreateObject() : cJSON_CreateArray();
 }
 
-static void add_child(cJSON *parent, cJSON *child, const char *key)
+static void add_child(output_state *state, cJSON *parent, cJSON *child, const char *key)
 {
+    (void)state;
     if (!child) Rf_error("Unable to allocate JSON tree.");
     cJSON_bool ok = key ? cJSON_AddItemToObject(parent, key, child) : cJSON_AddItemToArray(parent, child);
     if (!ok) {
@@ -520,8 +568,11 @@ static void fill_container(output_state *state, cJSON *node, SEXP value, int dep
         if (object) {
             if (names == R_NilValue || STRING_ELT(names, i) == NA_STRING)
                 Rf_error("JSON object names must be nonmissing strings.");
-            key = Rf_translateCharUTF8(STRING_ELT(names, i));
+            SEXP charsxp = STRING_ELT(names, i);
+            tree_charge(state, checked_multiply((size_t)LENGTH(charsxp), 4));
+            key = Rf_translateCharUTF8(charsxp);
             if (!valid_utf8_cstr(key)) Rf_error("Invalid UTF-8 in JSON object name.");
+            tree_charge(state, strlen(key) + 1);
         }
         build_into(state, node, VECTOR_ELT(value, i), key, depth + 1);
     }
@@ -531,16 +582,16 @@ static void build_into(output_state *state, cJSON *parent, SEXP value, const cha
 {
     cJSON *node;
     R_xlen_t n;
-    (void)state;
     if (depth > 128) Rf_error("JSON output nesting exceeds the supported depth.");
     if (value == R_NilValue) {
-        add_child(parent, cJSON_CreateNull(), key);
+        tree_charge(state, sizeof(cJSON));
+        add_child(state, parent, cJSON_CreateNull(), key);
         return;
     }
     if (TYPEOF(value) == VECSXP) {
-        node = new_container(value);
+        node = new_container(state, value);
         if (!node) Rf_error("Unable to allocate JSON tree.");
-        add_child(parent, node, key);
+        add_child(state, parent, node, key);
         fill_container(state, node, value, depth);
         return;
     }
@@ -549,25 +600,33 @@ static void build_into(output_state *state, cJSON *parent, SEXP value, const cha
         Rf_error("Unsupported JSON value.");
     n = XLENGTH(value);
     if (n == 1 && !inherits(value, "jdv_json_array")) {
-        node = create_atomic(value, 0);
-        add_child(parent, node, key);
+        if (TYPEOF(value) != STRSXP || STRING_ELT(value, 0) == NA_STRING)
+            tree_charge(state, sizeof(cJSON));
+        node = create_atomic(state, value, 0);
+        add_child(state, parent, node, key);
         return;
     }
+    tree_charge(state, sizeof(cJSON));
     node = cJSON_CreateArray();
     if (!node) Rf_error("Unable to allocate JSON tree.");
-    add_child(parent, node, key);
+    add_child(state, parent, node, key);
     for (R_xlen_t i = 0; i < n; ++i) {
-        cJSON *item = create_atomic(value, i);
-        add_child(node, item, NULL);
+        if (TYPEOF(value) != STRSXP || STRING_ELT(value, i) == NA_STRING)
+            tree_charge(state, sizeof(cJSON));
+        cJSON *item = create_atomic(state, value, i);
+        add_child(state, node, item, NULL);
     }
 }
 
 static cJSON *build_tree(output_state *state, SEXP value)
 {
     cJSON *tree;
-    if (value == R_NilValue) tree = cJSON_CreateNull();
+    if (value == R_NilValue) {
+        tree_charge(state, sizeof(cJSON));
+        tree = cJSON_CreateNull();
+    }
     else if (TYPEOF(value) == VECSXP) {
-        tree = new_container(value);
+        tree = new_container(state, value);
         if (!tree) Rf_error("Unable to allocate JSON tree.");
         state->tree = tree;
         fill_container(state, tree, value, 0);
@@ -576,14 +635,20 @@ static cJSON *build_tree(output_state *state, SEXP value)
         if (TYPEOF(value) != LGLSXP && TYPEOF(value) != INTSXP &&
             TYPEOF(value) != REALSXP && TYPEOF(value) != STRSXP)
             Rf_error("Unsupported JSON value.");
-        if (XLENGTH(value) == 1 && !inherits(value, "jdv_json_array"))
-            tree = create_atomic(value, 0);
-        else {
+        if (XLENGTH(value) == 1 && !inherits(value, "jdv_json_array")) {
+            if (TYPEOF(value) != STRSXP || STRING_ELT(value, 0) == NA_STRING)
+                tree_charge(state, sizeof(cJSON));
+            tree = create_atomic(state, value, 0);
+        } else {
+            tree_charge(state, sizeof(cJSON));
             tree = cJSON_CreateArray();
             if (!tree) Rf_error("Unable to allocate JSON tree.");
             state->tree = tree;
-            for (R_xlen_t i = 0; i < XLENGTH(value); ++i)
-                add_child(tree, create_atomic(value, i), NULL);
+            for (R_xlen_t i = 0; i < XLENGTH(value); ++i) {
+                if (TYPEOF(value) != STRSXP || STRING_ELT(value, i) == NA_STRING)
+                    tree_charge(state, sizeof(cJSON));
+                add_child(state, tree, create_atomic(state, value, i), NULL);
+            }
             return tree;
         }
     }
@@ -592,22 +657,113 @@ static cJSON *build_tree(output_state *state, SEXP value)
     return tree;
 }
 
+static size_t size_add(output_state *state, size_t left, size_t right)
+{
+    if (right > SIZE_MAX - left) Rf_error("jdv_json_work_limit");
+    return left + right;
+}
+
+static size_t printed_string_size(output_state *state, const char *text)
+{
+    size_t size = 2;
+    const unsigned char *p = (const unsigned char *)text;
+    while (*p) {
+        size_t extra = (*p < 32) ? ((*p == '\b' || *p == '\f' || *p == '\n' ||
+                                     *p == '\r' || *p == '\t') ? 1 : 5) :
+                       ((*p == '"' || *p == '\\') ? 1 : 0);
+        size = size_add(state, size, 1 + extra);
+        ++p;
+    }
+    return size;
+}
+
+static size_t printed_number_size(output_state *state, const cJSON *node)
+{
+    unsigned char number_buffer[26] = {0};
+    double test = 0.0;
+    int length;
+    double d = node->valuedouble;
+    /* Adapted from cJSON's number-formatting logic in src/cjson/cJSON.c; see
+     * the MIT notice in inst/COPYRIGHTS. Mirror its output length so the
+     * buffer can be bounded without rejecting values that fit the JSON cap. */
+    if (isnan(d) || isinf(d)) {
+        length = snprintf((char *)number_buffer, sizeof(number_buffer), "null");
+    } else if (d == (double)node->valueint) {
+        length = snprintf((char *)number_buffer, sizeof(number_buffer), "%d", node->valueint);
+    } else {
+        length = snprintf((char *)number_buffer, sizeof(number_buffer), "%1.15g", d);
+        if ((sscanf((char *)number_buffer, "%lg", &test) != 1) || test != d)
+            length = snprintf((char *)number_buffer, sizeof(number_buffer), "%1.17g", d);
+    }
+    if (length < 0 || length > (int)(sizeof(number_buffer) - 1))
+        Rf_error("Unable to size JSON number.");
+    (void)state;
+    return (size_t)length;
+}
+
+static size_t printed_node_size(output_state *state, const cJSON *node)
+{
+    size_t size = 0;
+    const cJSON *child;
+    if (cJSON_IsNull(node)) return 4;
+    if (cJSON_IsTrue(node)) return 4;
+    if (cJSON_IsFalse(node)) return 5;
+    if (cJSON_IsNumber(node)) return printed_number_size(state, node);
+    if (cJSON_IsString(node)) return printed_string_size(state, node->valuestring);
+    if (cJSON_IsArray(node) || cJSON_IsObject(node)) {
+        int object = cJSON_IsObject(node);
+        size = 2;
+        for (child = node->child; child; child = child->next) {
+            if (child != node->child) size = size_add(state, size, 1);
+            if (object) {
+                if (!child->string) Rf_error("Invalid JSON object name.");
+                size = size_add(state, size, printed_string_size(state, child->string));
+                size = size_add(state, size, 1);
+            }
+            size = size_add(state, size, printed_node_size(state, child));
+        }
+        return size;
+    }
+    Rf_error("Unsupported cJSON node.");
+    return 0;
+}
+
 static void emit_tree(output_state *state, SEXP value)
 {
     size_t size;
+    size_t capacity;
+    void *vmax = vmaxget();
     state->tree = NULL;
+    state->tree_charge = 0;
     (void)build_tree(state, value);
-    state->printed = cJSON_PrintUnformatted(state->tree);
-    if (!state->printed) Rf_error("Unable to print JSON tree.");
-    size = strlen(state->printed);
-    if (size > state->limit - state->size) {
+    size = printed_node_size(state, state->tree);
+    if (size > state->limit - state->size) Rf_error("jdv_json_output_limit");
+    if (size > (size_t)INT_MAX - 5) Rf_error("jdv_json_work_limit");
+    capacity = size + 5;
+    work_charge(state, capacity);
+    state->printed = (char *)malloc(capacity);
+    if (!state->printed) Rf_error("Unable to allocate JSON output.");
+    state->printed_capacity = capacity;
+    if (!cJSON_PrintPreallocated(state->tree, state->printed, (int)capacity, 0))
+        Rf_error("Unable to print JSON tree.");
+    char *end = (char *)memchr(state->printed, '\0', capacity);
+    if (!end)
+        Rf_error("JSON printer output is not terminated.");
+    size_t actual_size = (size_t)(end - state->printed);
+    if (actual_size > state->limit - state->size)
         Rf_error("jdv_json_output_limit");
-    }
-    append_bytes(state, state->printed, size);
-    cJSON_free(state->printed);
+    if (actual_size != size)
+        Rf_error("JSON printer size estimate did not match its output.");
+    append_bytes(state, state->printed, actual_size);
+    free(state->printed);
     state->printed = NULL;
+    state->work_used -= state->printed_capacity;
+    state->printed_capacity = 0;
     cJSON_Delete(state->tree);
     state->tree = NULL;
+    state->work_used -= state->tree_charge;
+    state->tree_charge = 0;
+    vmaxset(vmax);
 }
 
 static void emit_value(output_state *state, SEXP value, int depth)
@@ -621,14 +777,15 @@ static void emit_value(output_state *state, SEXP value, int depth)
         SEXP names = Rf_getAttrib(value, R_NamesSymbol);
         append_char(state, '{');
         for (R_xlen_t i = 0; i < XLENGTH(value); ++i) {
-            const char *key;
-            SEXP key_value = PROTECT(Rf_ScalarString(STRING_ELT(names, i)));
+            SEXP name = STRING_ELT(names, i);
+            const char *key = CHAR(name);
+            int is_columns = LENGTH(name) == 7 && memcmp(key, "columns", 7) == 0;
+            SEXP key_value = PROTECT(Rf_ScalarString(name));
             if (i) append_char(state, ',');
             emit_tree(state, key_value);
             UNPROTECT(1);
             append_char(state, ':');
-            key = Rf_translateCharUTF8(STRING_ELT(names, i));
-            if (strcmp(key, "columns") == 0 && TYPEOF(VECTOR_ELT(value, i)) == VECSXP &&
+            if (is_columns && TYPEOF(VECTOR_ELT(value, i)) == VECSXP &&
                 !is_object(VECTOR_ELT(value, i))) {
                 SEXP columns = VECTOR_ELT(value, i);
                 append_char(state, '[');
@@ -670,22 +827,30 @@ static SEXP encode_body(void *data)
     encode_request *request = (encode_request *)data;
     output_state *state = request->output;
     emit_value(state, request->value, 0);
+    work_charge(state, checked_multiply(state->size + 1, 2) + 256);
     return Rf_ScalarString(Rf_mkCharLenCE(state->data ? state->data : "", (int)state->size, CE_UTF8));
 }
 
-SEXP C_jdv_json_encode(SEXP object, SEXP max_bytes)
+SEXP C_jdv_json_encode(SEXP object, SEXP max_bytes, SEXP max_work_bytes)
 {
     output_state state;
     encode_request request;
     double limit;
+    double work_limit;
     SEXP continuation;
     SEXP result;
     memset(&state, 0, sizeof(state));
     if (TYPEOF(max_bytes) != REALSXP || XLENGTH(max_bytes) != 1 || !R_FINITE(REAL(max_bytes)[0]) || REAL(max_bytes)[0] < 1)
         Rf_error("Invalid JSON byte limit.");
+    if (TYPEOF(max_work_bytes) != REALSXP || XLENGTH(max_work_bytes) != 1 ||
+        !R_FINITE(REAL(max_work_bytes)[0]) || REAL(max_work_bytes)[0] < 1)
+        Rf_error("Invalid JSON work byte limit.");
     limit = REAL(max_bytes)[0];
     if (limit > 1000000000.0) limit = 1000000000.0;
+    work_limit = REAL(max_work_bytes)[0];
+    if (work_limit > (double)(SIZE_MAX / 2)) work_limit = (double)(SIZE_MAX / 2);
     state.limit = (size_t)limit;
+    state.work_limit = (size_t)work_limit;
     request.output = &state;
     request.value = object;
     continuation = PROTECT(R_MakeUnwindCont());
