@@ -4,7 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>jdv local viewer</title>
+    <link rel="stylesheet" href="/assets/vendor/tabulator.min.css">
     <link rel="stylesheet" href="/assets/style.css">
+    <script defer src="/assets/vendor/tabulator.min.js"></script>
     <script type="module" src="/assets/app.js"></script>
   </head>
   <body>
@@ -13,10 +15,63 @@
         <h1>jdv</h1>
         <p>A local viewer for R data frames and matrices.</p>
       </header>
-      <section aria-live="polite"
-        id="status">Connecting to the local viewer…</section>
+      <section id="status" aria-live="polite" data-state="loading">
+        Connecting to the local viewer…
+      </section>
       <section id="sessions" aria-label="R sessions"></section>
       <section id="tables" aria-label="Open tables"></section>
+      <section id="viewer" aria-label="Table viewer" hidden>
+        <div class="table-heading">
+          <div>
+            <h2 id="table-title"></h2>
+            <p id="table-meta" class="muted"></p>
+          </div>
+        </div>
+        <div class="query-tools">
+          <fieldset>
+            <legend>Stable sort</legend>
+            <div class="control-row">
+              <label for="sort-column">Column</label>
+              <select id="sort-column"></select>
+              <label for="sort-direction">Direction</label>
+              <select id="sort-direction">
+                <option value="asc">Ascending</option>
+                <option value="desc">Descending</option>
+              </select>
+              <button id="sort-add" type="button">Add sort</button>
+            </div>
+            <ol id="sort-list"></ol>
+          </fieldset>
+          <fieldset>
+            <legend>Filter</legend>
+            <div class="control-row">
+              <label for="filter-column">Column</label>
+              <select id="filter-column"></select>
+              <label for="filter-op">Operation</label>
+              <select id="filter-op"></select>
+            </div>
+            <div class="control-row filter-values">
+              <label class="visually-hidden" for="filter-value">Value</label>
+              <input id="filter-value" type="text" autocomplete="off">
+              <label class="visually-hidden"
+                for="filter-upper">Upper value</label>
+              <input id="filter-upper" type="text" autocomplete="off" hidden>
+              <button id="filter-apply" type="button">Apply filter</button>
+              <button id="filter-clear" type="button">Clear</button>
+            </div>
+            <p id="filter-help" class="muted" aria-live="polite"></p>
+          </fieldset>
+        </div>
+        <ul id="warnings" aria-live="polite"></ul>
+        <div class="column-scroller" id="column-viewport"
+          aria-label="Scrollable table columns">
+          <div id="column-spacer" class="column-spacer">
+            <div id="column-window" class="column-window"></div>
+          </div>
+        </div>
+        <div id="table-pagination" class="table-pagination"
+          aria-label="Table pages"></div>
+      </section>
     </main>
   </body>
 </html>

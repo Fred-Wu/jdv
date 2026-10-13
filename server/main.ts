@@ -1,6 +1,17 @@
 import page from "./web/index.html" with { type: "text" };
 import app from "./web/app.js" with { type: "text" };
 import styles from "./web/style.css" with { type: "text" };
+import queryClient from "./web/jdv_query.js" with { type: "text" };
+import browserClient from "./web/client.js" with { type: "text" };
+import tabulatorScript from "./web/vendor/tabulator.min.js" with {
+  type: "text",
+};
+import tabulatorStyles from "./web/vendor/tabulator.min.css" with {
+  type: "text",
+};
+import tabulatorLicense from "./web/vendor/TABULATOR-LICENSE.txt" with {
+  type: "text",
+};
 import { type BrowserClient, Hub } from "./hub.ts";
 import { join } from "node:path";
 import {
@@ -223,6 +234,26 @@ function handleHttp(
     "/index.html": { body: page, type: "text/html; charset=utf-8" },
     "/assets/app.js": { body: app, type: "text/javascript; charset=utf-8" },
     "/assets/style.css": { body: styles, type: "text/css; charset=utf-8" },
+    "/assets/client.js": {
+      body: browserClient,
+      type: "text/javascript; charset=utf-8",
+    },
+    "/assets/jdv_query.js": {
+      body: queryClient,
+      type: "text/javascript; charset=utf-8",
+    },
+    "/assets/vendor/tabulator.min.js": {
+      body: tabulatorScript,
+      type: "text/javascript; charset=utf-8",
+    },
+    "/assets/vendor/tabulator.min.css": {
+      body: tabulatorStyles,
+      type: "text/css; charset=utf-8",
+    },
+    "/assets/vendor/TABULATOR-LICENSE.txt": {
+      body: tabulatorLicense,
+      type: "text/plain; charset=utf-8",
+    },
   };
   const asset = assets[url.pathname];
   if (!asset) return new Response("Not found", { status: 404 });

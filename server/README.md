@@ -1,8 +1,9 @@
 # jdv reference server
 
 The Deno reference server connects to R over a local newline-delimited JSON
-transport and serves the browser viewer from `web/`. The server and its web
-assets are distributed under the project license in [LICENSE.md](LICENSE.md).
+transport and serves the browser viewer from `web/`. Project files are
+distributed under [LICENSE.md](LICENSE.md). The viewer also vendors Tabulator
+6.5.0 under its MIT license; see `web/vendor/TABULATOR-LICENSE.txt`.
 
 ## Start from a URL
 
@@ -102,8 +103,8 @@ pipes. No repository checkout, import map, or project configuration is needed
 when started by URL.
 
 ```sh
-deno fmt --check server
-deno lint server
+deno fmt --check --ignore=server/web/vendor/tabulator.min.js --ignore=server/web/vendor/tabulator.min.css server
+deno lint --ignore=server/web/vendor/tabulator.min.js --ignore=server/web/vendor/tabulator.min.css server
 deno check server/main.ts
 deno test -A server/tests
 ```
@@ -118,5 +119,14 @@ Select the installed package explicitly with
 
 The Unix socket, HTTP origin checks, discovery, and R relay tests run on Linux.
 The Windows named-pipe listener uses the built-in Node compatibility API but has
-not been exercised on a Windows host. The page in this phase lists sessions and
-tables; the full Tabulator viewer is implemented in the following phase.
+not been exercised on a Windows host. The viewer lists active R sessions and
+tables. Snapshot queries run in the browser from the cached payload; Paged
+queries use the WebSocket request path. Sorting and filtering are translated to
+the shared query semantics, and remote pagination fills a requested page if R
+reduces an individual response to fit its output budget. Wide tables keep all
+schema entries but request only a fixed width viewport column window (up to 256
+columns) as the user scrolls. The viewer requires datetime filter values to
+include `Z` or a numeric timezone offset in both modes. The R request contract
+can interpret offset-free datetimes using the session timezone, but the viewer
+applies the same explicit input rule to Snapshot and Paged tables because it
+cannot infer that timezone from a cached Snapshot.

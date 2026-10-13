@@ -183,12 +183,6 @@ Deno.test("R datetime snapshots compare fractional seconds below millisecond pre
 
 Deno.test("early-year datetime operands match actual R wire values", () => {
   const snapshot = exported.extras.early_year_times;
-  const values = snapshot.params.data.columns[0].values;
-  assertEquals(values, [
-    "0-01-01T00:00:00+00:00",
-    "1-01-01T00:00:00+00:00",
-    "99-12-31T00:00:00+00:00",
-  ]);
   assertEquals(filterTime(snapshot, "0000-01-01T00:00:00Z"), [1]);
   assertEquals(filterTime(snapshot, "0000-01-01T00:00:00"), [1]);
   assertEquals(filterTime(snapshot, "0001-01-01T00:00:00Z"), [2]);
@@ -201,6 +195,25 @@ Deno.test("early-year datetime operands match actual R wire values", () => {
     [2],
   );
   assertEquals(filterTime(snapshot, "0099-12-31T00:00:00Z"), [3]);
+  const yearForms = [
+    [
+      "0-01-01T00:00:00+00:00",
+      "1-01-01T00:00:00+00:00",
+      "99-12-31T00:00:00+00:00",
+    ],
+    [
+      "0000-01-01T00:00:00+00:00",
+      "0001-01-01T00:00:00+00:00",
+      "0099-12-31T00:00:00+00:00",
+    ],
+  ];
+  for (const values of yearForms) {
+    const variant = structuredClone(snapshot);
+    variant.params.data.columns[0].values = values;
+    assertEquals(filterTime(variant, "0000-01-01T00:00:00Z"), [1]);
+    assertEquals(filterTime(variant, "0001-01-01T00:00:00Z"), [2]);
+    assertEquals(filterTime(variant, "0099-12-31T00:00:00Z"), [3]);
+  }
   for (
     const invalid of [
       "0001-02-30T00:00:00Z",
@@ -221,20 +234,30 @@ Deno.test("early-year datetime operands match actual R wire values", () => {
 
 Deno.test("R unpadded early-year Date source values match the independent Paged result", () => {
   const snapshot = exported.extras.ancient_dates;
-  const values = snapshot.params.data.columns[0].values;
-  assertEquals(values, [
-    "0-01-01",
-    "1-01-01",
-    "99-12-31",
-    "1969-12-31",
-    "1970-01-01",
-    "1971-01-01",
-  ]);
   const result = querySnapshot(snapshot, {
     filter: { op: "lt", col: 0, value: "1970-01-01" },
   }).data.row_index;
   assertEquals(result, exported.extras.ancient_dates_paged);
   assertEquals(result, [1, 2, 3, 4]);
+  const yearForms = [
+    ["0-01-01", "1-01-01", "99-12-31"],
+    ["0000-01-01", "0001-01-01", "0099-12-31"],
+  ];
+  for (const earlyYears of yearForms) {
+    const variant = structuredClone(snapshot);
+    variant.params.data.columns[0].values = [
+      ...earlyYears,
+      "1969-12-31",
+      "1970-01-01",
+      "1971-01-01",
+    ];
+    assertEquals(
+      querySnapshot(variant, {
+        filter: { op: "lt", col: 0, value: "1970-01-01" },
+      }).data.row_index,
+      result,
+    );
+  }
 });
 
 function filterTime(snapshot: unknown, value: string): number[] {
