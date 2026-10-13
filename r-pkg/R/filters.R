@@ -2,7 +2,7 @@ query_fields <- function(node, allowed, required = allowed) {
   fields <- names(node)
   if (
     !is.list(node) ||
-      is.object(node) ||
+      (is.object(node) && !inherits(node, "jdv_json_object")) ||
       is.null(fields) ||
       anyNA(fields) ||
       any(!nzchar(fields)) ||
@@ -15,10 +15,16 @@ query_fields <- function(node, allowed, required = allowed) {
   invisible(node)
 }
 
+json_is_array <- function(x) {
+  is.list(x) &&
+    is.null(names(x)) &&
+    (!is.object(x) || inherits(x, "jdv_json_array"))
+}
+
 query_string <- function(value, limit) {
   if (
     !is.character(value) ||
-      is.object(value) ||
+      (is.object(value) && !inherits(value, "jdv_json_array")) ||
       !is.null(dim(value)) ||
       length(value) != 1L ||
       is.na(value)
@@ -167,17 +173,17 @@ query_filter_validate <- function(table, filter) {
         "Filter AST exceeds its depth or node limit."
       )
     }
-    if (!is.list(node) || is.object(node) || !"op" %in% names(node)) {
+    if (
+      !is.list(node) ||
+        (is.object(node) && !inherits(node, "jdv_json_object")) ||
+        !"op" %in% names(node)
+    ) {
       query_error("invalid_request", "Expected a filter AST object.")
     }
     op <- query_string(node$op, 32L)
     if (op %in% c("and", "or")) {
       query_fields(node, c("op", "args"))
-      if (
-        !is.list(node$args) ||
-          is.object(node$args) ||
-          !is.null(names(node$args))
-      ) {
+      if (!json_is_array(node$args)) {
         query_error("invalid_request", "Logic args must be an array.")
       }
       if (length(node$args) > table$limits$ast_nodes) {
@@ -231,7 +237,7 @@ query_filter_validate <- function(table, filter) {
       values <- node$values
       if (
         (!is.character(values) && !is.list(values)) ||
-          is.object(values) ||
+          (is.object(values) && !inherits(values, "jdv_json_array")) ||
           !is.null(dim(values)) ||
           (is.list(values) && !is.null(names(values)))
       ) {

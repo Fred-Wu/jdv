@@ -4,10 +4,8 @@ cJSON contributors, distributed under the MIT license. The full
 upstream notice is preserved in the header of src/cjson/cJSON.c and
 src/cjson/cJSON.h. Upstream source: https://github.com/DaveGamble/cJSON
 
-The four local patches in src/cjson/patches/ are derived from the
-jgd package (https://github.com/REditorSupport/jgd), distributed under
-the MIT license. Copyright (c) 2026 Grant McDermott.
-The patches adapt cJSON for R package checks and identify local changes.
+Local modifications are tracked in src/cjson/patches/. They cover R package
+checks and round-trip number output.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

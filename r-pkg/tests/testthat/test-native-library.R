@@ -1,12 +1,16 @@
-test_that("the native library registers only its private integer64 routines", {
+test_that("the native library registers only its private routines", {
   dll <- getLoadedDLLs()[["jdv"]]
   expect_s3_class(dll, "DLLInfo")
   expect_false(dll[["dynamicLookup"]])
   expect_setequal(
     names(getDLLRegisteredRoutines(dll)[[".Call"]]),
-    paste0(
-      "C_jdv_int64_",
-      c("is_na", "values", "rank", "order", "eq", "between")
+    c(
+      paste0(
+        "C_jdv_int64_",
+        c("is_na", "values", "rank", "order", "eq", "between")
+      ),
+      "C_jdv_json_parse",
+      "C_jdv_json_encode"
     )
   )
   expect_error(.Call("C_jdv_int64_values", int64_fixture("1"), PACKAGE = "jdv"))

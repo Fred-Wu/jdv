@@ -9,6 +9,23 @@ The engine operates on data frames and matrices. Columns are identified by
 their **zero-based positions**, so duplicate or unusual column names are valid.
 Returned `row_index` values are the **original one-based R row numbers**.
 
+## Source slicing contract
+
+For a data frame, jdv reads each column with `x[[j]]` and selects rows by
+applying that column's `[` method. It never calls table-level `[`, including
+`[.data.table`, `[.tbl_df`, or `[.sf`. For a matrix it selects a column and
+rows with `x[rows, j]`. Extraction does not call `unclass()` or coerce a source
+column before its own subset method runs. Filtering and sorting use each full
+column first; only after the original row indices are fixed does paging slice
+the requested rows. Classes that need table-level behavior require a future
+source adapter.
+
+Paged registration retains the source object and a fixed initial schema. A
+request checks a lightweight fingerprint of dimensions, column names, and
+column classes. It cannot detect value-only mutation through a shared
+reference; callers must register again after changing values. Re-registration
+builds a new holder and cache before replacing the current generation.
+
 ## Internal entry points
 
 | Function | Result and purpose |
@@ -304,6 +321,14 @@ requests that require an unavailable full-column channel instead raise a typed
 query error. Their condition's `details` can contain the extraction's
 `schema`, `data`, and `errors`; no failed channel result enters the cache.
 The initial holder schema is not overwritten by a later extraction result.
+
+Snapshot wire encoding may omit `display` for string, factor, and integer64
+columns only when every nonmissing display value equals its semantic value and
+every missing display value is the standard string `"NA"`. The missingness
+mask then reconstructs the omitted missing labels. A class-specific formatter
+that uses another missing label keeps its `display` channel, including when all
+rows are missing. Zero-row columns use the same equality checks, with empty
+comparisons treated as equal.
 
 Conditions inherit from `jdv_query_error`, `error`, and `condition`, and expose
 `code`, `message`, and optional `details`:

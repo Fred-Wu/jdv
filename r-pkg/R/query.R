@@ -285,7 +285,7 @@ query_channel <- function(holder, j, channel) {
 }
 
 query_sort <- function(table, sort) {
-  if (!is.list(sort) || is.object(sort) || !is.null(names(sort))) {
+  if (!json_is_array(sort)) {
     query_error("invalid_request", "sort must be an array.")
   }
   if (length(sort) > table$limits$sort_columns) {
@@ -384,14 +384,17 @@ query_page <- function(
   js <- if (is.null(cols)) {
     seq_len(holder$ncol)
   } else {
-    if (
-      is.object(cols) ||
+    if (json_is_array(cols)) {
+      vapply(cols, function(col) query_col(holder, col), integer(1L))
+    } else if (
+      (is.object(cols) && !inherits(cols, "jdv_json_array")) ||
         !is.null(dim(cols)) ||
         !typeof(cols) %in% c("integer", "double")
     ) {
       query_error("invalid_request", "cols must be integer column selectors.")
+    } else {
+      vapply(as.list(cols), function(col) query_col(holder, col), integer(1L))
     }
-    vapply(as.list(cols), function(col) query_col(holder, col), integer(1L))
   }
   if (anyDuplicated(js)) {
     query_error("invalid_request", "Duplicate page columns.")
