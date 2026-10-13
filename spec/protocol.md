@@ -507,6 +507,8 @@ Error codes are stable machine-readable values. The `error` object contains
 | `schema_changed` | A Paged source no longer matches its registered dimensions, names, or classes, or a required channel no longer matches. |
 | `r_error` | An R method or other request computation failed. |
 | `interrupted` | Request processing began and was interrupted. |
+| `cancelled` | The accepted request was cancelled before processing began. |
+| `expired` | The request deadline elapsed before processing began. |
 | `stale_generation` | The request names a generation that is no longer active. |
 | `table_not_found` | The table id is missing or closed. |
 | `method_not_found` | No implementation exists for the requested method. |
