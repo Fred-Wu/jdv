@@ -611,11 +611,11 @@ static cJSON_bool print_number(const cJSON * const item, printbuffer * const out
     }
     else
     {
-        /* Try 17 significant digits to preserve the original double */
-        length = snprintf((char*)number_buffer, sizeof(number_buffer), "%1.17g", d);
+        /* Try 15 decimal places of precision to avoid nonsignificant nonzero digits */
+        length = snprintf((char*)number_buffer, sizeof(number_buffer), "%1.15g", d);
 
         /* Check whether the original double can be recovered */
-        if ((sscanf((char*)number_buffer, "%lg", &test) != 1) || !compare_double((double)test, d))
+        if ((sscanf((char*)number_buffer, "%lg", &test) != 1) || test != d)
         {
             /* If not, print with 17 decimal places of precision */
             length = snprintf((char*)number_buffer, sizeof(number_buffer), "%1.17g", d);

@@ -420,8 +420,10 @@ Per-column channel failures are represented in the page payload and do not
 necessarily fail the whole request. The request and response byte limits are
 `jdv.max_request_bytes` (default 1 MiB, minimum 128 bytes) and
 `jdv.max_message_bytes` (default 10 MiB, minimum 1,024 bytes). The output limit
-applies to final JSON text, not peak allocation. The cJSON writer uses a
-17-significant-digit numeric representation and releases each completed column
+applies to final JSON text, not peak allocation. For finite doubles, the cJSON
+writer first tries a 15-significant-digit representation and accepts it only
+when its own double read-back is exactly equal to the source value; otherwise
+it falls back to 17 significant digits. It releases each completed column
 tree while appending it to the output.
 
 If a Paged response exceeds the output limit, the already-computed result is
