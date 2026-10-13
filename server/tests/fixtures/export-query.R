@@ -139,6 +139,32 @@ submillisecond <- as.POSIXct(
   tz = "UTC"
 )
 submillisecond_snapshot <- export_table(data.frame(time = submillisecond))
+early_year_dates <- as.Date(
+  c("0000-01-01", "0001-01-01", "0099-12-31"),
+  format = "%Y-%m-%d"
+)
+early_year_times <- as.POSIXct(early_year_dates, tz = "UTC")
+early_year_snapshot <- export_table(data.frame(time = early_year_times))
+ancient_dates <- as.Date(
+  c(
+    "0000-01-01",
+    "0001-01-01",
+    "0099-12-31",
+    "1969-12-31",
+    "1970-01-01",
+    "1971-01-01"
+  ),
+  format = "%Y-%m-%d"
+)
+ancient_date_table <- data.frame(date = ancient_dates)
+ancient_date_snapshot <- export_table(ancient_date_table)
+ancient_date_holder <- getFromNamespace("paged_table", "jdv")(
+  ancient_date_table
+)
+ancient_date_paged <- query_indices(
+  ancient_date_holder,
+  filter = list(op = "lt", col = 0L, value = "1970-01-01")
+)
 
 output <- list(
   cases = snapshots,
@@ -148,7 +174,10 @@ output <- list(
     duplicates = duplicates,
     reverse_numeric = reverse_numeric_snapshot,
     reverse_numeric_paged = reverse_numeric_paged,
-    submillisecond = submillisecond_snapshot
+    submillisecond = submillisecond_snapshot,
+    early_year_times = early_year_snapshot,
+    ancient_dates = ancient_date_snapshot,
+    ancient_dates_paged = ancient_date_paged
   )
 )
 writeLines(

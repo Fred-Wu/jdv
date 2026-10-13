@@ -445,7 +445,11 @@ function operand(schema, value, context) {
       throw queryError("invalid_request", "Invalid datetime operand.");
     }
     addStringBudget(context, value);
-    return parseDatetime(value, schema.tz ?? "");
+    const timestamp = parseDatetime(value, schema.tz ?? "");
+    if (!Number.isFinite(timestamp)) {
+      throw queryError("invalid_request", "Invalid datetime operand.");
+    }
+    return timestamp;
   }
   if (
     schema.type === "number" && value && typeof value === "object" &&
@@ -462,10 +466,11 @@ function operand(schema, value, context) {
   return value;
 }
 
-function parseDatetime(value, timezone) {
-  const match =
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})?$/
-      .exec(value);
+function parseDatetime(value, timezone, allowUnpaddedYear = false) {
+  const yearPattern = allowUnpaddedYear ? "\\d{1,4}" : "\\d{4}";
+  const match = new RegExp(
+    `^(${yearPattern})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})?$`,
+  ).exec(value);
   if (!match) return NaN;
   const [, ys, mos, ds, hs, mis, ss, fraction = "", zone = ""] = match;
   const parts = [
@@ -478,7 +483,7 @@ function parseDatetime(value, timezone) {
   ];
   const [y, mo, d, h, mi, s] = parts;
   if (mo < 1 || mo > 12 || h > 23 || mi > 59 || s > 59) return NaN;
-  const whole = Date.UTC(y, mo - 1, d, h, mi, s);
+  const whole = utcMillis(y, mo - 1, d, h, mi, s);
   const date = new Date(whole);
   if (
     date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 ||
@@ -512,7 +517,7 @@ function parseDatetime(value, timezone) {
   for (let i = 0; i < 4; i++) {
     const actual = zonedParts(guess, timezone);
     if (!actual) return NaN;
-    const local = Date.UTC(
+    const local = utcMillis(
       actual.year,
       actual.month - 1,
       actual.day,
@@ -520,7 +525,7 @@ function parseDatetime(value, timezone) {
       actual.minute,
       actual.second,
     );
-    const desired = Date.UTC(y, mo - 1, d, h, mi, s);
+    const desired = utcMillis(y, mo - 1, d, h, mi, s);
     const correction = desired - local;
     guess += correction;
     if (!correction) break;
@@ -529,11 +534,19 @@ function parseDatetime(value, timezone) {
   return final && sameParts(final, target) ? guess / 1000 : NaN;
 }
 
+function utcMillis(year, month, day, hour = 0, minute = 0, second = 0) {
+  const date = new Date(0);
+  date.setUTCFullYear(year, month, day);
+  date.setUTCHours(hour, minute, second, 0);
+  return date.getTime();
+}
+
 function zonedParts(time, timezone) {
   try {
     const values = new Intl.DateTimeFormat("en-US", {
       timeZone: timezone,
       year: "numeric",
+      era: "short",
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
@@ -545,7 +558,7 @@ function zonedParts(time, timezone) {
       values.map((part) => [part.type, part.value]),
     );
     return {
-      year: +out.year,
+      year: out.era === "BC" ? 1 - Number(out.year) : +out.year,
       month: +out.month,
       day: +out.day,
       hour: +out.hour,
@@ -674,9 +687,9 @@ function testFilter(columns, node, row) {
     else if (special === "neg_inf") value = -Infinity;
     else if (special === "nan" || special === "na") return false;
   } else if (schema.type === "date") {
-    value = parseDateValue(value);
+    value = parseDateValue(value, true);
   } else if (schema.type === "datetime") {
-    value = parseDatetime(value, schema.tz ?? "");
+    value = parseDatetime(value, schema.tz ?? "", true);
   }
   if (value === null || value === undefined || Number.isNaN(value)) {
     return false;
@@ -696,10 +709,20 @@ function testFilter(columns, node, row) {
   })[node.op] ?? false;
 }
 
-function parseDateValue(value) {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return NaN;
-  }
-  const time = Date.parse(`${value}T00:00:00Z`);
-  return Number.isFinite(time) ? time / 86400000 : NaN;
+function parseDateValue(value, allowUnpaddedYear = false) {
+  if (typeof value !== "string") return NaN;
+  const yearPattern = allowUnpaddedYear ? "\\d{1,4}" : "\\d{4}";
+  const match = new RegExp(`^(${yearPattern})-(\\d{2})-(\\d{2})$`).exec(value);
+  if (!match) return NaN;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12) return NaN;
+  const time = utcMillis(year, month - 1, day);
+  const date = new Date(time);
+  if (
+    date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) return NaN;
+  return time / 86400000;
 }

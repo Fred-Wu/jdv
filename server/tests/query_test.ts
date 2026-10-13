@@ -180,3 +180,65 @@ Deno.test("R datetime snapshots compare fractional seconds below millisecond pre
   });
   assertEquals(result.data.row_index, [1]);
 });
+
+Deno.test("early-year datetime operands match actual R wire values", () => {
+  const snapshot = exported.extras.early_year_times;
+  const values = snapshot.params.data.columns[0].values;
+  assertEquals(values, [
+    "0-01-01T00:00:00+00:00",
+    "1-01-01T00:00:00+00:00",
+    "99-12-31T00:00:00+00:00",
+  ]);
+  assertEquals(filterTime(snapshot, "0000-01-01T00:00:00Z"), [1]);
+  assertEquals(filterTime(snapshot, "0000-01-01T00:00:00"), [1]);
+  assertEquals(filterTime(snapshot, "0001-01-01T00:00:00Z"), [2]);
+  assertEquals(
+    filterTime(snapshot, "0001-01-01T01:00:00+01:00"),
+    [2],
+  );
+  assertEquals(
+    filterTime(snapshot, "0001-01-01T00:00:00"),
+    [2],
+  );
+  assertEquals(filterTime(snapshot, "0099-12-31T00:00:00Z"), [3]);
+  for (
+    const invalid of [
+      "0001-02-30T00:00:00Z",
+      "0001-01-01T24:00:00Z",
+      "0001-01-01T00:00:00+01:60",
+      "0001-01-01T00:00:00+24:00",
+    ]
+  ) {
+    let code = "";
+    try {
+      filterTime(snapshot, invalid);
+    } catch (error) {
+      code = (error as Error & { code?: string }).code ?? "";
+    }
+    assertEquals(code, "invalid_request");
+  }
+});
+
+Deno.test("R unpadded early-year Date source values match the independent Paged result", () => {
+  const snapshot = exported.extras.ancient_dates;
+  const values = snapshot.params.data.columns[0].values;
+  assertEquals(values, [
+    "0-01-01",
+    "1-01-01",
+    "99-12-31",
+    "1969-12-31",
+    "1970-01-01",
+    "1971-01-01",
+  ]);
+  const result = querySnapshot(snapshot, {
+    filter: { op: "lt", col: 0, value: "1970-01-01" },
+  }).data.row_index;
+  assertEquals(result, exported.extras.ancient_dates_paged);
+  assertEquals(result, [1, 2, 3, 4]);
+});
+
+function filterTime(snapshot: unknown, value: string): number[] {
+  return querySnapshot(snapshot, {
+    filter: { op: "eq", col: 0, value },
+  }).data.row_index;
+}
