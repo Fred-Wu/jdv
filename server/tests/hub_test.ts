@@ -320,15 +320,91 @@ Deno.test("request credit stays bounded until a dispatch response proves a prefi
     connection.writes.filter((line) =>
       (JSON.parse(line) as JsonRecord).method === "table/schema"
     ).length,
-    32,
+    33,
   );
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "request-34",
+    session: "r-4-1",
+    method: "table/schema",
+    params: { table: "table-1", generation: 1 },
+  });
   connection.inject({ id: second.id, result: { columns: [] } });
   await waitFor(() =>
     connection.writes.filter((line) =>
       (JSON.parse(line) as JsonRecord).method === "table/schema"
-    ).length > 32
+    ).length === 34
   );
   hub.close();
+});
+
+Deno.test("repeated limit errors release request slots but retain frame credit", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-11-1" },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "table/open");
+    for (let index = 0; index < 96; index++) {
+      const id = `reject-${index}`;
+      hub.handleBrowser(browser, {
+        type: "request",
+        id,
+        session: "r-11-1",
+        method: "table/schema",
+        params: { table: "table-1", generation: 1 },
+      });
+      await waitFor(() =>
+        connection.writes.filter((line) =>
+          (JSON.parse(line) as JsonRecord).method === "table/schema"
+        ).length > index
+      );
+      const request = connection.writes.map((line) =>
+        JSON.parse(line) as JsonRecord
+      ).filter((frame) =>
+        frame.method === "table/schema"
+      )[index];
+      connection.inject({
+        id: request.id,
+        error: { code: "limit_exceeded", message: "R receive queue is full." },
+      });
+      await browser.nextMessage((message) =>
+        message.type === "response" && message.id === id
+      );
+    }
+
+    hub.handleBrowser(browser, {
+      type: "request",
+      id: "blocked-by-frame-credit",
+      session: "r-11-1",
+      method: "table/schema",
+      params: { table: "table-1", generation: 1 },
+    });
+    await browser.nextMessage((message) =>
+      message.type === "busy" && message.reason === "wire_credit"
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assertEquals(
+      connection.writes.filter((line) =>
+        (JSON.parse(line) as JsonRecord).method === "table/schema"
+      ).length,
+      96,
+    );
+    const ordinaryBytes = connection.writes.reduce(
+      (sum, line) => sum + new TextEncoder().encode(line).byteLength,
+      0,
+    );
+    assertEquals(ordinaryBytes <= 496 * 1024, true);
+  } finally {
+    hub.close();
+  }
 });
 
 Deno.test("reserved cancellation slots remain usable behind a full ordinary queue", async () => {
@@ -646,7 +722,7 @@ Deno.test("large ordinary frames stop at the 496 KiB byte budget", async () => {
   openTable(connection);
   try {
     await browser.nextMessage((message) => message.type === "table/open");
-    for (let index = 0; index < 9; index++) {
+    for (let index = 0; index < 8; index++) {
       hub.handleBrowser(browser, {
         type: "request",
         id: `large-${index}`,
@@ -658,12 +734,35 @@ Deno.test("large ordinary frames stop at the 496 KiB byte budget", async () => {
           padding: "x".repeat(60 * 1024),
         },
       });
+      await waitFor(() =>
+        connection.writes.filter((line) =>
+          (JSON.parse(line) as JsonRecord).method === "table/schema"
+        ).length > index
+      );
+      const request = connection.writes.map((line) =>
+        JSON.parse(line) as JsonRecord
+      ).filter((frame) =>
+        frame.method === "table/schema"
+      )[index];
+      connection.inject({
+        id: request.id,
+        error: { code: "limit_exceeded", message: "R receive queue is full." },
+      });
+      await browser.nextMessage((message) =>
+        message.type === "response" && message.id === `large-${index}`
+      );
     }
-    await waitFor(() =>
-      connection.writes.filter((line) =>
-        (JSON.parse(line) as JsonRecord).method === "table/schema"
-      ).length >= 8
-    );
+    hub.handleBrowser(browser, {
+      type: "request",
+      id: "large-8",
+      session: "r-10-1",
+      method: "table/schema",
+      params: {
+        table: "table-1",
+        generation: 1,
+        padding: "x".repeat(60 * 1024),
+      },
+    });
     await new Promise((resolve) => setTimeout(resolve, 100));
     const frames = connection.writes.map((line) =>
       JSON.parse(line) as JsonRecord

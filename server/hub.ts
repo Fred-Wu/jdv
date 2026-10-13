@@ -368,11 +368,14 @@ export class Hub {
     }
     if (typeof message.id !== "string") return;
     const pending = session.pending.get(message.id);
-    if (!pending) return;
-    const dispatched = provesDispatch(message);
-    if (dispatched && pending.sequence !== undefined) {
-      this.#acknowledgeThrough(session, pending.sequence);
+    if (
+      !pending || pending.sequence === undefined || !isTerminalResponse(message)
+    ) {
+      return;
     }
+    const dispatched = provesDispatch(message);
+    if (dispatched) this.#acknowledgeThrough(session, pending.sequence);
+    else this.#releaseRequestSlot(session, pending.sequence);
     const table = session.tables.get(pending.table);
     const deliver = !pending.localEnded && pending.state === "live" && table &&
       table.generation === pending.generation && Date.now() < pending.deadline;
@@ -835,8 +838,7 @@ export class Hub {
     }
     for (const frameSequence of session.unackedSequences) {
       if (frameSequence <= sequence) {
-        session.unackedSequences.delete(frameSequence);
-        session.unackedRequests = Math.max(0, session.unackedRequests - 1);
+        this.#releaseRequestSlot(session, frameSequence);
       }
     }
     for (const pending of [...session.pending.values()]) {
@@ -849,6 +851,12 @@ export class Hub {
     }
     session.creditPaused = false;
     this.#scheduleDrain(session);
+  }
+
+  #releaseRequestSlot(session: RSession, sequence: number): void {
+    if (session.unackedSequences.delete(sequence)) {
+      session.unackedRequests = Math.max(0, session.unackedRequests - 1);
+    }
   }
 
   #frameEligible(session: RSession, frame: OutboundFrame): boolean {
@@ -931,4 +939,12 @@ function provesDispatch(message: JsonObject): boolean {
     "stale_generation",
     "schema_changed",
   ].includes(message.error.code);
+}
+
+function isTerminalResponse(message: JsonObject): boolean {
+  const hasResult = Object.hasOwn(message, "result");
+  const hasError = Object.hasOwn(message, "error");
+  if (hasResult === hasError) return false;
+  if (hasResult) return true;
+  return isObject(message.error) && typeof message.error.code === "string";
 }
