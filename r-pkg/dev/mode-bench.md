@@ -103,13 +103,20 @@ encoder repetitions. Per-phase RSS is a process high-water mark, not an
 isolated cJSON peak measurement.
 
 `wait4` peak RSS and `/proc` high-water RSS include resident memory allocated
-through C `malloc`, including cJSON. The paired `prepare` process has the same
-input construction and package startup; subtracting its peak from an engine
-peak is only a high-water comparison, not an isolated allocation measurement.
-Enable `--rprofmem` for supplemental R allocation counts and sizes. `Rprofmem`
-is version-dependent and does not observe C allocations, so use RSS for the
-combined R and native peak. The output records R, jdv, jsonlite, and host
-versions for context.
+through C `malloc`, including cJSON. `wait4_maxrss_kb` is normalized to KiB:
+Linux reports `ru_maxrss` in KiB, while macOS reports bytes and the runner
+rounds that value up to KiB. Each child measurement also records
+`wait4_maxrss_native` and `wait4_maxrss_native_unit`. The runner supports Linux
+and macOS; it rejects other platforms rather than assuming their `ru_maxrss`
+unit, and Windows is unsupported because this runner uses `fork`/`wait4`.
+The macOS unit conversion is covered by focused tests, but the process-level
+Darwin path has not been exercised on a macOS host.
+The paired `prepare` process has the same input construction and package
+startup; subtracting its peak from an engine peak is only a high-water
+comparison, not an isolated allocation measurement. Enable `--rprofmem` for
+supplemental R allocation counts and sizes. `Rprofmem` is version-dependent
+and does not observe C allocations, so use RSS for the combined R and native
+peak. The output records R, jdv, jsonlite, and host versions for context.
 
 The runner sets `jdv.max_work_bytes` to 64 MiB, `jdv.max_cache_bytes` to 32
 MiB, `jdv.max_query_rows` to 1,000,000, and the message limit to 10 MiB by

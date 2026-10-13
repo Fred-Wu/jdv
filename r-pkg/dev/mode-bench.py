@@ -34,6 +34,27 @@ DEFAULT_CASES = [
 DEFAULT_PHASES = ["prepare", "snapshot", "paged", "auto"]
 
 
+def wait4_maxrss_unit(platform_name: str) -> str:
+    """Return the ru_maxrss unit for a supported wait4 platform."""
+    if platform_name == "linux":
+        return "KiB"
+    if platform_name == "darwin":
+        return "bytes"
+    raise RuntimeError(
+        f"wait4 ru_maxrss units are not defined for {platform_name!r}; "
+        "the benchmark supports Linux and macOS only"
+    )
+
+
+def wait4_maxrss_to_kib(ru_maxrss: int, platform_name: str) -> int:
+    """Normalize wait4's platform-dependent peak RSS value to KiB."""
+    unit = wait4_maxrss_unit(platform_name)
+    if unit == "KiB":
+        return int(ru_maxrss)
+    # Round up to avoid reporting less than the native peak after conversion.
+    return (int(ru_maxrss) + 1023) // 1024
+
+
 def proc_memory_kb(pid: int) -> tuple[int | None, int | None]:
     """Return current RSS and kernel high-water RSS from /proc when available."""
     try:
@@ -50,6 +71,9 @@ def proc_memory_kb(pid: int) -> tuple[int | None, int | None]:
 
 def run_child(command: list[str], env: dict[str, str], stderr_path: Path) -> dict:
     """Exec one R child and collect per-child wait4 usage plus /proc samples."""
+    native_unit = wait4_maxrss_unit(sys.platform)
+    if not hasattr(os, "fork"):
+        raise RuntimeError("mode-bench.py requires os.fork; Windows is unsupported")
     read_fd, write_fd = os.pipe()
     pid = os.fork()
     if pid == 0:
@@ -114,13 +138,19 @@ def run_child(command: list[str], env: dict[str, str], stderr_path: Path) -> dic
 
     stdout = b"".join(chunks).decode("utf-8", errors="replace")
     exit_code = os.waitstatus_to_exitcode(wait_status)
-    wait4_maxrss = None if usage is None else int(usage.ru_maxrss)
+    wait4_maxrss_native = None if usage is None else int(usage.ru_maxrss)
+    wait4_maxrss_kb = None if wait4_maxrss_native is None else wait4_maxrss_to_kib(
+        wait4_maxrss_native,
+        sys.platform,
+    )
     wall_ms = (time.monotonic() - start) * 1000
     stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
     return {
         "exit_code": exit_code,
         "wall_ms": round(wall_ms, 3),
-        "wait4_maxrss_kb": wait4_maxrss,
+        "wait4_maxrss_native": wait4_maxrss_native,
+        "wait4_maxrss_native_unit": native_unit,
+        "wait4_maxrss_kb": wait4_maxrss_kb,
         "proc_sampled_max_rss_kb": max_rss_kb or None,
         "proc_sampled_max_hwm_kb": max_hwm_kb or None,
         "stdout": stdout,
@@ -149,6 +179,12 @@ def main() -> int:
     parser.add_argument("--cache-bytes", type=int, default=32 * 1024 * 1024)
     parser.add_argument("--query-rows", type=int, default=1000000)
     args = parser.parse_args()
+    try:
+        wait4_maxrss_unit(sys.platform)
+    except RuntimeError as exc:
+        parser.error(str(exc))
+    if not hasattr(os, "fork"):
+        parser.error("mode-bench.py requires os.fork; Windows is unsupported")
 
     cases = [part for part in args.cases.split(",") if part]
     phases = [part for part in args.phases.split(",") if part]
