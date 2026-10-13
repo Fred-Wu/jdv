@@ -45,6 +45,7 @@ typedef int jdv_socket;
 #define JDV_DEFAULT_DRAIN_REQUESTS 8
 #define JDV_DEFAULT_SEND_TIMEOUT_MS 1000
 #define JDV_DEFAULT_RECEIVE_MIN (64u * 1024u)
+#define JDV_MAX_SAFE_INTEGER UINT64_C(9007199254740991)
 #define JDV_ID_JSON_CAPACITY 800
 #define JDV_ID_VALUE_CAPACITY 129
 #define JDV_TABLE_ID_CAPACITY 512
@@ -87,6 +88,8 @@ struct jdv_transport_state {
     size_t queue_count;
     size_t queue_bytes;
     size_t receive_frames;
+    uint64_t total_receive_frames;
+    uint64_t last_ack_frames;
     size_t invalid_frames;
     size_t max_queue_messages;
     size_t max_queue_bytes;
@@ -382,6 +385,26 @@ static int send_error(jdv_transport_state *state, const char *id_json,
         stop_connection(state, 1);
         return 0;
     }
+    return 1;
+}
+
+static int send_ack(jdv_transport_state *state, uint64_t frames)
+{
+    char message[96];
+    int length;
+    if (!state || state != active_state || !state->connected ||
+        state->closing || frames <= state->last_ack_frames ||
+        frames > JDV_MAX_SAFE_INTEGER)
+        return 0;
+    length = snprintf(message, sizeof(message),
+                      "{\"method\":\"ack\",\"params\":{\"frames\":%llu}}",
+                      (unsigned long long)frames);
+    if (length < 0 || (size_t)length >= sizeof(message) ||
+        !send_message(state, message, (size_t)length)) {
+        stop_connection(state, 1);
+        return 0;
+    }
+    state->last_ack_frames = frames;
     return 1;
 }
 
@@ -691,7 +714,8 @@ static SEXP status_for(jdv_transport_state *state)
     static const char *names[] = {
         "connected", "busy", "queued_messages", "queued_bytes",
         "receive_bytes", "source_active", "pending_cleanup", "pending_close",
-        "epoch"
+        "epoch", "max_receive_frames", "max_receive_bytes",
+        "queue_messages_limit", "queue_bytes_limit", "max_request_bytes"
     };
     int connected = state && state->connected;
     int busy = state && state->busy;
@@ -702,9 +726,16 @@ static SEXP status_for(jdv_transport_state *state)
     int pending_cleanup = state && state->pending_disconnect;
     int pending_close = state && state->pending_close;
     double epoch = state ? (double)state->epoch : 0.0;
-    SEXP result = PROTECT(Rf_allocVector(VECSXP, 9));
-    SEXP result_names = PROTECT(Rf_allocVector(STRSXP, 9));
-    for (int i = 0; i < 9; ++i)
+    double max_receive_frames = state ?
+        (double)(state->max_queue_messages + state->max_drain_requests) : 0.0;
+    double max_receive_bytes = state ? (double)state->max_receive_bytes : 0.0;
+    double queue_messages_limit = state ?
+        (double)state->max_queue_messages : 0.0;
+    double queue_bytes_limit = state ? (double)state->max_queue_bytes : 0.0;
+    double max_request_bytes = state ? (double)state->max_request_bytes : 0.0;
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, 14));
+    SEXP result_names = PROTECT(Rf_allocVector(STRSXP, 14));
+    for (int i = 0; i < 14; ++i)
         SET_STRING_ELT(result_names, i, Rf_mkChar(names[i]));
     SET_VECTOR_ELT(result, 0, Rf_ScalarLogical(connected));
     SET_VECTOR_ELT(result, 1, Rf_ScalarLogical(busy));
@@ -715,6 +746,11 @@ static SEXP status_for(jdv_transport_state *state)
     SET_VECTOR_ELT(result, 6, Rf_ScalarLogical(pending_cleanup));
     SET_VECTOR_ELT(result, 7, Rf_ScalarLogical(pending_close));
     SET_VECTOR_ELT(result, 8, Rf_ScalarReal(epoch));
+    SET_VECTOR_ELT(result, 9, Rf_ScalarReal(max_receive_frames));
+    SET_VECTOR_ELT(result, 10, Rf_ScalarReal(max_receive_bytes));
+    SET_VECTOR_ELT(result, 11, Rf_ScalarReal(queue_messages_limit));
+    SET_VECTOR_ELT(result, 12, Rf_ScalarReal(queue_bytes_limit));
+    SET_VECTOR_ELT(result, 13, Rf_ScalarReal(max_request_bytes));
     Rf_setAttrib(result, R_NamesSymbol, result_names);
     UNPROTECT(2);
     return result;
@@ -942,6 +978,11 @@ static void remove_first_line(jdv_transport_state *state)
     if (!newline) return;
     length = (size_t)(newline - state->read_buffer);
     consumed = length + 1;
+    if (state->total_receive_frames >= JDV_MAX_SAFE_INTEGER) {
+        stop_connection(state, 1);
+        return;
+    }
+    state->total_receive_frames++;
     if (length > state->max_request_bytes) {
         send_error(state, "null", "limit_exceeded",
                    "The request exceeds the configured byte limit.");
@@ -1105,6 +1146,45 @@ static size_t receive_socket(jdv_transport_state *state, size_t budget)
         stop_connection(state, 1);
     }
     return received;
+}
+
+/* Remove every terminal queued request, including entries behind live work. */
+static void terminalize_queue(jdv_transport_state *state)
+{
+    size_t original;
+    size_t kept = 0;
+    size_t bytes = 0;
+    size_t i;
+    if (!state || !state->connected) return;
+    original = state->queue_count;
+    for (i = 0; i < original; ++i) {
+        size_t source = (state->queue_head + i) % state->queue_capacity;
+        size_t destination = (state->queue_head + kept) % state->queue_capacity;
+        jdv_request *request = &state->queue[source];
+        int expired = request->has_deadline &&
+            wall_time_seconds() >= request->deadline;
+        if (request->cancelled || expired) {
+            const char *code = request->cancelled ? "cancelled" : "expired";
+            const char *message = request->cancelled ?
+                "The request was cancelled before execution." :
+                "The request expired before execution.";
+            char id_json[JDV_ID_JSON_CAPACITY];
+            memcpy(id_json, request->id_json, sizeof(id_json));
+            free(request->json);
+            memset(request, 0, sizeof(*request));
+            if (state->connected && !send_error(state, id_json, code, message))
+                return;
+            continue;
+        }
+        if (destination != source) {
+            state->queue[destination] = *request;
+            memset(request, 0, sizeof(*request));
+        }
+        bytes += state->queue[destination].length;
+        kept++;
+    }
+    state->queue_count = kept;
+    state->queue_bytes = bytes;
 }
 
 static SEXP gate_body(void *data)
@@ -1329,7 +1409,10 @@ static SEXP service_queue_body(void *data)
     int allow_gate = call->allow_gate;
     size_t drain_budget = call->drain_budget;
     size_t drained = 0;
-    if (!state || state->busy || dispatch_depth || state->closing)
+    if (!state || state->closing)
+        return R_NilValue;
+    terminalize_queue(state);
+    if (state->busy || dispatch_depth)
         return R_NilValue;
     while (state->queue_count && drained < drain_budget && state->connected) {
         jdv_request *front = &state->queue[state->queue_head];
@@ -1337,6 +1420,8 @@ static SEXP service_queue_body(void *data)
         if (front->cancelled) {
             queue_pop(state, request);
             call->owns_request = 1;
+            (void)send_error(state, request->id_json, "cancelled",
+                             "The request was cancelled before execution.");
             free(request->json);
             memset(request, 0, sizeof(*request));
             call->owns_request = 0;
@@ -1346,6 +1431,8 @@ static SEXP service_queue_body(void *data)
         if (front->has_deadline && wall_time_seconds() >= front->deadline) {
             queue_pop(state, request);
             call->owns_request = 1;
+            (void)send_error(state, request->id_json, "expired",
+                             "The request expired before execution.");
             free(request->json);
             memset(request, 0, sizeof(*request));
             call->owns_request = 0;
@@ -1361,6 +1448,11 @@ static SEXP service_queue_body(void *data)
              wall_time_seconds() >= front->deadline)) {
             queue_pop(state, request);
             call->owns_request = 1;
+            (void)send_error(state, request->id_json,
+                             request->cancelled ? "cancelled" : "expired",
+                             request->cancelled ?
+                               "The request was cancelled before execution." :
+                               "The request expired before execution.");
             free(request->json);
             memset(request, 0, sizeof(*request));
             call->owns_request = 0;
@@ -1413,6 +1505,7 @@ typedef struct {
     int allow_gate;
     size_t receive_budget;
     size_t drain_budget;
+    uint64_t ack_frames;
 } jdv_service_call;
 
 static SEXP service_state_body(void *data)
@@ -1421,8 +1514,14 @@ static SEXP service_state_body(void *data)
     jdv_transport_state *state = call->state;
     if (state == active_state && !state->closing) {
         state->last_receive_bytes = receive_socket(state, call->receive_budget);
-        if (state == active_state && state->connected)
+        call->ack_frames = state->total_receive_frames;
+        if (state == active_state && state->connected) {
+            terminalize_queue(state);
             service_queue(state, call->allow_gate, call->drain_budget);
+        }
+        if (state == active_state && state->connected && !state->closing &&
+            call->ack_frames > state->last_ack_frames)
+            (void)send_ack(state, call->ack_frames);
     }
     return R_NilValue;
 }
@@ -1442,6 +1541,7 @@ static void service_state(jdv_transport_state *state, int allow_gate,
     call.allow_gate = allow_gate;
     call.receive_budget = receive_budget;
     call.drain_budget = drain_budget;
+    call.ack_frames = 0;
     state_hold(state);
     (void)R_ExecWithCleanup(service_state_body, &call,
                             release_service, &call);

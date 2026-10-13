@@ -43,6 +43,8 @@ class NDJSONStream:
         self.connection = connection
         self.buffer = bytearray()
         self.eof = False
+        self.acks = []
+        self.last_ack = 0
 
     def readline(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -69,6 +71,27 @@ class NDJSONStream:
                 self.eof = True
             else:
                 self.buffer.extend(chunk)
+
+    def read_response(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return None
+            line = self.readline(timeout=remaining)
+            if line is None:
+                return None
+            if not line:
+                return False
+            message = json.loads(line.decode("utf-8"))
+            if message.get("method") == "ack":
+                frames = message.get("params", {}).get("frames")
+                if not isinstance(frames, int) or frames < self.last_ack:
+                    raise RuntimeError("invalid or decreasing frame acknowledgement")
+                self.last_ack = frames
+                self.acks.append(message)
+                continue
+            return message
 
 
 def main():
@@ -130,13 +153,13 @@ def main():
                 disconnected = False
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline:
-                    line = stream.readline(timeout=0.1)
-                    if line is None:
+                    response = stream.read_response(timeout=0.1)
+                    if response is None:
                         continue
-                    if not line:
+                    if response is False:
                         disconnected = True
                         break
-                    responses.append(json.loads(line.decode("utf-8")))
+                    responses.append(response)
                 if not disconnected:
                     raise RuntimeError("active package unload did not stop the transport")
                 write_result(args.result, {
@@ -210,11 +233,16 @@ def main():
                     ready, _, _ = select.select([connection], [], [], 0.1)
                     if not ready:
                         continue
-                    line = stream.readline()
-                    if not line:
+                    response = stream.read_response(timeout=0.1)
+                    if response is None:
+                        if stream.eof:
+                            disconnected = True
+                            break
+                        continue
+                    if response is False:
                         disconnected = True
                         break
-                    responses.append(json.loads(line.decode("utf-8")))
+                    responses.append(response)
                 if not disconnected:
                     raise RuntimeError("duplicate live ids did not close the connection")
                 write_result(args.result, {
@@ -237,6 +265,26 @@ def main():
                 connection.sendall(
                     json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
                 )
+            elif args.scenario in ("stale-generation", "missing-table"):
+                request["id"] = args.scenario
+                if args.scenario == "stale-generation":
+                    request["params"]["generation"] += 1
+                else:
+                    request["params"]["table"] = "missing-table"
+                expected_ids = [args.scenario]
+                connection.sendall(
+                    json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
+                )
+            elif args.scenario == "ack-controls":
+                request["id"] = "ack-cancel"
+                cancel = {"method": "cancel", "params": {"id": "ack-cancel"}}
+                wake = {"method": "wake"}
+                frames = [
+                    json.dumps(value, separators=(",", ":")).encode("utf-8") + b"\n"
+                    for value in (request, cancel, wake)
+                ]
+                expected_ids = [None, "ack-cancel"]
+                connection.sendall(b"".join(frames) + b'{"id":}\n')
             elif args.scenario == "invalid-cancel":
                 request["id"] = "must-survive"
                 expected_ids = [None, "must-survive"]
@@ -276,7 +324,7 @@ def main():
                     cancel_frame = json.dumps(cancel, separators=(",", ":")).encode("utf-8") + b"\n"
                     followup_frame = json.dumps(followup, separators=(",", ":")).encode("utf-8") + b"\n"
                     connection.sendall(frame + cancel_frame + frame + cancel_frame + followup_frame)
-                    expected_ids = ["followup"]
+                    expected_ids = ["reused", "reused", "followup"]
                 elif args.scenario == "typed-id":
                     request["id"] = 1
                     control = {"method": "cancel", "params": {"id": "1"}}
@@ -346,11 +394,11 @@ def main():
                 request["id"] = "cancel-me" if args.scenario == "cancel" else "expire-me"
                 if args.scenario == "expired":
                     request["deadline"] = time.time() + 0.1
-                connection.sendall(
+                frames = [
                     json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
-                )
+                ]
                 if args.scenario == "cancel":
-                    connection.sendall(
+                    frames.append(
                         json.dumps({
                             "method": "cancel",
                             "params": {"id": "cancel-me"},
@@ -360,6 +408,7 @@ def main():
                             "future": "ignored",
                         }, separators=(",", ":")).encode("utf-8") + b"\n"
                     )
+                connection.sendall(b"".join(frames))
                 time.sleep(0.25)
                 followup = {
                     "id": "followup",
@@ -372,25 +421,39 @@ def main():
                 connection.sendall(
                     json.dumps(followup, separators=(",", ":")).encode("utf-8") + b"\n"
                 )
-                expected_ids = ["followup"]
+                expected_ids = [
+                    "cancel-me" if args.scenario == "cancel" else "expire-me",
+                    "followup",
+                ]
             else:
                 connection.sendall(payload)
 
             responses = []
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline and len(responses) < len(expected_ids):
-                response = read_message_timeout(connection, stream, 0.1)
+                response = stream.read_response(timeout=0.1)
+                if response is False:
+                    break
                 if response is not None:
                     responses.append(response)
+            if args.scenario == "ack-controls":
+                deadline = time.monotonic() + 2
+                while stream.last_ack < 4 and time.monotonic() < deadline:
+                    response = stream.read_response(timeout=0.1)
+                    if response not in (None, False):
+                        raise RuntimeError("unexpected extra business response")
             if [response.get("id") for response in responses] != expected_ids:
                 write_result(args.result, {
                     "hello": hello,
                     "open": opened,
                     "responses": responses,
+                    "acks": stream.acks,
                     "expected_ids": expected_ids,
                     "actual_ids": [response.get("id") for response in responses],
                 })
-                closed = read_message(stream)
+                closed = stream.read_response()
+                if closed is False:
+                    closed = None
                 write_result(args.result + ".closed", closed)
                 return
             opened_params = opened["params"]
@@ -415,9 +478,12 @@ def main():
                     "snapshot_value_count": value_count,
                     "snapshot_node_count": node_count,
                     "responses": responses,
+                    "acks": stream.acks,
                     **queue_info,
                 })
-            closed = read_message(stream)
+            closed = stream.read_response()
+            if closed is False:
+                closed = None
             write_result(args.result + ".closed", closed)
 
 

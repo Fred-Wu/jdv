@@ -16,6 +16,18 @@ def read_message(stream):
     return json.loads(line.decode("utf-8"))
 
 
+def read_response(stream, acknowledgements=None):
+    while True:
+        message = read_message(stream)
+        if message is None:
+            return None
+        if message.get("method") == "ack":
+            if acknowledgements is not None:
+                acknowledgements.append(message)
+            continue
+        return message
+
+
 def write_message(connection, value):
     connection.sendall(json.dumps(value, separators=(",", ":")).encode() + b"\n")
 
@@ -52,7 +64,7 @@ def accept_one(server, timeout):
     return connection
 
 
-def run_rows(connection, opened, count, sent_path):
+def run_rows(connection, opened, count, sent_path, acknowledgements):
     stream = connection.makefile("rb")
     responses = []
     for index in range(count):
@@ -63,18 +75,18 @@ def run_rows(connection, opened, count, sent_path):
         if sent_path is not None:
             Path(sent_path).write_text("sent\n", encoding="utf-8")
             sent_path = None
-        response = read_message(stream)
+        response = read_response(stream, acknowledgements)
         if response is None:
             break
         responses.append(response)
     return responses
 
 
-def observe_close(connection, stream):
+def observe_close(connection, stream, acknowledgements=None):
     messages = []
     while True:
-        message = read_message(stream)
-        if message is None:
+        message = read_response(stream, acknowledgements)
+        if message is None or message is False:
             break
         messages.append(message)
     return messages
@@ -113,12 +125,15 @@ def main():
             for _ in range(2):
                 with accept_one(server, timeout) as connection:
                     stream, hello, opened = receive_open(connection)
-                    closed = observe_close(connection, stream)
-                    records["connections"].append({"hello": hello, "open": opened, "closed": closed})
+                    acknowledgements = []
+                    closed = observe_close(connection, stream, acknowledgements)
+                    records["connections"].append({"hello": hello, "open": opened, "closed": closed, "acks": acknowledgements})
         else:
             with accept_one(server, timeout) as connection:
                 stream, hello, opened = receive_open(connection)
-                records["connections"].append({"hello": hello, "open": opened})
+                acknowledgements = []
+                connection_record = {"hello": hello, "open": opened, "acks": acknowledgements}
+                records["connections"].append(connection_record)
                 if args.trigger is not None:
                     trigger = Path(args.trigger)
                     deadline = time.monotonic() + timeout
@@ -133,7 +148,7 @@ def main():
                     time.sleep(0.08)
                     write_message(connection, rows_request(opened, "rows-2"))
                     for _ in range(2):
-                        response = read_message(stream)
+                        response = read_response(stream, acknowledgements)
                         if response is None:
                             break
                         responses.append(response)
@@ -142,13 +157,13 @@ def main():
                     write_message(connection, rows_request(opened, "rows-1"))
                     write_message(connection, {"method": "wake"})
                     try:
-                        records["close_messages"] = observe_close(connection, stream)
+                        records["close_messages"] = observe_close(connection, stream, acknowledgements)
                     except (ConnectionError, OSError, TimeoutError):
                         records["close_messages"] = []
                     records["eof_observed"] = True
                 else:
                     count = 2 if args.scenario == "interrupt" else 1
-                    records["responses"] = run_rows(connection, opened, count, args.sent)
+                    records["responses"] = run_rows(connection, opened, count, args.sent, acknowledgements)
         result.write_text(json.dumps(records, indent=2), encoding="utf-8")
     finally:
         server.close()

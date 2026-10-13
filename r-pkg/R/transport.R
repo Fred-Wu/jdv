@@ -163,21 +163,34 @@
   .jdv_close_internal(notify = FALSE)
   .jdv_state$outbox <- list()
   .jdv_state$transport <- NULL
+  .jdv_state$transport_limits <- NULL
   .jdv_state$transport_hello <- FALSE
   .jdv_transport_remove_task_callback()
   invisible(NULL)
 }
 
 .jdv_transport_request <- function(message, epoch) {
-  if (
-    isTRUE(.jdv_state$unloading) ||
-      !identical(.jdv_state$transport_epoch, epoch)
-  ) {
+  if (isTRUE(.jdv_state$unloading)) {
     return(NULL)
   }
   request <- tryCatch(.jdv_json_parse(message), error = function(e) e)
   if (inherits(request, "error") || !is.list(request)) {
     return(jdv_rpc(message))
+  }
+  request_id <- tryCatch(.jdv_request_id(request$id), error = function(e) NULL)
+  if (is.null(request_id)) {
+    return(jdv_rpc(message))
+  }
+
+  transport_error <- function(code, message) {
+    error <- structure(
+      list(message = message, call = NULL, code = code),
+      class = c("jdv_rpc_error", "error", "condition")
+    )
+    .jdv_json_encode_error(.jdv_response(request_id, error = error))
+  }
+  if (!identical(.jdv_state$transport_epoch, epoch)) {
+    return(transport_error("stale_generation", "The connection is stale."))
   }
 
   deadline <- request$deadline
@@ -188,7 +201,7 @@
       is.finite(deadline) &&
       deadline < as.numeric(Sys.time())
   ) {
-    return(NULL)
+    return(transport_error("expired", "The request expired before execution."))
   }
 
   method <- request$method
@@ -213,17 +226,19 @@
     ) {
       id <- params$table
       if (!exists(id, envir = .jdv_state$entries, inherits = FALSE)) {
-        return(NULL)
+        return(transport_error("table_not_found", "The table is not open."))
       }
       entry <- get(id, envir = .jdv_state$entries, inherits = FALSE)
+      if (entry$closed) {
+        return(transport_error("table_not_found", "The table is closed."))
+      }
       if (
-        entry$closed ||
-          !identical(
-            as.numeric(entry$generation),
-            as.numeric(params$generation)
-          )
+        !identical(as.numeric(entry$generation), as.numeric(params$generation))
       ) {
-        return(NULL)
+        return(transport_error(
+          "stale_generation",
+          "The table generation is stale."
+        ))
       }
     }
   }
@@ -292,6 +307,13 @@
     .jdv_transport_disconnect(epoch)
     stop("The viewer transport disconnected during setup.", call. = FALSE)
   }
+  .jdv_state$transport_limits <- list(
+    max_receive_frames = status$max_receive_frames,
+    max_receive_bytes = status$max_receive_bytes,
+    queue_messages = status$queue_messages_limit,
+    queue_bytes = status$queue_bytes_limit,
+    max_request_bytes = status$max_request_bytes
+  )
   .jdv_state$transport <- TRUE
   .jdv_state$transport_hello <- FALSE
   .jdv_transport_install_task_callback(epoch)
@@ -317,7 +339,8 @@
       session = paste0("r-", Sys.getpid(), "-", .jdv_state$session_counter),
       pid = as.integer(Sys.getpid()),
       r_version = as.character(getRversion()),
-      jdv_version = as.character(utils::packageVersion("jdv"))
+      jdv_version = as.character(utils::packageVersion("jdv")),
+      limits = .jdv_state$transport_limits
     )
   )
 }

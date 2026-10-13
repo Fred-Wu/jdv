@@ -217,6 +217,40 @@ with_mock_transport <- function(
   expect_identical(received$open$method, "table/open")
   expect_identical(received$open$params$table, id)
   expect_identical(received$open$params$title, "x")
+  expect_setequal(
+    names(received$hello$params$limits),
+    c(
+      "max_receive_frames",
+      "max_receive_bytes",
+      "queue_messages",
+      "queue_bytes",
+      "max_request_bytes"
+    )
+  )
+  expect_gt(received$hello$params$limits$max_receive_frames, 0)
+  expect_gt(received$hello$params$limits$max_receive_bytes, 0)
+  expect_equal(
+    received$hello$params$limits$queue_messages,
+    as.numeric(queue_messages)
+  )
+  expect_equal(
+    received$hello$params$limits$queue_bytes,
+    as.numeric(queue_bytes)
+  )
+  expect_equal(
+    received$hello$params$limits$max_receive_frames,
+    as.numeric(
+      queue_messages + getOption("jdv.transport.max_drain_requests", 8)
+    )
+  )
+  expect_equal(
+    received$hello$params$limits$max_request_bytes,
+    as.numeric(.jdv_max_request_bytes())
+  )
+  expect_equal(
+    received$hello$params$limits$max_receive_bytes,
+    as.numeric(max(64 * 1024, .jdv_max_request_bytes() + 1))
+  )
   if (scenario == "typed-id" && !length(received$responses)) {
     expect_true(FALSE, info = received$debug_transport_status)
   }
@@ -237,7 +271,8 @@ with_mock_transport <- function(
             "invalid-compression-cancel",
             "invalid-deadline-cancel",
             "malformed-deadline-cancel",
-            "expired-cancel"
+            "expired-cancel",
+            "ack-controls"
           )
       ) {
         if (
@@ -248,6 +283,10 @@ with_mock_transport <- function(
         } else {
           2L
         }
+      } else if (scenario %in% c("cancel", "expired")) {
+        2L
+      } else if (scenario == "cancel-id-reuse") {
+        3L
       } else if (scenario == "invalid-cancel") {
         2L
       } else {
@@ -270,6 +309,16 @@ with_mock_transport <- function(
     list("protected", "followup")
   } else if (scenario == "invalid-cancel") {
     list(NULL, "must-survive")
+  } else if (scenario == "cancel") {
+    list("cancel-me", "followup")
+  } else if (scenario == "expired") {
+    list("expire-me", "followup")
+  } else if (scenario == "ack-controls") {
+    list(NULL, "ack-cancel")
+  } else if (scenario %in% c("stale-generation", "missing-table")) {
+    list(scenario)
+  } else if (scenario == "cancel-id-reuse") {
+    list("reused", "reused", "followup")
   } else {
     list(
       if (scenario == "maximum-frame") {
@@ -278,14 +327,8 @@ with_mock_transport <- function(
         1e15
       } else if (scenario == "typed-id") {
         1L
-      } else if (scenario %in% c("cancel", "expired")) {
-        "followup"
       } else if (scenario == "invalid-control") {
         "invalid-control"
-      } else if (scenario == "invalid-cancel") {
-        "must-survive"
-      } else if (scenario == "cancel-id-reuse") {
-        "followup"
       } else if (scenario == "empty-registry-close") {
         "close-table"
       } else {
@@ -298,6 +341,28 @@ with_mock_transport <- function(
     expect_identical(lapply(received$responses, `[[`, "id"), expected_ids)
   } else if (!scenario %in% c("large-snapshot", "disconnect", "duplicate-id")) {
     expect_identical(lapply(received$responses, `[[`, "id"), expected_ids)
+  }
+  if (scenario == "ack-controls") {
+    ack_frames <- vapply(
+      received$acks,
+      function(message) message$params$frames,
+      numeric(1L)
+    )
+    expect_true(length(ack_frames) >= 1L)
+    expect_identical(ack_frames, sort(unique(ack_frames)))
+    expect_identical(tail(ack_frames, 1L), 4)
+    expect_identical(received$responses[[1L]]$error$code, "invalid_request")
+    expect_identical(received$responses[[2L]]$error$code, "cancelled")
+  }
+  if (scenario %in% c("stale-generation", "missing-table")) {
+    expect_identical(
+      received$responses[[1L]]$error$code,
+      if (scenario == "stale-generation") {
+        "stale_generation"
+      } else {
+        "table_not_found"
+      }
+    )
   }
   if (scenario == "fragmented") {
     expect_identical(
@@ -675,13 +740,27 @@ test_that("a host that does not read cannot block a large open indefinitely", {
   expect_length(ls(.jdv_state$entries, all.names = TRUE), 0L)
 })
 
-test_that("cancelled and expired queued work receive no response", {
-  with_mock_transport("cancel", data.frame(value = 11:13))
-  with_mock_transport(
+test_that("cancelled and expired queued work receive terminal responses", {
+  cancelled <- with_mock_transport("cancel", data.frame(value = 11:13))
+  expired <- with_mock_transport(
     "expired",
     data.frame(value = 11:13),
     before_poll = function() Sys.sleep(0.3)
   )
+  expect_identical(cancelled$responses[[1L]]$error$code, "cancelled")
+  expect_identical(expired$responses[[1L]]$error$code, "expired")
+})
+
+test_that("receiver acknowledges all complete frames cumulatively", {
+  received <- with_mock_transport("ack-controls", data.frame(value = 11:13))
+  expect_identical(tail(received$acks, 1L)[[1L]]$params$frames, 4L)
+})
+
+test_that("stale and closed table requests receive terminal errors", {
+  stale <- with_mock_transport("stale-generation", data.frame(value = 11:13))
+  missing <- with_mock_transport("missing-table", data.frame(value = 11:13))
+  expect_identical(stale$responses[[1L]]$error$code, "stale_generation")
+  expect_identical(missing$responses[[1L]]$error$code, "table_not_found")
 })
 
 test_that(

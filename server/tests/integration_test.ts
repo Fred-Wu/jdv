@@ -12,10 +12,15 @@ interface RunningServer {
 
 class ByteReader {
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>;
+  readonly #onPing: (payload: Uint8Array) => Promise<void>;
   #buffer: Uint8Array<ArrayBufferLike> = new Uint8Array();
 
-  constructor(stream: ReadableStream<Uint8Array>) {
+  constructor(
+    stream: ReadableStream<Uint8Array>,
+    onPing: (payload: Uint8Array) => Promise<void> = async () => {},
+  ) {
     this.#reader = stream.getReader();
+    this.#onPing = onPing;
   }
 
   async readExact(length: number): Promise<Uint8Array> {
@@ -43,22 +48,32 @@ class ByteReader {
   }
 
   async readWebSocketText(): Promise<Record<string, unknown>> {
-    const header = await this.readExact(2);
-    let length = header[1] & 0x7f;
-    if (length === 126) {
-      const extended = await this.readExact(2);
-      length = (extended[0] << 8) | extended[1];
-    } else if (length === 127) {
-      const extended = await this.readExact(8);
-      const value = new DataView(extended.buffer).getBigUint64(0, false);
-      if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
-        throw new Error("WebSocket test frame is too large.");
+    for (;;) {
+      const header = await this.readExact(2);
+      let length = header[1] & 0x7f;
+      if (length === 126) {
+        const extended = await this.readExact(2);
+        length = (extended[0] << 8) | extended[1];
+      } else if (length === 127) {
+        const extended = await this.readExact(8);
+        const value = new DataView(extended.buffer).getBigUint64(0, false);
+        if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+          throw new Error("WebSocket test frame is too large.");
+        }
+        length = Number(value);
       }
-      length = Number(value);
+      const opcode = header[0] & 0x0f;
+      const payload = await this.readExact(length);
+      if (opcode === 9) {
+        await this.#onPing(payload);
+        continue;
+      }
+      if (opcode === 10) continue;
+      if (opcode !== 1) {
+        throw new Error(`Expected a text frame, got ${opcode}.`);
+      }
+      return JSON.parse(decoder.decode(payload));
     }
-    const opcode = header[0] & 0x0f;
-    if (opcode !== 1) throw new Error(`Expected a text frame, got ${opcode}.`);
-    return JSON.parse(decoder.decode(await this.readExact(length)));
   }
 }
 
@@ -68,7 +83,10 @@ class RawWebSocket {
 
   private constructor(connection: Deno.Conn) {
     this.#connection = connection;
-    this.#reader = new ByteReader(connection.readable);
+    this.#reader = new ByteReader(
+      connection.readable,
+      (payload) => this.#sendControl(0x8a, payload),
+    );
   }
 
   static async connect(url: string, token?: string): Promise<RawWebSocket> {
@@ -122,6 +140,22 @@ class RawWebSocket {
     }
     const masked = payload.map((byte, index) => byte ^ mask[index % 4]);
     await writeAll(this.#connection, concat(header, mask, masked));
+  }
+
+  async #sendControl(opcode: number, payload: Uint8Array): Promise<void> {
+    if (payload.length > 125) {
+      throw new Error("WebSocket control payload exceeds 125 bytes.");
+    }
+    const mask = crypto.getRandomValues(new Uint8Array(4));
+    const masked = payload.map((byte, index) => byte ^ mask[index % 4]);
+    await writeAll(
+      this.#connection,
+      concat(
+        new Uint8Array([0x80 | opcode, 0x80 | payload.length]),
+        mask,
+        masked,
+      ),
+    );
   }
 
   close(): void {
@@ -202,6 +236,13 @@ Deno.test({
         params: {
           protocol: 1,
           session: "r-4242-1",
+          limits: {
+            max_receive_frames: 128,
+            max_receive_bytes: 512 * 1024,
+            queue_messages: 128,
+            queue_bytes: 16 * 1024 * 1024,
+            max_request_bytes: 10 * 1024 * 1024,
+          },
           pid: 4242,
           r_version: "4.6.1",
           jdv_version: "0.1.0",
@@ -327,6 +368,13 @@ Deno.test({
         params: {
           protocol: 1,
           session: "r-4243-1",
+          limits: {
+            max_receive_frames: 128,
+            max_receive_bytes: 512 * 1024,
+            queue_messages: 128,
+            queue_bytes: 16 * 1024 * 1024,
+            max_request_bytes: 10 * 1024 * 1024,
+          },
           pid: 4243,
           r_version: "4.6.1",
           jdv_version: "0.1.0",
@@ -368,6 +416,7 @@ Deno.test({
         "args <- commandArgs(trailingOnly = TRUE)",
         "done_path <- args[[1L]]",
         "library(jdv)",
+        'cat("JDV_PACKAGE\\t", find.package("jdv"), "\\n", sep = "", file = stderr())',
         'id <- jdv_view(data.frame(value = c(2L, 4L, 8L)), title = "Phase 6 integration", mode = "paged")',
         'cat("READY\\t", id, "\\n", sep = "")',
         "flush.console()",
@@ -383,9 +432,19 @@ Deno.test({
       await Deno.writeTextFile(scriptPath, source);
       const rEnv = Deno.env.toObject();
       rEnv.XDG_CACHE_HOME = cacheRoot;
+      for (
+        const name of [
+          "JDV_ADDRESS",
+          "JDV_DISCOVERY_PATH",
+          "JDV_CACHE_DIR",
+          "R_PROFILE_USER",
+          "R_ENVIRON_USER",
+        ]
+      ) delete rEnv[name];
+      rEnv.JDV_ADDRESS = server.socketPath;
       if (testLibrary) rEnv.R_LIBS_USER = testLibrary;
       rChild = new Deno.Command("Rscript", {
-        args: [scriptPath, donePath],
+        args: ["--vanilla", scriptPath, donePath],
         env: rEnv,
         stdout: "piped",
         stderr: "piped",
@@ -400,7 +459,29 @@ Deno.test({
         );
       }
       const tableId = readyLine.slice("READY\t".length);
-      const sessionOpen = await browserClient.read();
+      let sessionOpen: Record<string, unknown>;
+      try {
+        sessionOpen = await withTimeout(
+          browserClient.read(),
+          10_000,
+          "Timed out waiting for the R session to connect.",
+        );
+      } catch (error) {
+        try {
+          rChild.kill("SIGTERM");
+        } catch {
+          // The R process may already have exited.
+        }
+        const status = await rChild.status;
+        const stderr = await new Response(rChild.stderr).text();
+        const discovery = await Deno.readTextFile(server.discoveryPath)
+          .catch(() => "unavailable");
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)} ` +
+            `R exit=${status.code}; server socket=${server.socketPath}; ` +
+            `discovery=${discovery}; stderr=${stderr}`,
+        );
+      }
       assertMessage(sessionOpen, "session/open");
       const tableOpen = await browserClient.read();
       assertMessage(tableOpen, "table/open");
@@ -720,6 +801,24 @@ async function readLine(
     if (newline >= 0) return text.slice(0, newline);
   }
   return undefined;
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function contentType(path: string): string {

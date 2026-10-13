@@ -75,24 +75,25 @@ requests wait behind it.
 Browser WebSocket input frames are limited to 64 KiB. Incoming R NDJSON frames
 are limited to 10 MiB.
 
-Each R session has at most 32 live requests and 32 sent-request ledger slots
-awaiting an actual terminal R reply or a later prefix proof. An actual terminal
-reply, including `limit_exceeded`, releases only its matching request slot; it
-does not release cumulative wire credit unless it proves R dispatch. The wire
-window is limited to 128 frames and 512 KiB, with 32 frames and 16 KiB reserved
-for cancellation. The ordinary budget is 96 frames and 496 KiB. Frames are
-serialized, limited to 128 per second and 16 per send batch. While requests are
-live, the host schedules one `wake` about every 50 ms when ordinary credit is
-available. It pauses wakes and new requests when the bounded credit is
-exhausted, surfaces a busy event, and does not retry requests. Only a successful
-response or a response known to follow R dispatch acknowledges the sent prefix;
-local timeout or cancellation releases neither the request slot nor wire credit.
-If R never returns a dispatching response, the server cannot guarantee automatic
-recovery of that connection. Close the R viewer registrations and start a new R
-connection to recover; requests are never transparently replayed. The window is
-designed for R's default transport limits; the host does not negotiate custom
-lower limits configured in R, and cannot guarantee the connection remains usable
-with those settings.
+Each R hello must include positive integer limits for received frames and bytes,
+queued messages and bytes, and a single request size. The host clamps its wire
+window to 128 frames and 512 KiB, with up to 32 frames and 16 KiB reserved for
+cancellation while preserving ordinary capacity under smaller negotiated limits.
+It also clamps active requests to 32 and retained request bytes to 16 MiB. A
+request stays in the retained queue until its terminal R reply, even if the
+browser cancels it or its deadline expires.
+
+R acknowledges complete host frames with
+`{"method":"ack","params":{"frames":N}}`, where `N` is the cumulative frame
+count for that connection. A valid ACK releases wire frame and byte credit
+through `N`; repeated ACKs are harmless, and invalid or future counts do not
+release credit. A terminal request reply releases only that request's slot and
+retained queue bytes. This separation lets the server continue sending `wake`
+every 50 ms while R is inside an ordinary top-level wait, even when R cannot
+dispatch requests until it returns to the prompt. Frames are serialized, limited
+to 128 per second and 16 per send batch. The host pauses wakes and new requests
+when negotiated credit is exhausted, surfaces a busy event, and does not retry
+requests.
 
 ## Development
 
@@ -108,8 +109,11 @@ deno test -A server/tests
 ```
 
 The Hub, platform, and R framing unit tests need only Deno. The full suite also
-includes a numeric fixture test that invokes `Rscript` and an installed `jdv`
-encoder. If using a scratch R library, select it explicitly with
+includes R numeric fixtures and an interactive transport regression that runs an
+interactive R process with `--no-readline` against a real TCP server. It holds R
+in `Sys.sleep(10)`, checks that browser requests finish without manual polling,
+and repeats wire cancellation while verifying one terminal reply per request.
+Select the installed package explicitly with
 `JDV_TEST_R_LIB=/path/to/scratch-library deno test -A server/tests`.
 
 The Unix socket, HTTP origin checks, discovery, and R relay tests run on Linux.

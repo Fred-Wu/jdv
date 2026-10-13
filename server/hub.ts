@@ -15,9 +15,16 @@ const WIRE_MAX_FRAMES = 128;
 const WIRE_MAX_BYTES = 512 * 1024;
 const CANCEL_RESERVE_FRAMES = 32;
 const CANCEL_RESERVE_BYTES = 16 * 1024;
-const ORDINARY_MAX_FRAMES = WIRE_MAX_FRAMES - CANCEL_RESERVE_FRAMES;
-const ORDINARY_MAX_BYTES = WIRE_MAX_BYTES - CANCEL_RESERVE_BYTES;
+const MAX_RETAINED_REQUEST_BYTES = 16 * 1024 * 1024;
 const encoder = new TextEncoder();
+
+interface RLimits {
+  receiveFrames: number;
+  receiveBytes: number;
+  queueMessages: number;
+  queueBytes: number;
+  maxRequestBytes: number;
+}
 
 export interface BrowserClient {
   send(value: JsonObject): void;
@@ -38,10 +45,11 @@ interface PendingRequest {
   generation: number;
   deadline: number;
   state: "queued" | "live" | "cancelled" | "expired";
-  counted: boolean;
   localEnded: boolean;
   sequence: number | undefined;
-  credited: boolean;
+  requestBytes: number;
+  queuedBytesAccounted: boolean;
+  sentBytesAccounted: boolean;
   requestFrame: OutboundFrame | null;
   timeoutTimer: ReturnType<typeof setTimeout> | undefined;
   busyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -64,6 +72,7 @@ interface WireCredit {
 interface RSession {
   id: string;
   hello: JsonObject;
+  limits: RLimits;
   peer: RPeer;
   tables: Map<string, TableRecord>;
   pending: Map<string, PendingRequest>;
@@ -73,11 +82,14 @@ interface RSession {
   unackedRequests: number;
   unackedSequences: Set<number>;
   nextSequence: number;
+  acknowledgedSequence: number;
   credits: Map<number, WireCredit>;
   ordinaryFrames: number;
   cancelFrames: number;
   ordinaryBytes: number;
   cancelBytes: number;
+  queuedRequestBytes: number;
+  sentRequestBytes: number;
   creditPaused: boolean;
   wakeTimer: ReturnType<typeof setInterval> | undefined;
   wakeQueued: boolean;
@@ -246,10 +258,11 @@ export class Hub {
       generation: Number(generation),
       deadline: Date.now() + timeout,
       state: "queued",
-      counted: false,
       localEnded: false,
       sequence: undefined,
-      credited: false,
+      requestBytes: 0,
+      queuedBytesAccounted: false,
+      sentBytesAccounted: false,
       requestFrame: null,
       timeoutTimer: undefined,
       busyTimer: undefined,
@@ -271,18 +284,44 @@ export class Hub {
     pending.requestFrame.bytes =
       encoder.encode(`${JSON.stringify(pending.requestFrame.value)}\n`)
         .byteLength;
-    if (pending.requestFrame.bytes > ORDINARY_MAX_BYTES) {
+    const requestByteLimit = Math.min(
+      MAX_RETAINED_REQUEST_BYTES,
+      session.limits.queueBytes,
+    );
+    if (
+      pending.requestFrame.bytes - 1 > session.limits.maxRequestBytes ||
+      pending.requestFrame.bytes - 1 > requestByteLimit ||
+      pending.requestFrame.bytes > this.#ordinaryByteLimit(session)
+    ) {
       client.send({
         type: "error",
         id: browserId,
         session: session.id,
         code: "limit_exceeded",
-        message: "The request exceeds the local transport frame budget.",
+        message: "The request exceeds the negotiated transport frame budget.",
       });
       return;
     }
+    pending.requestBytes = pending.requestFrame.bytes - 1;
+    pending.queuedBytesAccounted = true;
+    session.queuedRequestBytes += pending.requestBytes;
     session.pending.set(id, pending);
     this.#coalesceQueuedPage(session, pending);
+    if (
+      [...session.pending.values()].filter((item) => item.queuedBytesAccounted)
+          .length > MAX_QUEUED_ORDINARY ||
+      session.queuedRequestBytes > MAX_RETAINED_REQUEST_BYTES
+    ) {
+      this.#finishPending(session, pending);
+      client.send({
+        type: "error",
+        id: browserId,
+        session: session.id,
+        code: "limit_exceeded",
+        message: "The negotiated R request queue is full.",
+      });
+      return;
+    }
     if (!this.#enqueue(session, pending.requestFrame)) {
       this.#finishPending(session, pending);
       client.send({
@@ -312,11 +351,14 @@ export class Hub {
 
   #acceptHello(peer: RPeer, message: JsonObject): RSession | null {
     const params = message.params;
+    const limits = isObject(params) && isObject(params.limits)
+      ? parseLimits(params.limits)
+      : null;
     if (
       message.method !== "hello" || !isObject(params) ||
       params.protocol !== 1 ||
       typeof params.session !== "string" ||
-      !/^r-[0-9]+-[0-9]+$/.test(params.session)
+      !/^r-[0-9]+-[0-9]+$/.test(params.session) || !limits
     ) {
       void peer.send({
         id: null,
@@ -334,6 +376,7 @@ export class Hub {
     const session: RSession = {
       id,
       hello: message,
+      limits,
       peer,
       tables: new Map(),
       pending: new Map(),
@@ -343,11 +386,14 @@ export class Hub {
       unackedRequests: 0,
       unackedSequences: new Set(),
       nextSequence: 0,
+      acknowledgedSequence: 0,
       credits: new Map(),
       ordinaryFrames: 0,
       cancelFrames: 0,
       ordinaryBytes: 0,
       cancelBytes: 0,
+      queuedRequestBytes: 0,
+      sentRequestBytes: 0,
       creditPaused: false,
       wakeTimer: undefined,
       wakeQueued: false,
@@ -363,6 +409,10 @@ export class Hub {
   #handleRMessage(session: RSession, message: JsonObject): void {
     if (session.closed) return;
     if (typeof message.method === "string") {
+      if (message.method === "ack") {
+        this.#acknowledgeFrames(session, message.params);
+        return;
+      }
       this.#handleNotification(session, message);
       return;
     }
@@ -373,9 +423,7 @@ export class Hub {
     ) {
       return;
     }
-    const dispatched = provesDispatch(message);
-    if (dispatched) this.#acknowledgeThrough(session, pending.sequence);
-    else this.#releaseRequestSlot(session, pending.sequence);
+    this.#releaseRequestSlot(session, pending);
     const table = session.tables.get(pending.table);
     const deliver = !pending.localEnded && pending.state === "live" && table &&
       table.generation === pending.generation && Date.now() < pending.deadline;
@@ -500,7 +548,6 @@ export class Hub {
       pending.localEnded = true;
       clearTimeout(pending.timeoutTimer);
       clearTimeout(pending.busyTimer);
-      this.#releasePendingCount(session, pending);
       pending.client = null;
       pending.browserId = "";
       pending.requestFrame = null;
@@ -523,7 +570,6 @@ export class Hub {
       pending.state = "expired";
       clearTimeout(pending.timeoutTimer);
       clearTimeout(pending.busyTimer);
-      this.#releasePendingCount(session, pending);
       return;
     }
     const wasSent = pending.state === "live";
@@ -542,7 +588,6 @@ export class Hub {
       pending.localEnded = true;
       clearTimeout(pending.timeoutTimer);
       clearTimeout(pending.busyTimer);
-      this.#releasePendingCount(session, pending);
       pending.client = null;
       pending.browserId = "";
       pending.requestFrame = null;
@@ -562,7 +607,7 @@ export class Hub {
     clearTimeout(pending.timeoutTimer);
     clearTimeout(pending.busyTimer);
     pending.localEnded = true;
-    this.#releasePendingCount(session, pending);
+    this.#releaseRequestBudget(session, pending);
     session.pending.delete(pending.id);
     if (
       ![...session.pending.values()].some((item) =>
@@ -571,10 +616,25 @@ export class Hub {
     ) this.#stopWake(session);
   }
 
-  #releasePendingCount(session: RSession, pending: PendingRequest): void {
-    if (pending.counted) {
+  #releaseRequestBudget(session: RSession, pending: PendingRequest): void {
+    if (pending.queuedBytesAccounted) {
+      session.queuedRequestBytes = Math.max(
+        0,
+        session.queuedRequestBytes - pending.requestBytes,
+      );
+      pending.queuedBytesAccounted = false;
+    }
+    if (pending.sentBytesAccounted) {
+      session.sentRequestBytes = Math.max(
+        0,
+        session.sentRequestBytes - pending.requestBytes,
+      );
+      pending.sentBytesAccounted = false;
+      if (pending.sequence !== undefined) {
+        session.unackedSequences.delete(pending.sequence);
+      }
+      session.unackedRequests = Math.max(0, session.unackedRequests - 1);
       session.liveCount = Math.max(0, session.liveCount - 1);
-      pending.counted = false;
     }
   }
 
@@ -673,10 +733,17 @@ export class Hub {
           frame.pending?.id,
         );
         if (frame.pending) {
+          if (frame.pending.queuedBytesAccounted) {
+            session.queuedRequestBytes = Math.max(
+              0,
+              session.queuedRequestBytes - frame.pending.requestBytes,
+            );
+            frame.pending.queuedBytesAccounted = false;
+          }
           frame.pending.state = "live";
-          frame.pending.counted = true;
           frame.pending.sequence = sequence;
-          frame.pending.credited = false;
+          frame.pending.sentBytesAccounted = true;
+          session.sentRequestBytes += frame.pending.requestBytes;
           session.liveCount++;
           session.unackedRequests++;
           session.unackedSequences.add(sequence);
@@ -796,15 +863,23 @@ export class Hub {
   ): boolean {
     const usedFrames = session.credits.size;
     const usedBytes = session.ordinaryBytes + session.cancelBytes;
-    if (usedFrames >= WIRE_MAX_FRAMES || usedBytes + bytes > WIRE_MAX_BYTES) {
+    const maxFrames = Math.min(WIRE_MAX_FRAMES, session.limits.receiveFrames);
+    const maxBytes = Math.min(WIRE_MAX_BYTES, session.limits.receiveBytes);
+    if (usedFrames >= maxFrames || usedBytes + bytes > maxBytes) {
       return false;
     }
+    const reservedFrames = this.#cancelFrameReserve(session);
+    const reservedBytes = this.#cancelByteReserve(session);
     if (kind === "cancel") {
-      return session.cancelFrames < CANCEL_RESERVE_FRAMES &&
-        session.cancelBytes + bytes <= CANCEL_RESERVE_BYTES;
+      if (reservedFrames === 0 || reservedBytes === 0) {
+        return session.ordinaryFrames < this.#ordinaryFrameLimit(session) &&
+          session.ordinaryBytes + bytes <= this.#ordinaryByteLimit(session);
+      }
+      return session.cancelFrames < reservedFrames &&
+        session.cancelBytes + bytes <= reservedBytes;
     }
-    return session.ordinaryFrames < ORDINARY_MAX_FRAMES &&
-      session.ordinaryBytes + bytes <= ORDINARY_MAX_BYTES;
+    return session.ordinaryFrames < this.#ordinaryFrameLimit(session) &&
+      session.ordinaryBytes + bytes <= this.#ordinaryByteLimit(session);
   }
 
   #chargeWireCredit(
@@ -824,7 +899,14 @@ export class Hub {
     }
   }
 
-  #acknowledgeThrough(session: RSession, sequence: number): void {
+  #acknowledgeFrames(session: RSession, params: unknown): void {
+    if (!isObject(params) || !Number.isSafeInteger(params.frames)) return;
+    const sequence = Number(params.frames);
+    if (
+      sequence < 0 || sequence > session.nextSequence ||
+      sequence <= session.acknowledgedSequence
+    ) return;
+    session.acknowledgedSequence = sequence;
     for (const [frameSequence, credit] of session.credits) {
       if (frameSequence > sequence) continue;
       session.credits.delete(frameSequence);
@@ -836,27 +918,12 @@ export class Hub {
         session.ordinaryFrames--;
       }
     }
-    for (const frameSequence of session.unackedSequences) {
-      if (frameSequence <= sequence) {
-        this.#releaseRequestSlot(session, frameSequence);
-      }
-    }
-    for (const pending of [...session.pending.values()]) {
-      if (
-        pending.localEnded && pending.sequence !== undefined &&
-        pending.sequence <= sequence
-      ) {
-        this.#finishPending(session, pending);
-      }
-    }
     session.creditPaused = false;
     this.#scheduleDrain(session);
   }
 
-  #releaseRequestSlot(session: RSession, sequence: number): void {
-    if (session.unackedSequences.delete(sequence)) {
-      session.unackedRequests = Math.max(0, session.unackedRequests - 1);
-    }
+  #releaseRequestSlot(session: RSession, pending: PendingRequest): void {
+    this.#releaseRequestBudget(session, pending);
   }
 
   #frameEligible(session: RSession, frame: OutboundFrame): boolean {
@@ -864,8 +931,12 @@ export class Hub {
     const pending = frame.pending;
     if (pending) {
       if (
-        session.liveCount >= MAX_LIVE_REQUESTS ||
-        session.unackedRequests >= MAX_LIVE_REQUESTS
+        session.liveCount >= this.#liveRequestLimit(session) ||
+        session.unackedRequests >= this.#liveRequestLimit(session)
+      ) return false;
+      if (
+        session.sentRequestBytes + pending.requestBytes >
+          Math.min(MAX_RETAINED_REQUEST_BYTES, session.limits.queueBytes)
       ) return false;
       if (
         pending.method === "table/rows" &&
@@ -894,8 +965,16 @@ export class Hub {
         !other.localEnded
       )
     ) return false;
-    if (pending && session.liveCount >= MAX_LIVE_REQUESTS) return false;
-    if (pending && session.unackedRequests >= MAX_LIVE_REQUESTS) return true;
+    if (pending && session.liveCount >= this.#liveRequestLimit(session)) {
+      return false;
+    }
+    if (pending && session.unackedRequests >= this.#liveRequestLimit(session)) {
+      return true;
+    }
+    if (
+      pending && session.sentRequestBytes + pending.requestBytes >
+        Math.min(MAX_RETAINED_REQUEST_BYTES, session.limits.queueBytes)
+    ) return false;
     const kind = frame.value.method === "cancel" ? "cancel" : "ordinary";
     return !this.#hasWireCredit(session, kind, frame.bytes);
   }
@@ -920,25 +999,57 @@ export class Hub {
       }
     }
   }
+
+  #liveRequestLimit(session: RSession): number {
+    return Math.min(MAX_LIVE_REQUESTS, session.limits.queueMessages);
+  }
+
+  #ordinaryFrameLimit(session: RSession): number {
+    const total = Math.min(WIRE_MAX_FRAMES, session.limits.receiveFrames);
+    return total - this.#cancelFrameReserve(session);
+  }
+
+  #ordinaryByteLimit(session: RSession): number {
+    const total = Math.min(WIRE_MAX_BYTES, session.limits.receiveBytes);
+    return total - this.#cancelByteReserve(session);
+  }
+
+  #cancelFrameReserve(session: RSession): number {
+    const total = Math.min(WIRE_MAX_FRAMES, session.limits.receiveFrames);
+    const messages = this.#liveRequestLimit(session);
+    return Math.min(CANCEL_RESERVE_FRAMES, messages, total - 1);
+  }
+
+  #cancelByteReserve(session: RSession): number {
+    const total = Math.min(WIRE_MAX_BYTES, session.limits.receiveBytes);
+    return Math.min(CANCEL_RESERVE_BYTES, total - 1);
+  }
 }
 
 function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function provesDispatch(message: JsonObject): boolean {
-  if (Object.hasOwn(message, "result")) return true;
-  if (!isObject(message.error) || typeof message.error.code !== "string") {
-    return false;
-  }
-  return [
-    "r_error",
-    "interrupted",
-    "method_not_found",
-    "table_not_found",
-    "stale_generation",
-    "schema_changed",
-  ].includes(message.error.code);
+function parseLimits(value: JsonObject): RLimits | null {
+  const fields = [
+    "max_receive_frames",
+    "max_receive_bytes",
+    "queue_messages",
+    "queue_bytes",
+    "max_request_bytes",
+  ] as const;
+  if (
+    fields.some((field) =>
+      !Number.isSafeInteger(value[field]) || Number(value[field]) < 1
+    )
+  ) return null;
+  return {
+    receiveFrames: Number(value.max_receive_frames),
+    receiveBytes: Number(value.max_receive_bytes),
+    queueMessages: Number(value.queue_messages),
+    queueBytes: Number(value.queue_bytes),
+    maxRequestBytes: Number(value.max_request_bytes),
+  };
 }
 
 function isTerminalResponse(message: JsonObject): boolean {

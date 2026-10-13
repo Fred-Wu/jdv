@@ -9,6 +9,7 @@
   state$outbox <- list()
   state$rpc_depth <- 0L
   state$transport <- NULL
+  state$transport_limits <- NULL
   state$transport_epoch <- 0L
   state$transport_hello <- FALSE
   state$session_counter <- 0L

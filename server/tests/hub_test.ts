@@ -50,6 +50,14 @@ class MemoryConnection implements ByteConnection {
 
 type JsonRecord = Record<string, unknown>;
 
+const DEFAULT_LIMITS = {
+  max_receive_frames: 128,
+  max_receive_bytes: 512 * 1024,
+  queue_messages: 128,
+  queue_bytes: 16 * 1024 * 1024,
+  max_request_bytes: 10 * 1024 * 1024,
+};
+
 class MemoryBrowser implements BrowserClient {
   readonly messages: JsonRecord[] = [];
   #waiters: Array<() => void> = [];
@@ -114,7 +122,7 @@ Deno.test("invalid hello followed by valid hello in one chunk is terminal", asyn
   const valid = JSON.stringify({
     id: "good",
     method: "hello",
-    params: { protocol: 1, session: "r-1-1" },
+    params: { protocol: 1, session: "r-1-1", limits: { ...DEFAULT_LIMITS } },
   });
   connection.injectRaw(new TextEncoder().encode(`${invalid}\n${valid}\n`));
   await waitFor(() => connection.closed);
@@ -128,6 +136,21 @@ Deno.test("invalid hello followed by valid hello in one chunk is terminal", asyn
   hub.close();
 });
 
+Deno.test("hello requires every positive integer receive and queue limit", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  const { max_request_bytes: _maxRequestBytes, ...incomplete } = DEFAULT_LIMITS;
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-5000-1", limits: incomplete },
+  });
+  await waitFor(() => connection.closed);
+  assertEquals(JSON.parse(connection.writes[0]).error.code, "unsupported");
+  hub.close();
+});
+
 Deno.test("R request ids are remapped and table close updates the Snapshot cache", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
@@ -135,7 +158,7 @@ Deno.test("R request ids are remapped and table close updates the Snapshot cache
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-1-1" },
+    params: { protocol: 1, session: "r-1-1", limits: { ...DEFAULT_LIMITS } },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -188,14 +211,14 @@ Deno.test("R request ids are remapped and table close updates the Snapshot cache
   hub.close();
 });
 
-Deno.test("cancelled late replies release wire prefix without reaching the browser", async () => {
+Deno.test("cancelled late replies release their request slot without reaching the browser", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
   hub.acceptR(connection);
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-2-1" },
+    params: { protocol: 1, session: "r-2-1", limits: { ...DEFAULT_LIMITS } },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -234,7 +257,7 @@ Deno.test("queued row pages coalesce and wait behind the already sent page", asy
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-3-1" },
+    params: { protocol: 1, session: "r-3-1", limits: { ...DEFAULT_LIMITS } },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -266,14 +289,14 @@ Deno.test("queued row pages coalesce and wait behind the already sent page", asy
   hub.close();
 });
 
-Deno.test("request credit stays bounded until a dispatch response proves a prefix", async () => {
+Deno.test("terminal replies free request slots without acknowledging wire credit", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
   hub.acceptR(connection);
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-4-1" },
+    params: { protocol: 1, session: "r-4-1", limits: { ...DEFAULT_LIMITS } },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -345,7 +368,7 @@ Deno.test("repeated limit errors release request slots but retain frame credit",
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-11-1" },
+    params: { protocol: 1, session: "r-11-1", limits: { ...DEFAULT_LIMITS } },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -414,7 +437,7 @@ Deno.test("reserved cancellation slots remain usable behind a full ordinary queu
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-5-1" },
+    params: { protocol: 1, session: "r-5-1", limits: { ...DEFAULT_LIMITS } },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -473,7 +496,7 @@ Deno.test("late close results update only their still-current table generation",
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-6-1" },
+    params: { protocol: 1, session: "r-6-1", limits: { ...DEFAULT_LIMITS } },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -522,7 +545,7 @@ Deno.test("a cancelled table close still clears its current Snapshot cache", asy
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-7-1" },
+    params: { protocol: 1, session: "r-7-1", limits: { ...DEFAULT_LIMITS } },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -569,7 +592,7 @@ Deno.test("request timeout stops wakes and ignores a later result", async () => 
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-8-1" },
+    params: { protocol: 1, session: "r-8-1", limits: { ...DEFAULT_LIMITS } },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -647,7 +670,7 @@ Deno.test("silent wake traffic pauses at the frame window and resumes on a resul
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-9-1" },
+    params: { protocol: 1, session: "r-9-1", limits: { ...DEFAULT_LIMITS } },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -697,12 +720,329 @@ Deno.test("silent wake traffic pauses at the frame window and resumes on a resul
       false,
     );
     connection.inject({ id: first.id, result: { columns: [] } });
+    connection.inject(
+      notification("ack", { frames: connection.writes.length }),
+    );
     await waitFor(() =>
       connection.writes.some((line) => {
         const value = JSON.parse(line) as JsonRecord;
         return value.method === "table/schema" && value.id !== first.id;
       })
     );
+  } finally {
+    hub.close();
+  }
+});
+
+Deno.test("future ACKs and terminal replies cannot free wire credit", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "r-5001-1",
+      limits: {
+        ...DEFAULT_LIMITS,
+        max_receive_frames: 9,
+        queue_messages: 8,
+      },
+    },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "table/open");
+    const request = (id: string) =>
+      hub.handleBrowser(browser, {
+        type: "request",
+        id,
+        session: "r-5001-1",
+        method: "table/schema",
+        params: { table: "table-1", generation: 1 },
+      });
+    request("one");
+    const first = await connection.nextWrite(0);
+    assertEquals(first.method, "table/schema");
+
+    connection.inject(notification("ack", { frames: 2 }));
+    connection.inject({ id: first.id, result: { columns: [] } });
+    request("two");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertEquals(
+      connection.writes.filter((line) =>
+        (JSON.parse(line) as JsonRecord).method === "table/schema"
+      ).length,
+      1,
+    );
+
+    connection.inject(notification("ack", { frames: 1 }));
+    const second = await connection.nextWrite(1);
+    assertEquals(second.method, "table/schema");
+    connection.inject(notification("ack", { frames: 1 }));
+    connection.inject({ id: second.id, result: { columns: [] } });
+    await browser.nextMessage((message) =>
+      message.type === "response" && message.id === "two"
+    );
+    request("three");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assertEquals(
+      connection.writes.filter((line) =>
+        (JSON.parse(line) as JsonRecord).method === "table/schema"
+      ).length,
+      2,
+    );
+    connection.inject(notification("ack", { frames: 2 }));
+    const third = await connection.nextWrite(2);
+    assertEquals(third.method, "table/schema");
+    connection.inject(notification("ack", { frames: 3 }));
+    connection.inject({ id: third.id, result: { columns: [] } });
+  } finally {
+    hub.close();
+  }
+});
+
+Deno.test("a request larger than R's negotiated single-request limit is rejected", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "r-5004-1",
+      limits: { ...DEFAULT_LIMITS, max_request_bytes: 128 },
+    },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "table/open");
+    hub.handleBrowser(browser, {
+      type: "request",
+      id: "too-large",
+      session: "r-5004-1",
+      method: "table/schema",
+      params: { table: "table-1", generation: 1 },
+    });
+    const rejected = await browser.nextMessage((message) =>
+      message.type === "error" && message.id === "too-large"
+    );
+    assertEquals(rejected.code, "limit_exceeded");
+    assertEquals(connection.writes.length, 0);
+  } finally {
+    hub.close();
+  }
+});
+
+Deno.test("a single request larger than R's queue byte limit is rejected", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "r-5006-1",
+      limits: { ...DEFAULT_LIMITS, queue_bytes: 1024 },
+    },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "table/open");
+    hub.handleBrowser(browser, {
+      type: "request",
+      id: "too-many-bytes",
+      session: "r-5006-1",
+      method: "table/schema",
+      params: {
+        table: "table-1",
+        generation: 1,
+        padding: "x".repeat(1500),
+      },
+    });
+    const rejected = await browser.nextMessage((message) =>
+      message.type === "error" && message.id === "too-many-bytes"
+    );
+    assertEquals(rejected.code, "limit_exceeded");
+    assertEquals(connection.writes.length, 0);
+  } finally {
+    hub.close();
+  }
+});
+
+Deno.test("a one-message R queue retains the latest unsent page behind a live page", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "r-5005-1",
+      limits: {
+        ...DEFAULT_LIMITS,
+        max_receive_frames: 2,
+        queue_messages: 1,
+      },
+    },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "table/open");
+    const requestPage = (id: string, offset: number) =>
+      hub.handleBrowser(browser, {
+        type: "request",
+        id,
+        session: "r-5005-1",
+        method: "table/rows",
+        params: { table: "table-1", generation: 1, offset, limit: 10 },
+      });
+    requestPage("live-page", 0);
+    const first = await connection.nextWrite(0);
+    assertEquals(first.method, "table/rows");
+    connection.inject(notification("ack", { frames: 1 }));
+    requestPage("old-page", 10);
+    requestPage("latest-page", 20);
+    await browser.nextMessage((message) =>
+      message.type === "cancelled" && message.id === "old-page"
+    );
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assertEquals(connection.writes.length, 1);
+
+    connection.inject({ id: first.id, result: { rows: [] } });
+    await browser.nextMessage((message) =>
+      message.type === "response" && message.id === "live-page"
+    );
+    const next = await connection.nextWrite(1);
+    assertEquals(next.method, "table/rows");
+    assertEquals((next.params as JsonRecord).offset, 20);
+    connection.inject(notification("ack", { frames: 2 }));
+    connection.inject({ id: next.id, result: { rows: [] } });
+  } finally {
+    hub.close();
+  }
+});
+
+Deno.test("R queue bytes are charged on send and retained through a terminal reply", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "r-5002-1",
+      limits: { ...DEFAULT_LIMITS, queue_bytes: 1024 },
+    },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "table/open");
+    const request = (id: string) =>
+      hub.handleBrowser(browser, {
+        type: "request",
+        id,
+        session: "r-5002-1",
+        method: "table/schema",
+        params: {
+          table: "table-1",
+          generation: 1,
+          padding: "x".repeat(512),
+        },
+      });
+    request("first");
+    await waitFor(() => connection.writes.length >= 1);
+    const first = await connection.nextWrite(0);
+    assertEquals(first.method, "table/schema");
+    connection.inject(notification("ack", { frames: 1 }));
+    request("second");
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assertEquals(connection.writes.length, 1);
+
+    connection.inject({ id: first.id, result: { columns: [] } });
+    await browser.nextMessage((message) =>
+      message.type === "response" && message.id === "first"
+    );
+    const second = await connection.nextWrite(1);
+    assertEquals(second.method, "table/schema");
+    connection.inject(
+      notification("ack", { frames: connection.writes.length }),
+    );
+    connection.inject({ id: second.id, result: { columns: [] } });
+  } finally {
+    hub.close();
+  }
+});
+
+Deno.test("more than 32 cancelled request waves leave the session usable", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "r-5003-1",
+      limits: { ...DEFAULT_LIMITS },
+    },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "table/open");
+    for (let index = 0; index < 40; index++) {
+      const start = connection.writes.length;
+      hub.handleBrowser(browser, {
+        type: "request",
+        id: `cancel-${index}`,
+        session: "r-5003-1",
+        method: "table/schema",
+        params: { table: "table-1", generation: 1 },
+      });
+      const request = await connection.nextWrite(start);
+      hub.handleBrowser(browser, {
+        type: "cancel",
+        id: `cancel-${index}`,
+        session: "r-5003-1",
+      });
+      const cancel = await connection.nextWrite(start + 1);
+      assertEquals(cancel.method, "cancel");
+      connection.inject({
+        id: request.id,
+        error: { code: "cancelled", message: "Cancelled." },
+      });
+      connection.inject(
+        notification("ack", { frames: connection.writes.length }),
+      );
+    }
+
+    const finalStart = connection.writes.length;
+    hub.handleBrowser(browser, {
+      type: "request",
+      id: "after-cancel-waves",
+      session: "r-5003-1",
+      method: "table/schema",
+      params: { table: "table-1", generation: 1 },
+    });
+    const finalRequest = await connection.nextWrite(finalStart);
+    assertEquals(finalRequest.method, "table/schema");
   } finally {
     hub.close();
   }
@@ -715,7 +1055,7 @@ Deno.test("large ordinary frames stop at the 496 KiB byte budget", async () => {
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-10-1" },
+    params: { protocol: 1, session: "r-10-1", limits: { ...DEFAULT_LIMITS } },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);

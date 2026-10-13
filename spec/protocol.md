@@ -9,7 +9,7 @@ define the browser-to-server protocol.
 The envelope is JSON-RPC-like, but it is not JSON-RPC 2.0: messages use a
 `method` and `params`, while successful responses use `id`, `result`, and
 `warnings`. A request that expects a response has an `id`. Notifications such
-as `wake` and `cancel` omit the id and have no response.
+as `wake`, `cancel`, and `ack` omit the id and have no response.
 
 ## Compatibility and encoding
 
@@ -191,9 +191,8 @@ that return a result. `params` is required by table methods and `cancel`.
 Unknown envelope and method-parameter fields are ignored. `encoding`,
 `compression`, and `deadline` are optional. `deadline`, when provided, must be
 a finite JSON number containing an absolute Unix timestamp in seconds. A
-synchronous request already past its deadline returns an `expired` error. A
-queued request that expires before execution begins is discarded without a
-response.
+synchronous or queued request that is past its deadline before execution
+begins receives an `expired` error response.
 
 The configured request byte limit applies to the entire JSON text. The parser
 also validates strict JSON number syntax and rejects duplicate object keys.
@@ -231,12 +230,15 @@ is:
 Errors raised after request processing begins, including user method errors
 and interrupts, are returned to the request caller. Their `code` distinguishes
 the failure class; `message` is bounded text and must not be used as a stable
-machine-readable discriminator. An error may also include `details`. Work
-cancelled, expired, or stale before it begins receives no response. A
-synchronous `jdv_rpc()` call is an embedding path and does not apply the Phase
-5 execution gate. It treats `wake` and `cancel` as no-op notifications and
-returns `NULL` for them; the transport queue matches cancellation ids to
-pending work before execution.
+machine-readable discriminator. An error may also include `details`. Every
+accepted request receives exactly one terminal response. Work cancelled,
+expired, or stale before it begins receives an error response with code
+`cancelled`, `expired`, or `stale_generation`; a closed table receives
+`table_not_found`. A synchronous `jdv_rpc()` call is an embedding path and does
+not apply the local transport execution gate. It treats `wake` and `cancel` as
+no-op notifications and returns `NULL` for them; the transport queue matches
+cancellation ids to pending work before execution. `ack` is transport-owned and
+flows only from R to the host; it is not passed to `jdv_rpc()`.
 
 ## Methods
 
@@ -249,7 +251,8 @@ pending work before execution.
 | `table/closed` | R to host | Notification | Removes an evicted generation from the host cache. |
 | `hello` | R to host | Notification | Announces protocol and runtime versions for a new connection. |
 | `wake` | Host to R | Notification | No result; asks the event loop to check its execution gate again. |
-| `cancel` | Host to R | Notification | Names pending work for the Phase 5 queue to cancel. |
+| `cancel` | Host to R | Notification | Names pending work for the local queue to cancel. |
+| `ack` | R to host | Notification | Cumulatively acknowledges complete host-to-R NDJSON frames read on this connection. |
 
 ### `table/schema`
 
@@ -318,7 +321,14 @@ notification with no request id:
     "session": "r-1234-1",
     "pid": 1234,
     "r_version": "4.6.1",
-    "jdv_version": "0.1.0"
+    "jdv_version": "0.1.0",
+    "limits": {
+      "max_receive_frames": 264,
+      "max_receive_bytes": 1048577,
+      "queue_messages": 256,
+      "queue_bytes": 16777216,
+      "max_request_bytes": 1048576
+    }
   }
 }
 ```
@@ -338,6 +348,11 @@ active registry entry and releases its retained table data. Entries created
 with `jdv_register()` share this process-wide registry and are cleared by a
 viewer disconnect as well.
 
+`params.limits` reports the effective limits captured for this connection:
+the maximum complete frames and bytes read in one receive callback, pending
+queue message and byte limits, and maximum request bytes. Hosts use the smaller
+of each reported value and their own configured bound.
+
 ### `wake` and `cancel`
 
 `wake` has no response and no parameters. In the synchronous API it is a
@@ -349,15 +364,27 @@ identifies a request by the same string-or-safe-integer rules as envelope ids.
 Ids retain their JSON type, so the string `"1"` does not match numeric id `1`.
 The synchronous API validates this id and returns `NULL`; it has no pending
 queue and creates no cancellation tombstone for an unknown or completed id.
-The Phase 5 queue adapter matches the id to pending work and marks that
-request cancelled so it is discarded before execution. A running R method is
-not forcibly interrupted by this notification. The adapter validates the full
+The local queue removes a matching request that has not begun and sends one
+`cancelled` terminal error for that request. A running R method is not forcibly
+interrupted by this notification and produces its ordinary terminal response.
+The adapter validates the full
 control envelope, including encoding, compression, and deadline, before it
 changes pending work. Unsupported encoding or compression and an expired
 recognized cancel have no effect and produce no notification response.
 Malformed JSON, an invalid raw id token, or an invalid deadline type can be
 rejected during native request validation with a best-effort `invalid_request`
 response whose id is `null`; these errors do not change pending work.
+
+### `ack`
+
+The R transport sends `{"method":"ack","params":{"frames":N}}` at the end
+of a receive callback after it has read at least one complete frame. `N` is the
+cumulative number of complete host-to-R NDJSON frames read on that connection,
+including `wake`, `cancel`, malformed, and rejected frames. It is a safe
+integer and never decreases. The host releases frame and byte credit through
+that cumulative frame boundary. The acknowledgement is sent after the receive
+loop, so frames sent in response to an acknowledgement are read in a later
+callback.
 
 ## Column payloads
 
@@ -559,20 +586,24 @@ Each receive callback is also bounded to
 `jdv.transport.queue_messages + jdv.transport.max_drain_requests` frames and
 `max(64 KiB, request limit + 1)` bytes. `cancel` and `wake` notifications count
 toward the frame limit. A host that exceeds either callback quota is
-disconnected.
+disconnected. Each receive callback acknowledges the cumulative number of
+complete frames read, including malformed or rejected frames; the host
+releases frame and byte credit through that boundary.
 Hosts must keep at most 32 table requests awaiting a response. Before sending
 a page request that makes an unsent page request obsolete, hosts must replace
 the unsent request with the newer page. Hosts must bound the cumulative
 unconfirmed output prefix to the receive callback's frame and byte quotas so
 multiple writes cannot exceed one callback's budget when coalesced. Each
-`cancel` and `wake` frame consumes the same frame and byte credit as a request.
-Before dispatch, the transport discards cancelled and expired requests and
-`table/*` requests whose table generation is no longer active. For each
+`cancel` and `wake` frame consumes the same frame and byte credit as a
+request. Before dispatch, the transport removes cancelled and expired queued
+requests and sends their terminal errors, including while another R method is
+running. The R adapter returns `table_not_found` for a closed or missing table
+and `stale_generation` for an obsolete generation. For each
 request, dispatch requires native `busy == 0` and a single `sys.nframe()`
 evaluation in `R_BaseEnv` to return zero. If the queue is empty, the gate skips
 that evaluation. A started request that fails, including an interrupt, is
-terminal and is never retried. A synchronous stale generation returns
-`stale_generation`; a stale queued request is discarded without a response.
+terminal and is never retried. A synchronous or queued stale generation
+returns `stale_generation`.
 A second live pending request with the same typed id is rejected as
 `invalid_request` on a best-effort basis and closes the connection to avoid
 ambiguous responses. Cancelled requests no longer reserve their ids.
