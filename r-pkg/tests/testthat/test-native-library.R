@@ -10,7 +10,19 @@ test_that("the native library registers only its private routines", {
         c("is_na", "values", "rank", "order", "eq", "between")
       ),
       "C_jdv_json_parse",
-      "C_jdv_json_encode"
+      "C_jdv_json_encode",
+      paste0(
+        "C_jdv_transport_",
+        c(
+          "connect",
+          "send",
+          "poll",
+          "close",
+          "status",
+          "can_unload",
+          "housekeeping"
+        )
+      )
     )
   )
   expect_identical(
@@ -19,6 +31,7 @@ test_that("the native library registers only its private routines", {
     ]],
     3L
   )
+  expect_true(.Call(C_jdv_transport_can_unload))
   expect_error(.Call("C_jdv_int64_values", int64_fixture("1"), PACKAGE = "jdv"))
   expect_error(getNativeSymbolInfo("cJSON_Version", PACKAGE = "jdv"))
 })

@@ -1,0 +1,381 @@
+#!/usr/bin/env python3
+"""Small Unix-domain NDJSON peer used by the R transport integration test."""
+
+import argparse
+import json
+import os
+import select
+import socket
+import time
+
+
+def read_message(stream):
+    line = stream.readline()
+    if not line:
+        return None
+    return json.loads(line.decode("utf-8"))
+
+
+def write_message(connection, value):
+    connection.sendall(
+        json.dumps(value, separators=(",", ":")).encode("utf-8") + b"\n"
+    )
+
+
+def write_result(path, value):
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as result:
+        json.dump(value, result)
+        result.flush()
+        os.fsync(result.fileno())
+    os.replace(temporary, path)
+
+
+def read_message_timeout(connection, stream, timeout):
+    line = stream.readline(timeout=timeout)
+    if not line:
+        return None
+    return json.loads(line.decode("utf-8"))
+
+
+class NDJSONStream:
+    def __init__(self, connection):
+        self.connection = connection
+        self.buffer = bytearray()
+        self.eof = False
+
+    def readline(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            newline = self.buffer.find(b"\n")
+            if newline >= 0:
+                line = bytes(self.buffer[: newline + 1])
+                del self.buffer[: newline + 1]
+                return line
+            if self.eof:
+                if self.buffer:
+                    line = bytes(self.buffer)
+                    self.buffer.clear()
+                    return line
+                return b""
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return None
+            ready, _, _ = select.select([self.connection], [], [], remaining)
+            if not ready:
+                return None
+            chunk = self.connection.recv(65536)
+            if not chunk:
+                self.eof = True
+            else:
+                self.buffer.extend(chunk)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--socket", required=True)
+    parser.add_argument("--result", required=True)
+    parser.add_argument("--ready", required=True)
+    parser.add_argument("--scenario", default="basic")
+    parser.add_argument("--request-bytes", type=int, default=1024 * 1024)
+    args = parser.parse_args()
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(args.socket)
+    server.listen(1)
+    with open(args.ready, "w", encoding="utf-8"):
+        pass
+    with server:
+        connection, _ = server.accept()
+        with connection:
+            stream = NDJSONStream(connection)
+            if args.scenario == "silent":
+                time.sleep(2)
+                return
+            hello_line = stream.readline()
+            opened_line = stream.readline()
+            hello = json.loads(hello_line.decode("utf-8")) if hello_line else None
+            opened = json.loads(opened_line.decode("utf-8")) if opened_line else None
+            if hello is None or opened is None:
+                raise RuntimeError("connection ended before hello and table/open")
+            if hello.get("method") != "hello" or opened.get("method") != "table/open":
+                raise RuntimeError("unexpected connection setup message order")
+            params = opened["params"]
+            if args.scenario == "disconnect":
+                write_result(args.result, {"hello": hello, "open": opened, "responses": []})
+                return
+            request = {
+                "id": "mock-rows-1",
+                "method": "table/rows",
+                "params": {
+                    "table": params["table"],
+                    "generation": params["generation"],
+                    "offset": 0,
+                    "limit": 2,
+                },
+            }
+            payload = json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
+            expected_ids = ["mock-rows-1"]
+            if args.scenario == "large-snapshot":
+                expected_ids = []
+            elif args.scenario == "active-unload":
+                request["id"] = "active-unload"
+                connection.sendall(
+                    json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
+                )
+                responses = []
+                disconnected = False
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    line = stream.readline(timeout=0.1)
+                    if line is None:
+                        continue
+                    if not line:
+                        disconnected = True
+                        break
+                    responses.append(json.loads(line.decode("utf-8")))
+                if not disconnected:
+                    raise RuntimeError("active package unload did not stop the transport")
+                write_result(args.result, {
+                        "hello": hello,
+                        "open": opened,
+                        "responses": responses,
+                        "disconnected": True,
+                    })
+                return
+            elif args.scenario == "empty-registry-close":
+                request = {
+                    "id": "close-table",
+                    "method": "table/close",
+                    "params": {
+                        "table": params["table"],
+                        "generation": params["generation"],
+                    },
+                }
+                expected_ids = ["close-table"]
+                connection.sendall(
+                    json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
+                )
+            elif args.scenario == "duplicate-id":
+                request["id"] = "duplicate-live-id"
+                frame = json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
+                connection.sendall(frame + frame)
+                responses = []
+                disconnected = False
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    ready, _, _ = select.select([connection], [], [], 0.1)
+                    if not ready:
+                        continue
+                    line = stream.readline()
+                    if not line:
+                        disconnected = True
+                        break
+                    responses.append(json.loads(line.decode("utf-8")))
+                if not disconnected:
+                    raise RuntimeError("duplicate live ids did not close the connection")
+                write_result(args.result, {
+                        "hello": hello,
+                        "open": opened,
+                        "responses": responses,
+                        "disconnected": True,
+                    })
+                return
+            elif args.scenario == "numeric-id":
+                request["id"] = 1000000000000000
+                expected_ids = [1000000000000000]
+                connection.sendall(
+                    json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
+                )
+            elif args.scenario == "invalid-control":
+                request["id"] = "invalid-control"
+                request["params"] = {"table": params["table"]}
+                expected_ids = ["invalid-control"]
+                connection.sendall(
+                    json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
+                )
+            elif args.scenario == "invalid-cancel":
+                request["id"] = "must-survive"
+                expected_ids = [None, "must-survive"]
+                connection.sendall(
+                    json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
+                )
+                connection.sendall(
+                    b'{"method":"cancel","params":{"id":1.0}}\n'
+                )
+            elif args.scenario in (
+                "invalid-encoding-cancel",
+                "invalid-compression-cancel",
+                "invalid-deadline-cancel",
+                "malformed-deadline-cancel",
+                "expired-cancel",
+                "typed-id",
+                "cancel-id-reuse",
+            ):
+                if args.scenario == "cancel-id-reuse":
+                    request["id"] = "reused"
+                    cancel = {
+                        "method": "cancel",
+                        "params": {"id": "reused"},
+                        "encoding": "json",
+                        "compression": "none",
+                        "deadline": time.time() + 10,
+                    }
+                    followup = {
+                        "id": "followup",
+                        "method": "table/schema",
+                        "params": {
+                            "table": params["table"],
+                            "generation": params["generation"],
+                        },
+                    }
+                    frame = json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
+                    cancel_frame = json.dumps(cancel, separators=(",", ":")).encode("utf-8") + b"\n"
+                    followup_frame = json.dumps(followup, separators=(",", ":")).encode("utf-8") + b"\n"
+                    connection.sendall(frame + cancel_frame + frame + cancel_frame + followup_frame)
+                    expected_ids = ["followup"]
+                elif args.scenario == "typed-id":
+                    request["id"] = 1
+                    control = {"method": "cancel", "params": {"id": "1"}}
+                    expected_ids = [1]
+                else:
+                    request["id"] = "protected"
+                    control = {"method": "cancel", "params": {"id": "protected"}}
+                    if args.scenario == "invalid-encoding-cancel":
+                        control["encoding"] = "unsupported"
+                    elif args.scenario == "invalid-compression-cancel":
+                        control["compression"] = "unsupported"
+                    elif args.scenario == "invalid-deadline-cancel":
+                        control["deadline"] = "invalid"
+                    elif args.scenario == "malformed-deadline-cancel":
+                        control["deadline"] = []
+                    else:
+                        control["deadline"] = time.time() - 1
+                    expected_ids = ["protected", "followup"]
+                    if args.scenario in (
+                        "invalid-deadline-cancel",
+                        "malformed-deadline-cancel",
+                    ):
+                        expected_ids = [None, "protected", "followup"]
+                if args.scenario != "cancel-id-reuse":
+                    connection.sendall(
+                        json.dumps(request, separators=(",", ":")).encode("utf-8")
+                        + b"\n"
+                        + json.dumps(control, separators=(",", ":")).encode("utf-8")
+                        + b"\n"
+                    )
+                if args.scenario not in ("typed-id", "cancel-id-reuse"):
+                    time.sleep(0.2)
+                    followup = {
+                        "id": "followup",
+                        "method": "table/schema",
+                        "params": {
+                            "table": params["table"],
+                            "generation": params["generation"],
+                        },
+                    }
+                    connection.sendall(
+                        json.dumps(followup, separators=(",", ":")).encode("utf-8")
+                        + b"\n"
+                    )
+            elif args.scenario == "fragmented":
+                for chunk in (payload[:1], payload[1:3], payload[3:]):
+                    connection.sendall(chunk)
+                    time.sleep(0.01)
+            elif args.scenario == "maximum-frame":
+                request = {
+                    "id": "maximum-frame",
+                    "method": "table/schema",
+                    "params": {
+                        "table": params["table"],
+                        "generation": params["generation"],
+                    },
+                    "padding": "",
+                }
+                encoded = json.dumps(request, separators=(",", ":")).encode("utf-8")
+                request["padding"] = "x" * max(0, args.request_bytes - len(encoded))
+                payload = json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
+                if len(payload) != args.request_bytes + 1:
+                    raise RuntimeError("failed to construct the configured maximum frame")
+                expected_ids = ["maximum-frame"]
+                connection.sendall(payload)
+            elif args.scenario in ("cancel", "expired"):
+                request["id"] = "cancel-me" if args.scenario == "cancel" else "expire-me"
+                if args.scenario == "expired":
+                    request["deadline"] = time.time() + 0.1
+                connection.sendall(
+                    json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
+                )
+                if args.scenario == "cancel":
+                    connection.sendall(
+                        json.dumps({
+                            "method": "cancel",
+                            "params": {"id": "cancel-me"},
+                            "encoding": "json",
+                            "compression": "none",
+                            "deadline": time.time() + 10,
+                            "future": "ignored",
+                        }, separators=(",", ":")).encode("utf-8") + b"\n"
+                    )
+                time.sleep(0.25)
+                followup = {
+                    "id": "followup",
+                    "method": "table/schema",
+                    "params": {
+                        "table": params["table"],
+                        "generation": params["generation"],
+                    },
+                }
+                connection.sendall(
+                    json.dumps(followup, separators=(",", ":")).encode("utf-8") + b"\n"
+                )
+                expected_ids = ["followup"]
+            else:
+                connection.sendall(payload)
+
+            responses = []
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and len(responses) < len(expected_ids):
+                response = read_message_timeout(connection, stream, 0.1)
+                if response is not None:
+                    responses.append(response)
+            if [response.get("id") for response in responses] != expected_ids:
+                write_result(args.result, {
+                    "hello": hello,
+                    "open": opened,
+                    "responses": responses,
+                    "expected_ids": expected_ids,
+                    "actual_ids": [response.get("id") for response in responses],
+                })
+                closed = read_message(stream)
+                write_result(args.result + ".closed", closed)
+                return
+            opened_params = opened["params"]
+            data = opened_params.get("data") or {}
+            columns = data.get("columns", [])
+            value_count = sum(
+                len(
+                    column.get("values") or column.get("display", [])
+                )
+                for column in columns
+            )
+            node_count = len(data.get("row_index", [])) + sum(
+                len(channel)
+                for column in columns
+                for channel in column.values()
+                if isinstance(channel, list)
+            )
+            write_result(args.result, {
+                    "hello": hello,
+                    "open": opened,
+                    "open_wire_bytes": len(opened_line),
+                    "snapshot_value_count": value_count,
+                    "snapshot_node_count": node_count,
+                    "responses": responses,
+                })
+            closed = read_message(stream)
+            write_result(args.result + ".closed", closed)
+
+
+if __name__ == "__main__":
+    main()

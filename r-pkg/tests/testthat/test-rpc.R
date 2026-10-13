@@ -250,11 +250,10 @@ test_that(
     )
     expect_null(jdv_rpc('{"method":"wake"}'))
     expect_null(jdv_rpc('{"method":"cancel","params":{"id":"pending"}}'))
-    expect_null(jdv_rpc(rpc_request(
-      "table/schema",
-      params,
-      extra = list(deadline = 1)
-    )))
+    expect_rpc_code(
+      rpc_call("table/schema", params, extra = list(deadline = 1)),
+      "expired"
+    )
     expect_rpc_code(
       rpc_call(
         "table/schema",

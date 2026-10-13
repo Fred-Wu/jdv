@@ -1,19 +1,149 @@
 #include <R.h>
+#include <Rinternals.h>
 #include <R_ext/Rdynload.h>
 #include "int64.h"
+#include "transport.h"
+
+static int module_depth = 0;
+
+int jdv_module_depth(void)
+{
+    return module_depth;
+}
+
+void jdv_module_enter(void)
+{
+    module_depth++;
+}
+
+void jdv_module_leave(void)
+{
+    if (module_depth > 0) module_depth--;
+}
+
+static void release_module_entry(void *data)
+{
+    (void)data;
+    jdv_module_leave();
+}
+
+#define JDV_WRAP_0(entry, target)                                      \
+    static SEXP entry##_body(void *data)                               \
+    {                                                                  \
+        (void)data;                                                    \
+        return target();                                               \
+    }                                                                  \
+    static SEXP entry(void)                                            \
+    {                                                                  \
+        jdv_module_enter();                                            \
+        return R_ExecWithCleanup(entry##_body, NULL,                    \
+                                 release_module_entry, NULL);          \
+    }
+
+#define JDV_WRAP_1(entry, target)                                      \
+    typedef struct { SEXP a; } entry##_args;                           \
+    static SEXP entry##_body(void *data)                               \
+    {                                                                  \
+        entry##_args *args = (entry##_args *)data;                     \
+        return target(args->a);                                        \
+    }                                                                  \
+    static SEXP entry(SEXP a)                                           \
+    {                                                                  \
+        entry##_args args = {a};                                       \
+        jdv_module_enter();                                            \
+        return R_ExecWithCleanup(entry##_body, &args,                   \
+                                 release_module_entry, &args);         \
+    }
+
+#define JDV_WRAP_2(entry, target)                                      \
+    typedef struct { SEXP a, b; } entry##_args;                        \
+    static SEXP entry##_body(void *data)                               \
+    {                                                                  \
+        entry##_args *args = (entry##_args *)data;                     \
+        return target(args->a, args->b);                               \
+    }                                                                  \
+    static SEXP entry(SEXP a, SEXP b)                                  \
+    {                                                                  \
+        entry##_args args = {a, b};                                    \
+        jdv_module_enter();                                            \
+        return R_ExecWithCleanup(entry##_body, &args,                   \
+                                 release_module_entry, &args);         \
+    }
+
+#define JDV_WRAP_3(entry, target)                                      \
+    typedef struct { SEXP a, b, c; } entry##_args;                     \
+    static SEXP entry##_body(void *data)                               \
+    {                                                                  \
+        entry##_args *args = (entry##_args *)data;                     \
+        return target(args->a, args->b, args->c);                      \
+    }                                                                  \
+    static SEXP entry(SEXP a, SEXP b, SEXP c)                          \
+    {                                                                  \
+        entry##_args args = {a, b, c};                                 \
+        jdv_module_enter();                                            \
+        return R_ExecWithCleanup(entry##_body, &args,                   \
+                                 release_module_entry, &args);         \
+    }
+
+#define JDV_WRAP_4(entry, target)                                      \
+    typedef struct { SEXP a, b, c, d; } entry##_args;                  \
+    static SEXP entry##_body(void *data)                               \
+    {                                                                  \
+        entry##_args *args = (entry##_args *)data;                     \
+        return target(args->a, args->b, args->c, args->d);             \
+    }                                                                  \
+    static SEXP entry(SEXP a, SEXP b, SEXP c, SEXP d)                  \
+    {                                                                  \
+        entry##_args args = {a, b, c, d};                              \
+        jdv_module_enter();                                            \
+        return R_ExecWithCleanup(entry##_body, &args,                   \
+                                 release_module_entry, &args);         \
+    }
 
 SEXP C_jdv_json_parse(SEXP input, SEXP max_bytes);
 SEXP C_jdv_json_encode(SEXP object, SEXP max_bytes, SEXP max_work_bytes);
+SEXP C_jdv_transport_connect(SEXP address, SEXP request_callback,
+                             SEXP disconnect_callback, SEXP limits);
+SEXP C_jdv_transport_send(SEXP messages);
+SEXP C_jdv_transport_poll(void);
+SEXP C_jdv_transport_close(void);
+SEXP C_jdv_transport_status(void);
+SEXP C_jdv_transport_can_unload(void);
+SEXP C_jdv_transport_housekeeping(void);
+
+JDV_WRAP_1(jdv_entry_int64_is_na, C_jdv_int64_is_na)
+JDV_WRAP_1(jdv_entry_int64_values, C_jdv_int64_values)
+JDV_WRAP_1(jdv_entry_int64_rank, C_jdv_int64_rank)
+JDV_WRAP_2(jdv_entry_int64_order, C_jdv_int64_order)
+JDV_WRAP_2(jdv_entry_int64_eq, C_jdv_int64_eq)
+JDV_WRAP_3(jdv_entry_int64_between, C_jdv_int64_between)
+JDV_WRAP_2(jdv_entry_json_parse, C_jdv_json_parse)
+JDV_WRAP_3(jdv_entry_json_encode, C_jdv_json_encode)
+JDV_WRAP_4(jdv_entry_transport_connect, C_jdv_transport_connect)
+JDV_WRAP_1(jdv_entry_transport_send, C_jdv_transport_send)
+JDV_WRAP_0(jdv_entry_transport_poll, C_jdv_transport_poll)
+JDV_WRAP_0(jdv_entry_transport_close, C_jdv_transport_close)
+JDV_WRAP_0(jdv_entry_transport_status, C_jdv_transport_status)
+JDV_WRAP_0(jdv_entry_transport_can_unload, C_jdv_transport_can_unload)
+JDV_WRAP_0(jdv_entry_transport_housekeeping,
+           C_jdv_transport_housekeeping)
 
 static const R_CallMethodDef CallEntries[] = {
-    {"C_jdv_int64_is_na", (DL_FUNC)&C_jdv_int64_is_na, 1},
-    {"C_jdv_int64_values", (DL_FUNC)&C_jdv_int64_values, 1},
-    {"C_jdv_int64_rank", (DL_FUNC)&C_jdv_int64_rank, 1},
-    {"C_jdv_int64_order", (DL_FUNC)&C_jdv_int64_order, 2},
-    {"C_jdv_int64_eq", (DL_FUNC)&C_jdv_int64_eq, 2},
-    {"C_jdv_int64_between", (DL_FUNC)&C_jdv_int64_between, 3},
-    {"C_jdv_json_parse", (DL_FUNC)&C_jdv_json_parse, 2},
-    {"C_jdv_json_encode", (DL_FUNC)&C_jdv_json_encode, 3},
+    {"C_jdv_int64_is_na", (DL_FUNC)&jdv_entry_int64_is_na, 1},
+    {"C_jdv_int64_values", (DL_FUNC)&jdv_entry_int64_values, 1},
+    {"C_jdv_int64_rank", (DL_FUNC)&jdv_entry_int64_rank, 1},
+    {"C_jdv_int64_order", (DL_FUNC)&jdv_entry_int64_order, 2},
+    {"C_jdv_int64_eq", (DL_FUNC)&jdv_entry_int64_eq, 2},
+    {"C_jdv_int64_between", (DL_FUNC)&jdv_entry_int64_between, 3},
+    {"C_jdv_json_parse", (DL_FUNC)&jdv_entry_json_parse, 2},
+    {"C_jdv_json_encode", (DL_FUNC)&jdv_entry_json_encode, 3},
+    {"C_jdv_transport_connect", (DL_FUNC)&jdv_entry_transport_connect, 4},
+    {"C_jdv_transport_send", (DL_FUNC)&jdv_entry_transport_send, 1},
+    {"C_jdv_transport_poll", (DL_FUNC)&jdv_entry_transport_poll, 0},
+    {"C_jdv_transport_close", (DL_FUNC)&jdv_entry_transport_close, 0},
+    {"C_jdv_transport_status", (DL_FUNC)&jdv_entry_transport_status, 0},
+    {"C_jdv_transport_can_unload", (DL_FUNC)&jdv_entry_transport_can_unload, 0},
+    {"C_jdv_transport_housekeeping", (DL_FUNC)&jdv_entry_transport_housekeeping, 0},
     {NULL, NULL, 0}
 };
 
@@ -22,4 +152,10 @@ void R_init_jdv(DllInfo *dll)
     R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
     R_useDynamicSymbols(dll, FALSE);
     R_forceSymbols(dll, TRUE);
+}
+
+void R_unload_jdv(DllInfo *dll)
+{
+    (void)dll;
+    jdv_transport_unload();
 }

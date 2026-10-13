@@ -2,18 +2,20 @@
 % Please edit documentation in R/rpc.R
 \name{jdv_rpc}
 \alias{jdv_rpc}
-\title{Process one transport-independent viewer request}
+\title{Process a viewer request or poll the local transport}
 \usage{
-jdv_rpc(request)
+jdv_rpc(request = NULL)
 }
 \arguments{
-\item{request}{One JSON request string.}
+\item{request}{One JSON request string, or \code{NULL} to poll the active viewer.}
 }
 \value{
 A JSON response string or NULL for a notification.
 }
 \description{
-Notifications such as \code{wake} and \code{cancel} return NULL. Request envelopes
-return a JSON response containing the original id and a warnings array. This
-synchronous API does not apply the Phase 5 event gate.
+With no argument or \code{NULL}, explicitly poll the active transport and process
+at most the configured drain batch. This recovery path bypasses the event
+gate and does not run reentrantly. A JSON request string is handled
+synchronously as an embedding API and remains independent of the transport.
+Notifications such as \code{wake} and \code{cancel} return \code{NULL}.
 }

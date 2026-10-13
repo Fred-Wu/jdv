@@ -53,8 +53,10 @@ setting. Snapshot uses the smaller of \code{jdv.snapshot_max_bytes} and
 \code{jdv.max_message_bytes}; page work uses \code{jdv.max_message_bytes}. When
 \code{jdv.max_work_bytes} is finite, query work, page extraction, and response
 encoding share that per-operation allowance. In the event-loop request path,
-R defers user interrupts while a sort or filter runs; the viewer UI should
-show that R is busy. These estimates do not bound total process memory,
-source storage, arbitrary user method allocations, R allocator and GC
-overhead, or transient R-internal string conversion and sorting scratch.
+Interrupt behavior depends on R's suspension state when a transport callback
+begins; if interrupts were already suspended, a long sort or filter may not
+stop promptly. The viewer UI should show that R is busy. These estimates do
+not bound total process memory, source storage, arbitrary user method
+allocations, R allocator and GC overhead, or transient R-internal string
+conversion and sorting scratch.
 }

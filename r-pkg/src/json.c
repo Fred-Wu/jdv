@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "cjson/cJSON.h"
+#include "json.h"
 
 typedef struct {
     cJSON *tree;
@@ -121,6 +122,9 @@ typedef struct {
     size_t length;
     size_t at;
     size_t nodes;
+    size_t max_nodes;
+    size_t max_members;
+    int max_depth;
 } json_cursor;
 
 static void skip_space(json_cursor *cursor)
@@ -239,7 +243,7 @@ static int parse_json_object(json_cursor *cursor, int depth)
         return 1;
     }
     for (;;) {
-        if (++members > 1024) return 0;
+        if (++members > cursor->max_members) return 0;
         if (!parse_json_string(cursor)) return 0;
         skip_space(cursor);
         if (cursor->at >= cursor->length || cursor->text[cursor->at++] != ':') return 0;
@@ -257,7 +261,8 @@ static int parse_json_value(json_cursor *cursor, int depth)
 {
     size_t remaining;
     const unsigned char *text;
-    if (depth > 128 || cursor->at >= cursor->length || ++cursor->nodes > 100000) return 0;
+    if (depth > cursor->max_depth || cursor->at >= cursor->length ||
+        ++cursor->nodes > cursor->max_nodes) return 0;
     text = cursor->text + cursor->at;
     remaining = cursor->length - cursor->at;
     if (*text == '{') return parse_json_object(cursor, depth);
@@ -299,12 +304,107 @@ static int json_string_is_id(const unsigned char *text, size_t start, size_t end
     return at == end - 1 && n == 2 && decoded[0] == 'i' && decoded[1] == 'd';
 }
 
+static int json_string_equals(const unsigned char *text, size_t start,
+                              size_t end, const char *expected)
+{
+    size_t at = start + 1;
+    size_t index = 0;
+    while (at + 1 < end) {
+        unsigned int value = text[at++];
+        if (value == '\\') {
+            if (at >= end - 1) return 0;
+            value = text[at++];
+            if (value == 'u') {
+                value = 0;
+                for (int i = 0; i < 4; ++i) {
+                    if (at >= end - 1) return 0;
+                    int digit = hex_value(text[at++]);
+                    if (digit < 0) return 0;
+                    value = (value << 4) | (unsigned int)digit;
+                }
+                if (value > 0x7f) return 0;
+            } else if (value == '"' || value == '\\' || value == '/') {
+                /* These escapes represent their literal ASCII character. */
+            } else {
+                switch (value) {
+                case 'b': value = '\b'; break;
+                case 'f': value = '\f'; break;
+                case 'n': value = '\n'; break;
+                case 'r': value = '\r'; break;
+                case 't': value = '\t'; break;
+                default: return 0;
+                }
+            }
+        }
+        if (expected[index] == '\0' || value != (unsigned char)expected[index])
+            return 0;
+        ++index;
+    }
+    return at == end - 1 && expected[index] == '\0';
+}
+
+static int safe_request_id_token(const unsigned char *text,
+                                 size_t start, size_t end)
+{
+    uint64_t magnitude = 0;
+    size_t digit;
+    if (start >= end) return 0;
+    if (text[start] == '"') return end - start >= 2 && text[end - 1] == '"';
+    digit = start;
+    if (text[digit] == '-') return 0;
+    if (digit == end) return 0;
+    for (; digit < end; ++digit) {
+        unsigned char c = text[digit];
+        uint64_t value;
+        if (c < '0' || c > '9') return 0;
+        value = (uint64_t)(c - '0');
+        if (magnitude >
+            (UINT64_C(9007199254740991) - value) / UINT64_C(10)) return 0;
+        magnitude = magnitude * 10 + value;
+        if (magnitude > UINT64_C(9007199254740991)) return 0;
+    }
+    return 1;
+}
+
+static int safe_cancel_id(const unsigned char *text, size_t start, size_t end)
+{
+    json_cursor cursor = {text, end, start, 0, end + 1, end + 1, 128};
+    if (start >= end || text[start] != '{') return 1;
+    ++cursor.at;
+    skip_space(&cursor);
+    if (cursor.at < end && text[cursor.at] == '}') return 1;
+    for (;;) {
+        size_t key_start = cursor.at;
+        size_t key_end;
+        size_t value_start;
+        size_t value_end;
+        if (!parse_json_string(&cursor)) return 0;
+        key_end = cursor.at;
+        skip_space(&cursor);
+        if (cursor.at >= end || text[cursor.at++] != ':') return 0;
+        skip_space(&cursor);
+        value_start = cursor.at;
+        if (!parse_json_value(&cursor, 1)) return 0;
+        value_end = cursor.at;
+        if (json_string_is_id(text, key_start, key_end) &&
+            !safe_request_id_token(text, value_start, value_end)) return 0;
+        skip_space(&cursor);
+        if (cursor.at >= end) return 0;
+        if (text[cursor.at] == '}') return 1;
+        if (text[cursor.at++] != ',') return 0;
+        skip_space(&cursor);
+    }
+}
+
 /* cJSON stores numbers as doubles. Reject request IDs whose raw JSON number
  * is fractional, exponential, or outside the exact integer range before that
  * conversion can round them into a different ID. */
-static int safe_top_level_numeric_id(const unsigned char *text, size_t length)
+static int safe_request_ids(const unsigned char *text, size_t length)
 {
-    json_cursor cursor = {text, length, 0, 0};
+    json_cursor cursor = {text, length, 0, 0, length + 1, length + 1, 128};
+    size_t params_start = 0;
+    size_t params_end = 0;
+    int cancel_method = 0;
     skip_space(&cursor);
     if (cursor.at >= length || text[cursor.at++] != '{') return 1;
     skip_space(&cursor);
@@ -320,36 +420,85 @@ static int safe_top_level_numeric_id(const unsigned char *text, size_t length)
         size_t value_start = cursor.at;
         if (!parse_json_value(&cursor, 1)) return 0;
         size_t value_end = cursor.at;
-        if (is_id && value_start < value_end &&
-            (text[value_start] == '-' || isdigit(text[value_start]))) {
-            uint64_t magnitude = 0;
-            size_t digit = value_start + (text[value_start] == '-' ? 1 : 0);
-            if (digit == value_end) return 0;
-            for (; digit < value_end; ++digit) {
-                unsigned char c = text[digit];
-                if (c < '0' || c > '9') return 0;
-                uint64_t value = (uint64_t)(c - '0');
-                if (magnitude >
-                    (UINT64_C(9007199254740991) - value) / UINT64_C(10)) return 0;
-                magnitude = magnitude * 10 + value;
-                if (magnitude > UINT64_C(9007199254740991)) return 0;
-            }
+        if (is_id && !safe_request_id_token(text, value_start, value_end)) return 0;
+        if (json_string_equals(text, key_start, key_end, "method") &&
+            text[value_start] == '"')
+            cancel_method = json_string_equals(text, value_start, value_end,
+                                               "cancel");
+        if (json_string_equals(text, key_start, key_end, "params")) {
+            params_start = value_start;
+            params_end = value_end;
         }
         skip_space(&cursor);
         if (cursor.at >= length) return 0;
-        if (text[cursor.at] == '}') return 1;
+        if (text[cursor.at] == '}') {
+            if (cancel_method && params_end > params_start)
+                return safe_cancel_id(text, params_start, params_end);
+            return 1;
+        }
         if (text[cursor.at++] != ',') return 0;
         skip_space(&cursor);
     }
 }
 
-static int strict_json_document(const unsigned char *text, size_t length)
+static int strict_json_document(const unsigned char *text, size_t length,
+                                size_t max_nodes, size_t max_members)
 {
-    json_cursor cursor = {text, length, 0, 0};
+    json_cursor cursor = {text, length, 0, 0, max_nodes, max_members, 128};
     skip_space(&cursor);
     if (!parse_json_value(&cursor, 0)) return 0;
     skip_space(&cursor);
     return cursor.at == length;
+}
+
+int jdv_json_validate(const unsigned char *text, size_t length,
+                      size_t max_bytes)
+{
+    const char *end;
+    size_t tree_nodes = 0;
+    unsigned char *terminated;
+    cJSON *tree;
+    int valid;
+
+    if (!text || length == 0 || length > max_bytes ||
+        memchr(text, '\0', length) != NULL ||
+        !valid_utf8(text, length) ||
+        !strict_json_document(text, length, 100000, 1024) ||
+        !safe_request_ids(text, length)) {
+        return 0;
+    }
+
+    if (length == SIZE_MAX) return 0;
+    terminated = (unsigned char *)malloc(length + 1);
+    if (!terminated) return 0;
+    memcpy(terminated, text, length);
+    terminated[length] = '\0';
+    tree = cJSON_ParseWithLengthOpts((const char *)terminated, length + 1,
+                                     &end, 1);
+    if (!tree) {
+        free(terminated);
+        return 0;
+    }
+    while ((size_t)(end - (const char *)terminated) < length &&
+           isspace((unsigned char)*end)) {
+        ++end;
+    }
+    valid = (size_t)(end - (const char *)terminated) == length &&
+        tree_valid(tree, 0, &tree_nodes);
+    cJSON_Delete(tree);
+    free(terminated);
+    return valid;
+}
+
+int jdv_json_validate_output(const unsigned char *text, size_t length,
+                             size_t max_bytes)
+{
+    if (!text || length == 0 || length > max_bytes || length == SIZE_MAX ||
+        memchr(text, '\0', length) != NULL || !valid_utf8(text, length) ||
+        !strict_json_document(text, length, length + 1, length + 1)) {
+        return 0;
+    }
+    return 1;
 }
 
 static void set_class(SEXP x, const char *name)
@@ -412,7 +561,6 @@ SEXP C_jdv_json_parse(SEXP input, SEXP max_bytes)
     const char *text;
     const char *end;
     size_t length;
-    size_t tree_nodes = 0;
     double limit;
     parse_state state;
     SEXP continuation;
@@ -426,17 +574,15 @@ SEXP C_jdv_json_parse(SEXP input, SEXP max_bytes)
     length = (size_t)LENGTH(STRING_ELT(input, 0));
     if (length > limit) Rf_error("jdv_json_input_limit");
     if (memchr(text, '\0', length) != NULL) Rf_error("Invalid JSON input: embedded NUL.");
-    if (!valid_utf8((const unsigned char *)text, length)) Rf_error("Invalid JSON input: malformed UTF-8.");
-    if (!strict_json_document((const unsigned char *)text, length)) Rf_error("Invalid JSON input.");
-    if (!safe_top_level_numeric_id((const unsigned char *)text, length)) Rf_error("Invalid JSON request id.");
+    if (!jdv_json_validate((const unsigned char *)text, length, (size_t)limit)) {
+        if (!safe_request_ids((const unsigned char *)text, length))
+            Rf_error("Invalid JSON request id.");
+        Rf_error("Invalid JSON input.");
+    }
     continuation = PROTECT(R_MakeUnwindCont());
     state.tree = cJSON_ParseWithLengthOpts(text, length + 1, &end, 1);
     if (!state.tree) Rf_error("Invalid JSON input.");
     while ((size_t)(end - text) < length && isspace((unsigned char)*end)) ++end;
-    if ((size_t)(end - text) != length || !tree_valid(state.tree, 0, &tree_nodes)) {
-        cJSON_Delete(state.tree);
-        Rf_error("Invalid JSON input.");
-    }
     result = R_UnwindProtect(parse_body, &state, parse_cleanup, &state, continuation);
     UNPROTECT(1);
     return result;

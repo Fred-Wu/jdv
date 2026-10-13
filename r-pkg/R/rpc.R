@@ -1,5 +1,5 @@
-# The registry is deliberately independent of the transport. Phase 5 may add
-# queued requests around these entries without changing the table engine.
+# The registry is deliberately independent of the transport so embedding and
+# local-viewer calls use the same table engine.
 .jdv_state <- local({
   state <- new.env(parent = emptyenv())
   state$entries <- new.env(hash = TRUE, parent = emptyenv())
@@ -8,8 +8,21 @@
   state$sequence <- 0
   state$outbox <- list()
   state$rpc_depth <- 0L
+  state$transport <- NULL
+  state$transport_epoch <- 0L
+  state$transport_hello <- FALSE
+  state$session_counter <- 0L
+  state$transport_task_callback <- NULL
+  state$unloading <- FALSE
   state
 })
+
+.jdv_assert_active <- function() {
+  if (isTRUE(.jdv_state$unloading)) {
+    stop("The jdv namespace is shutting down.", call. = FALSE)
+  }
+  invisible(NULL)
+}
 
 jdv_json_array <- function(x = list()) {
   if (!is.list(x) || !is.null(names(x))) {
@@ -442,10 +455,12 @@ jdv_json_object <- function(x = list()) {
 #' `jdv.max_message_bytes`; page work uses `jdv.max_message_bytes`. When
 #' `jdv.max_work_bytes` is finite, query work, page extraction, and response
 #' encoding share that per-operation allowance. In the event-loop request path,
-#' R defers user interrupts while a sort or filter runs; the viewer UI should
-#' show that R is busy. These estimates do not bound total process memory,
-#' source storage, arbitrary user method allocations, R allocator and GC
-#' overhead, or transient R-internal string conversion and sorting scratch.
+#' Interrupt behavior depends on R's suspension state when a transport callback
+#' begins; if interrupts were already suspended, a long sort or filter may not
+#' stop promptly. The viewer UI should show that R is busy. These estimates do
+#' not bound total process memory, source storage, arbitrary user method
+#' allocations, R allocator and GC overhead, or transient R-internal string
+#' conversion and sorting scratch.
 #' @return
 #' A list containing a table `id`, its `open` JSON message, and any pending
 #' transport notifications as JSON strings in `notifications` (for example, a
@@ -457,6 +472,7 @@ jdv_register <- function(
   mode = c("auto", "snapshot", "paged"),
   collation = c("C", "locale")
 ) {
+  .jdv_assert_active()
   mode <- match.arg(mode)
   if (missing(collation)) {
     collation <- getOption("jdv.collation", "C")
@@ -538,6 +554,7 @@ jdv_register <- function(
       }
     }
   )
+  .jdv_assert_active()
   title_key <- if (is.null(title)) NULL else .jdv_title_key(title)
   previous <- if (
     !is.null(title_key) &&
@@ -609,11 +626,13 @@ jdv_register <- function(
       }
     }
   )
+  .jdv_assert_active()
   old <- if (exists(id, envir = .jdv_state$entries, inherits = FALSE)) {
     get(id, envir = .jdv_state$entries, inherits = FALSE)
   } else {
     NULL
   }
+  .jdv_assert_active()
   active <- length(ls(.jdv_state$entries, all.names = TRUE))
   while (active > max_tables || (is.null(old) && active >= max_tables)) {
     candidates <- lapply(
@@ -624,9 +643,19 @@ jdv_register <- function(
       which.min(vapply(candidates, `[[`, numeric(1L), "sequence"))
     ]]
     .jdv_close_internal(oldest$id, notify = TRUE)
+    .jdv_assert_active()
     active <- active - 1L
   }
+  .jdv_assert_active()
   entry <- .jdv_install(content, title, id, generation)
+  committed <- FALSE
+  on.exit(
+    if (!committed && isTRUE(.jdv_state$unloading)) {
+      .jdv_close_internal(id, expected = entry)
+    },
+    add = TRUE
+  )
+  .jdv_assert_active()
   if (is.null(title)) {
     .jdv_state$next_id <- .jdv_state$next_id + 1
   }
@@ -641,6 +670,7 @@ jdv_register <- function(
       envir = .jdv_state$titles
     )
   }
+  .jdv_assert_active()
   if (!is.null(old)) {
     .jdv_close_entry(old)
   }
@@ -650,6 +680,8 @@ jdv_register <- function(
     character()
   }
   .jdv_state$outbox <- list()
+  .jdv_assert_active()
+  committed <- TRUE
   list(id = id, open = open, notifications = notifications)
 }
 
@@ -764,7 +796,9 @@ jdv_register <- function(
         "deadline must be one finite Unix timestamp in seconds."
       )
     }
-    if (deadline < now) return(NULL)
+    if (deadline < now) {
+      query_error("expired", "Request deadline has expired.")
+    }
   }
   if (method == "wake") {
     return(NULL)
@@ -773,8 +807,8 @@ jdv_register <- function(
     params <- request$params
     .jdv_fields(params, "id")
     invisible(.jdv_request_id(params$id))
-    # Synchronous RPC has no queued request to cancel. Phase 5's queue adapter
-    # will match this notification against pending IDs before execution.
+    # Synchronous RPC has no queued request to cancel. The transport queue
+    # matches this notification against pending IDs before execution.
     return(NULL)
   }
   if (is.null(request_id)) {
@@ -906,17 +940,34 @@ jdv_register <- function(
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
-#' Process one transport-independent viewer request
+#' Process a viewer request or poll the local transport
 #'
-#' Notifications such as `wake` and `cancel` return NULL. Request envelopes
-#' return a JSON response containing the original id and a warnings array. This
-#' synchronous API does not apply the Phase 5 event gate.
+#' With no argument or `NULL`, explicitly poll the active transport and process
+#' at most the configured drain batch. This recovery path bypasses the event
+#' gate and does not run reentrantly. A JSON request string is handled
+#' synchronously as an embedding API and remains independent of the transport.
+#' Notifications such as `wake` and `cancel` return `NULL`.
 #'
-#' @param request One JSON request string.
+#' @param request One JSON request string, or `NULL` to poll the active viewer.
 #' @return A JSON response string or NULL for a notification.
 #' @export
-jdv_rpc <- function(request) {
+jdv_rpc <- function(request = NULL) {
+  .jdv_assert_active()
+  if (is.null(request)) {
+    if (.jdv_state$rpc_depth > 0L) {
+      stop("RPC re-entry is not supported.", call. = FALSE)
+    }
+    .jdv_transport_housekeeping()
+    .jdv_assert_active()
+    if (is.null(.jdv_state$transport)) {
+      return(invisible(NULL))
+    }
+    .Call(C_jdv_transport_poll)
+    .jdv_assert_active()
+    return(invisible(NULL))
+  }
   parsed <- tryCatch(.jdv_json_parse(request), error = function(e) e)
+  .jdv_assert_active()
   if (inherits(parsed, "error")) {
     return(.jdv_json_encode_error(.jdv_response(NULL, error = parsed)))
   }
@@ -968,6 +1019,7 @@ jdv_rpc <- function(request) {
     },
     error = function(e) e
   )
+  .jdv_assert_active()
   if (is.null(request_id)) {
     return(NULL)
   }

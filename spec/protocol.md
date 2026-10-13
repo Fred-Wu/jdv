@@ -1,10 +1,10 @@
 # jdv Protocol v1
 
-This document defines the transport-independent JSON protocol implemented by
-`jdv_register()` and `jdv_rpc()`. It describes the R table registry and the
-request and response messages shared by the package, reference server, and
-future clients. It does not define the Phase 5 byte transport, message queue,
-or browser-to-server protocol.
+This document defines the JSON protocol implemented by `jdv_register()`,
+`jdv_rpc()`, and the Phase 5 local transport. It describes the R table
+registry, newline-delimited JSON (NDJSON) messages, and request and response
+messages shared by the package, reference server, and viewer. It does not
+define the browser-to-server protocol.
 
 The envelope is JSON-RPC-like, but it is not JSON-RPC 2.0: messages use a
 `method` and `params`, while successful responses use `id`, `result`, and
@@ -13,8 +13,10 @@ as `wake` and `cancel` omit the id and have no response.
 
 ## Compatibility and encoding
 
-- Each transport message is one UTF-8 JSON value. The Phase 5 reference
-  transport will frame messages as newline-delimited JSON (NDJSON).
+- Each transport message is one UTF-8 JSON value. The transport frames
+  messages as newline-delimited JSON (NDJSON), with one complete JSON value
+  per line and a trailing LF. A partial line is retained only up to the
+  configured request byte limit.
 - The only supported envelope encoding is `json`; the only supported
   compression is `none`. Both fields may be omitted to select those defaults.
   Unknown values produce an `unsupported` error.
@@ -23,6 +25,9 @@ as `wake` and `cancel` omit the id and have no response.
 - Request ids are either strings of at most 128 UTF-8 bytes or JSON integer
   literal tokens from 0 through `2^53 - 1`. Fractional and exponent-form
   numeric ids are rejected, even when their mathematical value is integral.
+  The same rule applies to `cancel.params.id`.
+  When a response echoes a valid numeric id, its JSON encoder may use
+  exponent notation as long as the exact safe-integer value is preserved.
 - Envelope and method-parameter objects ignore unknown fields for forward
   compatibility. Filter and sort objects remain strict. Duplicate object
   keys are rejected. Unknown methods return `method_not_found`.
@@ -34,6 +39,9 @@ as `wake` and `cancel` omit the id and have no response.
   100,000 JSON nodes, or an object with more than 1,024 members. The literal
   six-character content `\u0000` is valid when represented in JSON as
   `"\\u0000"`; a JSON escape that decodes to U+0000 is rejected.
+  These structural limits apply to inbound requests. Generated R messages are
+  bounded by the outbound byte limit and are not revalidated with the request
+  parser's node or object-member limits.
 
 The R package uses base R and its bundled cJSON implementation at runtime. It
 does not require jsonlite. Consumers can parse and construct JSON with their
@@ -49,7 +57,12 @@ jdv_register(
   collation = c("C", "locale")
 )
 
-jdv_rpc(request)
+jdv_rpc(request = NULL)
+
+jdv_view(x, title = NULL, mode = c("auto", "snapshot", "paged"),
+  collation = c("C", "locale"))
+
+jdv_close(id = NULL)
 ```
 
 `x` must be a data frame or matrix. `jdv_register()` returns
@@ -58,6 +71,30 @@ jdv_rpc(request)
 notification JSON messages, or `character()` when there are none. The embedding
 host must deliver each notification in vector order before delivering `open`.
 Registration does not open a socket.
+
+`jdv_view()` registers the table, opens the local connection on first use,
+sends `hello`, pending `table/closed` notifications, then `table/open`, and
+returns the table id invisibly. Its default title is the deparsed expression
+passed as `x`; an explicit `title = NULL` creates a new slot. `jdv_close(id)`
+closes one table, and `jdv_close()` closes every table. Closing the last table
+stops the connection. `jdv_rpc()` with no argument or `NULL` explicitly polls
+the active connection and drains at most eight requests. This recovery path
+bypasses the normal event gate and is non-reentrant. Passing a JSON string to
+`jdv_rpc()` remains a synchronous, transport-independent embedding call.
+
+The address is selected from `options(jdv.address = ...)`, then
+`JDV_ADDRESS`, then `discovery.json` under the user cache directory. On Linux
+and other Unix systems, the directory is `$XDG_CACHE_HOME/jdv` or
+`~/.cache/jdv`; on macOS it is `~/Library/Caches/jdv`; on Windows it is
+`%LOCALAPPDATA%/jdv` or `%USERPROFILE%/AppData/Local/jdv`. The discovery file
+is at most 64 KiB and contains a string field named `socketPath`. Unix-domain
+socket paths may be raw absolute paths or
+`unix:///absolute/path`; Windows named-pipe addresses use
+`npipe:////./pipe/NAME`. A `tcp://localhost:port`, `tcp://127.0.0.1:port`, or
+`tcp://[::1]:port` address is accepted only when explicitly configured. TCP
+has no authentication, and named-pipe ACLs are not hardened.
+Windows named pipes must use byte-type mode; message-type pipes are unsupported.
+The Windows transport has not yet been exercised on a Windows host.
 
 A non-`NULL` title identifies one active display slot. Registering that active
 title again replaces its contents, reuses its table id, and increments its
@@ -154,8 +191,9 @@ that return a result. `params` is required by table methods and `cancel`.
 Unknown envelope and method-parameter fields are ignored. `encoding`,
 `compression`, and `deadline` are optional. `deadline`, when provided, must be
 a finite JSON number containing an absolute Unix timestamp in seconds. A
-synchronous request already past its deadline returns `NULL`. A queued request
-that expires before execution begins is discarded without a response.
+synchronous request already past its deadline returns an `expired` error. A
+queued request that expires before execution begins is discarded without a
+response.
 
 The configured request byte limit applies to the entire JSON text. The parser
 also validates strict JSON number syntax and rejects duplicate object keys.
@@ -197,8 +235,8 @@ machine-readable discriminator. An error may also include `details`. Work
 cancelled, expired, or stale before it begins receives no response. A
 synchronous `jdv_rpc()` call is an embedding path and does not apply the Phase
 5 execution gate. It treats `wake` and `cancel` as no-op notifications and
-returns `NULL` for them; the Phase 5 queue adapter will match cancellation ids
-to pending work before execution.
+returns `NULL` for them; the transport queue matches cancellation ids to
+pending work before execution.
 
 ## Methods
 
@@ -261,11 +299,11 @@ When the registry evicts its oldest active table to satisfy `jdv.max_tables`,
 it queues a `table/closed` notification with the evicted `table` and
 `generation`. `jdv_register()` drains pending notifications into its
 `notifications` return value. An embedding host delivers them in order before
-the associated new `table/open`. Explicit `table/close` is already initiated
-by the host and returns a successful close result without a separate
-`table/closed` notification. Re-registering an active title replaces the same
-id with a newer generation; after close or eviction, a later registration
-uses a new id and generation 1.
+the associated new `table/open`. Explicit host-initiated `table/close` returns
+a successful close result without a separate `table/closed` notification.
+`jdv_close()` sends `table/closed` for tables it closes. Re-registering an
+active title replaces the same id with a newer generation; after close or
+eviction, a later registration uses a new id and generation 1.
 
 ### `hello`
 
@@ -293,8 +331,12 @@ that does not support the announced major version rejects the handshake with
 `unsupported`; it must not continue with incompatible message semantics.
 
 The transport emits `hello` as part of connection setup. It is not a method
-handled by `jdv_rpc()` and is not returned by `jdv_register()`. Emission and
-connection lifecycle are implemented in Phase 5.
+handled by `jdv_rpc()` and is not returned by `jdv_register()`. The R process
+does not retry a failed request or automatically reconnect after disconnect;
+the next `jdv_view()` call starts a new session. A disconnect closes every
+active registry entry and releases its retained table data. Entries created
+with `jdv_register()` share this process-wide registry and are cleared by a
+viewer disconnect as well.
 
 ### `wake` and `cancel`
 
@@ -304,11 +346,18 @@ recheck its execution gate; it does not poll or resubmit a request itself.
 
 `cancel` has no response and takes `{ "id": requestId }` in `params`. It
 identifies a request by the same string-or-safe-integer rules as envelope ids.
+Ids retain their JSON type, so the string `"1"` does not match numeric id `1`.
 The synchronous API validates this id and returns `NULL`; it has no pending
 queue and creates no cancellation tombstone for an unknown or completed id.
 The Phase 5 queue adapter matches the id to pending work and marks that
 request cancelled so it is discarded before execution. A running R method is
-not forcibly interrupted by this notification.
+not forcibly interrupted by this notification. The adapter validates the full
+control envelope, including encoding, compression, and deadline, before it
+changes pending work. Unsupported encoding or compression and an expired
+recognized cancel have no effect and produce no notification response.
+Malformed JSON, an invalid raw id token, or an invalid deadline type can be
+rejected during native request validation with a best-effort `invalid_request`
+response whose id is `null`; these errors do not change pending work.
 
 ## Column payloads
 
@@ -371,7 +420,8 @@ The following encoding rules apply:
   the R ordering semantics agreed in [`query.md`](query.md), including
   collation, factor level order, and `integer64` order. It may be omitted for
   plain boolean, integer, and number columns whose ordering is recovered from
-  `values` and `special`. Paged rows never include sort keys.
+  `values` and `special`. A `null` sortKey is ordered after every non-null key,
+  regardless of the `na` mask. Paged rows never include sort keys.
 - `row_index` always reports original one-based R row numbers. Snapshot
   `row_names` and Paged page `row_names` contain values only for explicit row
   names; otherwise the field is `null`. Automatic row names are not
@@ -451,9 +501,11 @@ with a `warnings` array, which may be empty.
 
 Full sort and filter operations have no work or row limit by default because
 they are explicit user requests. An explicitly finite `jdv.max_work_bytes` or
-`jdv.max_query_rows` caps that work. In the event-loop request path, R defers
-user interrupts while a sort or filter runs; the viewer UI should show that R
-is busy.
+`jdv.max_query_rows` caps that work. Interrupt delivery in the event-loop path
+depends on the suspension state at callback entry: an interrupt caught during
+a started request returns `interrupted`, while R may defer delivery if the
+callback began with interrupts already suspended. The viewer UI should show
+that R is busy while a request runs.
 
 Snapshot construction, Paged registration probes, page extraction, and JSON
 encoding use separate finite budgets. Each derived budget is the smaller of
@@ -485,29 +537,62 @@ preview bound, and missingness scans are budgeted before allocating masks.
 Minimal control and error responses have a separate fixed 64 KiB encoder-work
 allowance, so a depleted request budget can still report its failure.
 
-## Phase boundaries and unresolved transport details
+## Local transport and execution gate
 
-Protocol v1 defines the synchronous registry API and the messages that the
-future transport must carry. It does not implement a message queue, transport
-retries, the event-loop timer, `jdv_view()`, or the public `jdv_close()` API;
-those belong to later phases. The Phase 5 transport must preserve request ids
-and generations, deliver `wake` and `cancel` notifications, discard expired or
-stale queued work before it begins, and return errors for failures after work
-starts. It must treat an interrupt as terminal for that request and must not
-retry the interrupted work automatically.
+The R transport bounds the pending queue to 256 messages and 16 MiB by
+default. Each inbound JSON line is limited by `jdv.max_request_bytes` (1 MiB
+by default), and each outbound line by `jdv.max_message_bytes` (10 MiB by
+default). A read callback processes at most `max(64 KiB, request limit + 1)`
+bytes. One native poll or event callback drains at most eight queued requests;
+each request in that batch passes through its own execution-gate check.
+Sends have a one-second timeout. Limits can be adjusted with
+`jdv.transport.queue_messages`, `jdv.transport.queue_bytes`,
+`jdv.transport.max_drain_requests`, and `jdv.transport.send_timeout_ms`.
 
-The event-loop request path defers user interrupts while a sort or filter is
-running. The viewer UI should expose that R is busy; users cannot rely on
-Ctrl-C to stop a long-running query through that path.
+The event source reads and validates framed input into a bounded C queue. It
+does not leave a readable descriptor active after hitting its receive quota.
+Before dispatch, the transport discards cancelled and expired requests and
+`table/*` requests whose table generation is no longer active. For each
+request, dispatch requires native `busy == 0` and a single `sys.nframe()`
+evaluation in `R_BaseEnv` to return zero. If the queue is empty, the gate skips
+that evaluation. A started request that fails, including an interrupt, is
+terminal and is never retried. A synchronous stale generation returns
+`stale_generation`; a stale queued request is discarded without a response.
+A second live pending request with the same typed id is rejected as
+`invalid_request` on a best-effort basis and closes the connection to avoid
+ambiguous responses. Cancelled requests no longer reserve their ids.
 
-The following are Phase 5 implementation details, not protocol ambiguities:
+The gate temporarily saves `R_interrupts_suspended`, sets it to `TRUE` for the
+single frame-count evaluation, and restores the prior value with unwind-safe
+cleanup. It does not use `END_SUSPEND_INTERRUPTS`, call `onintr`, or inspect or
+change private pending-interrupt state. This practical function-frame check is
+not a guarantee that R is idle: on Windows, a timer can run during top-level
+computation while `sys.nframe()` is zero. The Windows timer interval is about
+200 ms. If the request callback begins with interrupts enabled, an interrupt
+after dequeue becomes an `interrupted` error. If R entered the callback with
+interrupts already suspended, R may defer delivery; long sort or filter work
+may therefore not stop promptly. The viewer should show a busy state and
+offer a retry after a terminal failure.
 
-- Integrating the pending-request queue with socket transport and draining
-  `notifications` to the host.
-- The host's R-busy display timeout and wake/nudge timer. This is separate
-  from each request's deadline. Nudge only while work remains live, and stop
-  nudging on completion, cancellation, expiry, close, or disconnect.
-- Delivering queued work only when the event gate allows it; discard cancelled,
-  expired, or old-generation work before execution. A stale generation passed
-  directly to synchronous `jdv_rpc()` returns `stale_generation`; the queued
-  transport discards stale work before it starts.
+`jdv_rpc(NULL)` is a non-reentrant recovery path that bypasses the normal gate
+and drains at most the configured batch under `R_UnwindProtect`; it does not
+use a background `R_ToplevelExec`. Disconnect cleanup is deferred until the
+callback stack is safe. A public R `addTaskCallback()` performs cleanup after
+a successful top-level task, while explicit polling and later public package
+entries also check for pending cleanup. This task callback is cleanup-only and
+does not dispatch requests. It is an event-driven cleanup opportunity, not a
+general timer. A disconnect closes every registered table, and the next
+`jdv_view()` call starts a new connection; no in-flight request is retried.
+
+On namespace unload, the transport source is stopped, queued requests and
+registry entries are closed, and the housekeeping callback is removed. If a
+native callback is still active, the package namespace may unload while the
+native library remains loaded while native calls are active; an idle reload or
+unload can release it later. Forced DLL unload
+while native callbacks are active is unsupported; reloading is rejected while
+the previous native owner is still active.
+
+R evaluation, condition handling, and interrupt state use installed public R
+APIs. The POSIX input handler uses the installed `R_ext/eventloop.h` external
+interface, which is not a stable API; it is the event-loop mechanism adopted
+for Phase S and Phase 5. No GPL R source or `later` implementation is copied.

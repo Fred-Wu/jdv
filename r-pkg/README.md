@@ -1,10 +1,41 @@
 # jdv
 
-JSON Data Viewer is under development. The package currently provides a
-transport-independent table registry and query API, together with the native
-library and package infrastructure for a dependency-free table engine. See the
-repository README for local development commands and [`../spec/protocol.md`](../spec/protocol.md)
-for the protocol contract.
+JSON Data Viewer is under development. The package provides a local viewer
+transport for a separately running viewer host and a dependency-free table
+registry and query API; the server and browser viewer are still under
+development. See the
+repository README for local development commands and
+[`../spec/protocol.md`](../spec/protocol.md) for the protocol contract.
+
+## Open a table in the viewer
+
+With the local viewer server running, open a table with `jdv_view()`. The
+connection is discovered from `options(jdv.address)`, `JDV_ADDRESS`, or the
+server's `discovery.json` file. Reusing a title replaces that table in the
+viewer.
+
+```r
+data <- data.frame(name = c("Ada", "Grace"), score = c(10, 20))
+jdv_view(data)
+
+# Update the same viewer slot after changing the data.
+data$score <- c(11, 21)
+jdv_view(data)
+
+# Close one table by its returned id, or close all active tables.
+jdv_close()
+```
+
+The event-loop gate is a practical function-frame check rather than a guarantee
+that R is idle. On Windows a timer may run during top-level computation. A
+request interrupted after it starts fails without automatic retry. Interrupt
+delivery also depends on the state R had when the callback began; if R entered
+with interrupts suspended, a long sort or filter may not stop promptly. In a
+bare browser or some frontends, call `jdv_rpc(NULL)` to poll explicitly.
+Named-pipe ACLs are not hardened, and an explicitly configured TCP address has
+no authentication. Windows named pipes must use byte-type mode; message-type
+pipes are unsupported, and Windows transport behavior has not yet been tested
+on a Windows host.
 
 ## Register and query a table
 
@@ -21,7 +52,7 @@ registered <- jdv_register(
   mode = "paged"
 )
 
-# host_send() is supplied by the embedding application.
+# host_send() is supplied by an embedding application.
 # Deliver pending notifications before opening the newly registered table.
 for (message in registered$notifications) {
   host_send(message)
