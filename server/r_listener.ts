@@ -46,6 +46,7 @@ export function startRPeer(
     let pending = new Uint8Array(0);
     while (!closed) {
       const chunk = await connection.read();
+      if (closed) return;
       if (chunk === null) {
         if (pending.length) {
           throw new Error("R closed with a partial NDJSON frame.");

@@ -67,3 +67,20 @@ Deno.test("R peer rejects malformed JSON and closes exactly once", async () => {
   assertEquals(connection.closed, true);
   assertEquals(closes, 1);
 });
+
+Deno.test("a read resolved before peer close does not deliver after close", async () => {
+  const connection = new ReadConnection();
+  const messages: JsonObject[] = [];
+  let closes = 0;
+  const peer = startRPeer(
+    connection,
+    (message) => messages.push(message),
+    () => closes++,
+  );
+  connection.push(new TextEncoder().encode('{"method":"hello"}\n'));
+  peer.close();
+  await Promise.resolve();
+  await Promise.resolve();
+  assertEquals(messages, []);
+  assertEquals(closes, 1);
+});
