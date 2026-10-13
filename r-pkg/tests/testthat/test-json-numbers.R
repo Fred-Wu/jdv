@@ -43,3 +43,56 @@ test_that("finite JSON numbers round-trip without unnecessary digits", {
 
   expect_identical(as.numeric(text_values), values)
 })
+
+test_that(
+  "wide-exponent JSON numbers round-trip through a correctly rounded parser",
+  {
+    skip_if_not_installed("jsonlite")
+    encode <- getFromNamespace(".jdv_json_encode", "jdv")
+
+    had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+    if (had_seed) {
+      old_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+    }
+    on.exit(
+      {
+        if (had_seed) {
+          assign(".Random.seed", old_seed, envir = .GlobalEnv)
+        } else if (
+          exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+        ) {
+          rm(".Random.seed", envir = .GlobalEnv)
+        }
+      },
+      add = TRUE
+    )
+
+    set.seed(20261013)
+    bits <- as.raw(sample.int(256L, 8L * 100000L, replace = TRUE) - 1L)
+    connection <- rawConnection(bits, open = "rb")
+    on.exit(close(connection), add = TRUE)
+    values <- readBin(
+      connection,
+      what = double(),
+      n = length(bits) %/% 8L,
+      size = 8L,
+      endian = .Platform$endian
+    )
+    values <- values[is.finite(values) & values != 0]
+
+    encoded <- encode(structure(values, class = "jdv_json_array"))
+    parsed <- jsonlite::fromJSON(encoded)
+    expect_identical(length(parsed), length(values))
+
+    expected_connection <- rawConnection(raw(), open = "wb")
+    actual_connection <- rawConnection(raw(), open = "wb")
+    on.exit(close(expected_connection), add = TRUE)
+    on.exit(close(actual_connection), add = TRUE)
+    writeBin(values, expected_connection, size = 8L, endian = .Platform$endian)
+    writeBin(parsed, actual_connection, size = 8L, endian = .Platform$endian)
+    expect_identical(
+      rawConnectionValue(actual_connection),
+      rawConnectionValue(expected_connection)
+    )
+  }
+)

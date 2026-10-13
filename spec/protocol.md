@@ -376,6 +376,15 @@ The following encoding rules apply:
   materialized as a separate channel. A Paged `table/open` descriptor has
   `row_names: null`; requested explicit names arrive with the page.
 
+The cJSON writer first tries a 15-significant-digit representation for a finite
+double and accepts it only when its own double read-back equals the source;
+otherwise it falls back to 17 significant digits. The emitted text round-trips
+to the original finite double with correctly rounded parsers such as JavaScript
+`JSON.parse`, C `strtod`, and `jsonlite::fromJSON`. R's `as.numeric()` and
+`scan()` do not guarantee rounding to the nearest representable value, so a
+15-digit token can read back one ULP away across a wide exponent range. Negative
+zero is written as `0`, without its sign.
+
 Snapshot payloads contain all table rows in one `data` object. Paged payloads
 contain only the requested row slice. Paged display formatting is performed
 on the requested slice, so text labels may differ from a Snapshot formatted
