@@ -551,6 +551,21 @@ Sends have a one-second timeout. Limits can be adjusted with
 
 The event source reads and validates framed input into a bounded C queue. It
 does not leave a readable descriptor active after hitting its receive quota.
+If the pending queue is full by message count or bytes, the transport returns
+`limit_exceeded` for that request alone and keeps the connection and already
+queued work when the error response is sent successfully. A failed error send
+still disconnects the host and closes registered tables.
+Each receive callback is also bounded to
+`jdv.transport.queue_messages + jdv.transport.max_drain_requests` frames and
+`max(64 KiB, request limit + 1)` bytes. `cancel` and `wake` notifications count
+toward the frame limit. A host that exceeds either callback quota is
+disconnected.
+Hosts must keep at most 32 table requests awaiting a response. Before sending
+a page request that makes an unsent page request obsolete, hosts must replace
+the unsent request with the newer page. Hosts must bound the cumulative
+unconfirmed output prefix to the receive callback's frame and byte quotas so
+multiple writes cannot exceed one callback's budget when coalesced. Each
+`cancel` and `wake` frame consumes the same frame and byte credit as a request.
 Before dispatch, the transport discards cancelled and expired requests and
 `table/*` requests whose table generation is no longer active. For each
 request, dispatch requires native `busy == 0` and a single `sys.nframe()`

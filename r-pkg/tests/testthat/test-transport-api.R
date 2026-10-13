@@ -41,7 +41,9 @@ run_mock_host <- function(
   ready_path,
   result_path,
   scenario,
-  request_bytes
+  request_bytes,
+  queue_messages = 256L,
+  queue_bytes = 16 * 1024^2
 ) {
   python <- Sys.which("python3")
   script <- test_path("fixtures", "transport-host.py")
@@ -53,7 +55,9 @@ run_mock_host <- function(
       ready_path,
       result_path,
       scenario,
-      request_bytes
+      request_bytes,
+      queue_messages,
+      queue_bytes
     ) {
       output <- system2(
         python,
@@ -68,7 +72,11 @@ run_mock_host <- function(
           "--scenario",
           shQuote(scenario),
           "--request-bytes",
-          as.character(request_bytes)
+          as.character(request_bytes),
+          "--queue-messages",
+          as.character(queue_messages),
+          "--queue-bytes",
+          as.character(queue_bytes)
         ),
         stdout = TRUE,
         stderr = TRUE
@@ -84,7 +92,9 @@ run_mock_host <- function(
       ready_path = ready_path,
       result_path = result_path,
       scenario = scenario,
-      request_bytes = request_bytes
+      request_bytes = request_bytes,
+      queue_messages = queue_messages,
+      queue_bytes = queue_bytes
     ),
     supervise = TRUE
   )
@@ -103,7 +113,9 @@ with_mock_transport <- function(
   x,
   request_bytes = 1024^2,
   before_poll = NULL,
-  mode = "paged"
+  mode = "paged",
+  queue_messages = 256L,
+  queue_bytes = 16 * 1024^2
 ) {
   skip_on_os("windows")
   skip_if_not_installed("callr")
@@ -118,14 +130,24 @@ with_mock_transport <- function(
     ready_path,
     result_path,
     scenario,
-    request_bytes
+    request_bytes,
+    queue_messages,
+    queue_bytes
   )
+  old_transport_options <- options(c(
+    "jdv.transport.queue_messages",
+    "jdv.transport.queue_bytes"
+  ))
   old_address <- getOption("jdv.address")
-  options(jdv.address = socket_path)
+  options(
+    jdv.address = socket_path,
+    jdv.transport.queue_messages = queue_messages,
+    jdv.transport.queue_bytes = queue_bytes
+  )
   on.exit(
     {
       try(jdv_close(), silent = TRUE)
-      options(jdv.address = old_address)
+      options(c(old_transport_options, list(jdv.address = old_address)))
       if (host$is_alive()) {
         host$kill()
       }
@@ -198,7 +220,12 @@ with_mock_transport <- function(
   if (scenario == "typed-id" && !length(received$responses)) {
     expect_true(FALSE, info = received$debug_transport_status)
   }
-  if (scenario != "duplicate-id") {
+  if (scenario %in% c("queue-overflow-count", "queue-overflow-bytes")) {
+    expect_length(
+      received$responses,
+      length(received$queue_accepted_ids) + length(received$queue_rejected_ids)
+    )
+  } else if (scenario != "duplicate-id") {
     expect_length(
       received$responses,
       if (scenario %in% c("large-snapshot", "disconnect")) {
@@ -266,7 +293,10 @@ with_mock_transport <- function(
       }
     )
   }
-  if (!scenario %in% c("large-snapshot", "disconnect", "duplicate-id")) {
+  if (scenario %in% c("queue-overflow-count", "queue-overflow-bytes")) {
+    expected_ids <- c(received$queue_rejected_ids, received$queue_accepted_ids)
+    expect_identical(lapply(received$responses, `[[`, "id"), expected_ids)
+  } else if (!scenario %in% c("large-snapshot", "disconnect", "duplicate-id")) {
     expect_identical(lapply(received$responses, `[[`, "id"), expected_ids)
   }
   if (scenario == "fragmented") {
@@ -332,6 +362,60 @@ test_that("the largest allowed request frame can arrive in one write", {
     "maximum-frame",
     data.frame(value = 11:13),
     request_bytes = .jdv_max_request_bytes()
+  )
+})
+
+test_that("full request queues reject only new work and stay connected", {
+  exercise_overflow <- function(scenario, queue_messages, queue_bytes) {
+    queued_during_busy <- NULL
+    received <- with_mock_transport(
+      scenario,
+      data.frame(value = 11:13),
+      before_poll = function() {
+        Sys.sleep(0.4)
+        queued_during_busy <<- .jdv_transport_status()
+      },
+      queue_messages = queue_messages,
+      queue_bytes = queue_bytes
+    )
+    expect_identical(
+      queued_during_busy$queued_messages,
+      as.double(length(received$queue_accepted_ids))
+    )
+    expect_true(queued_during_busy$connected)
+    expect_lte(queued_during_busy$queued_bytes, queue_bytes)
+    expect_identical(
+      queued_during_busy$queued_bytes,
+      as.double(sum(unlist(received$queue_frame_bytes[
+        seq_along(received$queue_accepted_ids)
+      ])))
+    )
+    expect_gt(length(received$queue_rejected_ids), 0L)
+    rejected_count <- length(received$queue_rejected_ids)
+    for (index in seq_len(rejected_count)) {
+      expect_identical(
+        received$responses[[index]]$id,
+        received$queue_rejected_ids[[index]]
+      )
+      expect_identical(received$responses[[index]]$error$code, "limit_exceeded")
+    }
+    for (index in seq_along(received$queue_accepted_ids)) {
+      response <- received$responses[[rejected_count + index]]
+      expect_identical(response$id, received$queue_accepted_ids[[index]])
+      expect_false("error" %in% names(response))
+      expect_identical(response$result$generation, 1L)
+    }
+  }
+
+  exercise_overflow(
+    "queue-overflow-count",
+    queue_messages = 2L,
+    queue_bytes = 4096L
+  )
+  exercise_overflow(
+    "queue-overflow-bytes",
+    queue_messages = 10L,
+    queue_bytes = 1100L
   )
 })
 

@@ -914,9 +914,8 @@ static int queue_request(jdv_transport_state *state, const char *line,
     }
     if (state->queue_count >= state->max_queue_messages ||
         length > state->max_queue_bytes - state->queue_bytes) {
-        send_error(state, metadata.id_json, "limit_exceeded",
-                   "The request queue is full.");
-        return 0;
+        return send_error(state, metadata.id_json, "limit_exceeded",
+                          "The request queue is full.") ? 1 : 0;
     }
     metadata.json = (char *)malloc(length + 1);
     if (!metadata.json) {

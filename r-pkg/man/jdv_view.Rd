@@ -36,22 +36,23 @@ Windows named pipes are used by default; TCP is available only when an
 explicit address selects it. The connection is closed after the last table is
 closed.
 
-The event gate uses the practical \code{sys.nframe() == 0} condition approved for
-Phase 5. It is not a guarantee that R is idle: on Windows, a timer can run
-during top-level computation while the function-frame count is zero. A
-request that reaches an interrupt while running fails with \code{interrupted} and
-is never retried automatically. While a sort or filter runs, the event gate
-restores the interrupt-suspension state it found before calling R methods. If
-interrupts were already suspended on entry, R may defer Ctrl-C during a long
-sort or filter until a later check; use the viewer's busy state as an
-indication that the request is still running. In the bare browser and some
-Windows frontends, requests may need a later host wake or an explicit
-\code{jdv_rpc(NULL)} call to make progress. Windows GUI and Esc behavior have not
-been validated. Windows named pipes must use byte-type mode; message-type
-pipes are unsupported, and Windows transport behavior has not yet been
-exercised on a Windows host. Named-pipe ACLs are not hardened, and an
-explicitly selected TCP endpoint has no authentication. Registry entries
-created with \code{\link[=jdv_register]{jdv_register()}} share this process-wide registry and are also
-released if the viewer disconnects. Package unload stops the event source and
-pending work before releasing table references.
+The event gate dispatches only when \code{sys.nframe() == 0}. This practical
+function-frame check is not a guarantee that R is idle: on Windows, a timer
+can run during top-level computation while the function-frame count is zero.
+A request that reaches an interrupt while running fails with \code{interrupted}
+and is never retried automatically. While a sort or filter runs, the event
+gate restores the interrupt-suspension state it found before calling R
+methods. If interrupts were already suspended on entry, R may defer Ctrl-C
+during a long sort or filter until a later check; use the viewer's busy state
+as an indication that the request is still running. A bare top-level
+\code{browser()} can service requests; a frontend waiting inside a function frame,
+such as a function that calls \code{browser()}, must let that frame unwind or
+explicitly call \code{jdv_rpc(NULL)} before queued work can progress. Windows GUI
+and Esc behavior have not been validated. Windows named pipes must use
+byte-type mode; message-type pipes are unsupported, and Windows transport
+behavior has not yet been exercised on a Windows host. Named-pipe ACLs are
+not hardened, and an explicitly selected TCP endpoint has no authentication.
+Registry entries created with \code{\link[=jdv_register]{jdv_register()}} share this process-wide
+registry and are also released if the viewer disconnects. Package unload
+stops the event source and pending work before releasing table references.
 }

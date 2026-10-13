@@ -78,6 +78,8 @@ def main():
     parser.add_argument("--ready", required=True)
     parser.add_argument("--scenario", default="basic")
     parser.add_argument("--request-bytes", type=int, default=1024 * 1024)
+    parser.add_argument("--queue-messages", type=int, default=256)
+    parser.add_argument("--queue-bytes", type=int, default=16 * 1024 * 1024)
     args = parser.parse_args()
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -116,6 +118,7 @@ def main():
             }
             payload = json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
             expected_ids = ["mock-rows-1"]
+            queue_info = {}
             if args.scenario == "large-snapshot":
                 expected_ids = []
             elif args.scenario == "active-unload":
@@ -156,6 +159,46 @@ def main():
                 connection.sendall(
                     json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
                 )
+            elif args.scenario in ("queue-overflow-count", "queue-overflow-bytes"):
+                frames = []
+                accepted_ids = []
+                rejected_ids = []
+                frame_bytes = []
+                queued_bytes = 0
+                for index in range(1, 6):
+                    queued_request = {
+                        "id": f"overflow-{index}",
+                        "method": "table/schema",
+                        "params": {
+                            "table": params["table"],
+                            "generation": params["generation"],
+                        },
+                        "padding": "x" * 400,
+                    }
+                    frame = (
+                        json.dumps(queued_request, separators=(",", ":")).encode("utf-8")
+                        + b"\n"
+                    )
+                    request_bytes = len(frame) - 1
+                    frame_bytes.append(request_bytes)
+                    if (
+                        len(accepted_ids) < args.queue_messages
+                        and queued_bytes + request_bytes <= args.queue_bytes
+                    ):
+                        accepted_ids.append(queued_request["id"])
+                        queued_bytes += request_bytes
+                    else:
+                        rejected_ids.append(queued_request["id"])
+                    frames.append(frame)
+                if not accepted_ids or not rejected_ids:
+                    raise RuntimeError("queue-overflow scenario did not reach both bounds")
+                expected_ids = rejected_ids + accepted_ids
+                queue_info = {
+                    "queue_accepted_ids": accepted_ids,
+                    "queue_rejected_ids": rejected_ids,
+                    "queue_frame_bytes": frame_bytes,
+                }
+                connection.sendall(b"".join(frames))
             elif args.scenario == "duplicate-id":
                 request["id"] = "duplicate-live-id"
                 frame = json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -372,6 +415,7 @@ def main():
                     "snapshot_value_count": value_count,
                     "snapshot_node_count": node_count,
                     "responses": responses,
+                    **queue_info,
                 })
             closed = read_message(stream)
             write_result(args.result + ".closed", closed)
