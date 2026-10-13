@@ -27,17 +27,23 @@ jdv_json_object <- function(x = list()) {
 
 .jdv_json_values <- function(x) structure(unname(x), class = "jdv_json_array")
 
-.jdv_option_limit <- function(name, default, minimum = 1) {
+.jdv_option_limit <- function(
+  name,
+  default,
+  minimum = 1,
+  allow_infinite = FALSE
+) {
   value <- getOption(name, default)
   if (
     !is.numeric(value) ||
       length(value) != 1L ||
       is.object(value) ||
       is.na(value) ||
-      !is.finite(value) ||
+      (!is.finite(value) && !(allow_infinite && identical(value, Inf))) ||
       value != floor(value) ||
       value < minimum ||
-      value > .Machine$integer.max
+      (value > .Machine$integer.max &&
+        !(allow_infinite && identical(value, Inf)))
   ) {
     query_error("invalid_request", paste0("Invalid option: ", name, "."))
   }
@@ -53,7 +59,31 @@ jdv_json_object <- function(x = list()) {
 }
 
 .jdv_max_work_bytes <- function() {
-  .jdv_option_limit("jdv.max_work_bytes", 64 * 1024^2, 1024)
+  .jdv_option_limit("jdv.max_work_bytes", Inf, 1024, allow_infinite = TRUE)
+}
+
+.jdv_derived_work_bytes <- function(output_bytes) {
+  # Six bytes per output byte covers retained channel copies and transient
+  # encoder structures in the measured Snapshot workload; the 4 MiB floor
+  # preserves the former 64 MiB allowance at the 10 MiB default.
+  6 * as.double(output_bytes) + 4 * 1024^2
+}
+
+.jdv_page_work_bytes <- function() {
+  min(
+    .Machine$integer.max,
+    .jdv_derived_work_bytes(.jdv_max_message_bytes()),
+    .jdv_max_work_bytes()
+  )
+}
+
+.jdv_snapshot_work_bytes <- function() {
+  output_bytes <- min(.jdv_snapshot_max_bytes(), .jdv_max_message_bytes())
+  min(
+    .Machine$integer.max,
+    .jdv_derived_work_bytes(output_bytes),
+    .jdv_max_work_bytes()
+  )
 }
 
 .jdv_snapshot_max_bytes <- function() {
@@ -65,13 +95,13 @@ jdv_json_object <- function(x = list()) {
 }
 
 .jdv_max_query_rows <- function() {
-  .jdv_option_limit("jdv.max_query_rows", 1000000, 1)
+  .jdv_option_limit("jdv.max_query_rows", Inf, 1, allow_infinite = TRUE)
 }
 
 .jdv_json_encode <- function(
   x,
   limit = .jdv_max_message_bytes(),
-  work_limit = .jdv_max_work_bytes()
+  work_limit = .jdv_page_work_bytes()
 ) {
   tryCatch(
     .Call(C_jdv_json_encode, x, as.numeric(limit), as.numeric(work_limit)),
@@ -216,7 +246,12 @@ jdv_json_object <- function(x = list()) {
 }
 
 .jdv_open_content <- function(x, mode, collation, limits = list()) {
-  work_budget <- .jdv_budget(.jdv_max_work_bytes(), auto_fallback = TRUE)
+  work_limit <- if (mode == "snapshot") {
+    limits$snapshot_work_bytes %||% .jdv_snapshot_work_bytes()
+  } else {
+    limits$page_work_bytes %||% .jdv_page_work_bytes()
+  }
+  work_budget <- .jdv_budget(work_limit, auto_fallback = TRUE)
   if (mode == "snapshot") {
     snapshot <- snapshot_table(
       x,
@@ -244,6 +279,7 @@ jdv_json_object <- function(x = list()) {
         columns = lapply(snapshot$columns, .jdv_json_column, snapshot = TRUE)
       ),
       work_used = work_budget$used,
+      work_limit = work_budget$limit,
       collation = collation
     ))
   }
@@ -264,6 +300,7 @@ jdv_json_object <- function(x = list()) {
     row_names = NULL,
     data = NULL,
     work_used = work_budget$used,
+    work_limit = work_budget$limit,
     collation = collation
   )
 }
@@ -390,17 +427,25 @@ jdv_json_object <- function(x = list()) {
 #' after changing values held by a reference object because the lightweight
 #' fingerprint does not detect value-only changes. Paged tables capture
 #' `getOption("jdv.max_page_rows", 2000)` at registration; changing the option
-#' takes effect after re-registering the table. The defaults are 64 MiB for
-#' `jdv.max_work_bytes`, 32 MiB for `jdv.max_cache_bytes`, and 10 MiB for
-#' `jdv.snapshot_max_bytes`; `jdv.max_query_rows` defaults to 1,000,000 for sort
-#' and filter operations. Auto mode also uses `jdv.snapshot_max_cells` (default
-#' 10,000) and caps the snapshot byte estimate by `jdv.max_message_bytes`; if
-#' Snapshot-only row-name metadata or snapshot construction exceeds its budget,
-#' Auto retries registration as Paged. Page, work, cache, and query-row settings
-#' are captured when a table is registered. Cache and operation work allowances
-#' are separate; these estimates do not bound total process memory, source
-#' storage, arbitrary user method allocations, R allocator and GC overhead, or
-#' transient R-internal string conversion and sorting scratch.
+#' takes effect after re-registering the table. `jdv.max_work_bytes` and
+#' `jdv.max_query_rows` are unlimited by default for full sort/filter work;
+#' `jdv.max_cache_bytes` defaults to 32 MiB and `jdv.snapshot_max_bytes` to 10
+#' MiB. Snapshot construction, registration probes, pages, and JSON encoding
+#' retain separate finite derived budgets. Auto mode also uses
+#' `jdv.snapshot_max_cells` (default 10,000) and caps the snapshot byte estimate
+#' by `jdv.max_message_bytes`; if Snapshot-only row-name metadata or snapshot
+#' construction exceeds its budget, Auto retries registration as Paged. Page,
+#' work, cache, and query-row settings are captured when a table is registered.
+#' Snapshot and page work allowances are each the smaller of `INT_MAX`, six
+#' times their output allowance plus 4 MiB, and a finite `jdv.max_work_bytes`
+#' setting. Snapshot uses the smaller of `jdv.snapshot_max_bytes` and
+#' `jdv.max_message_bytes`; page work uses `jdv.max_message_bytes`. When
+#' `jdv.max_work_bytes` is finite, query work, page extraction, and response
+#' encoding share that per-operation allowance. In the event-loop request path,
+#' R defers user interrupts while a sort or filter runs; the viewer UI should
+#' show that R is busy. These estimates do not bound total process memory,
+#' source storage, arbitrary user method allocations, R allocator and GC
+#' overhead, or transient R-internal string conversion and sorting scratch.
 #' @return
 #' A list containing a table `id`, its `open` JSON message, and any pending
 #' transport notifications as JSON strings in `notifications` (for example, a
@@ -427,11 +472,17 @@ jdv_register <- function(
   limits <- list(
     page_rows = .jdv_option_limit("jdv.max_page_rows", 2000),
     work_bytes = .jdv_max_work_bytes(),
+    page_work_bytes = .jdv_page_work_bytes(),
+    snapshot_work_bytes = .jdv_snapshot_work_bytes(),
     cache_bytes = .jdv_max_cache_bytes(),
     query_rows = .jdv_max_query_rows()
   )
   max_message <- .jdv_max_message_bytes()
-  .jdv_metadata_budget(x, min(max_message, limits$work_bytes), snapshot = FALSE)
+  .jdv_metadata_budget(
+    x,
+    min(max_message, limits$page_work_bytes),
+    snapshot = FALSE
+  )
   actual_mode <- mode
   if (mode == "auto") {
     cells <- as.double(nrow(x)) * max(1, as.double(ncol(x)))
@@ -452,7 +503,7 @@ jdv_register <- function(
     tryCatch(
       .jdv_metadata_budget(
         x,
-        min(max_message, limits$work_bytes),
+        min(max_message, limits$snapshot_work_bytes),
         snapshot = TRUE,
         auto_fallback_row_names = mode == "auto"
       ),
@@ -515,7 +566,7 @@ jdv_register <- function(
     .jdv_json_encode(
       descriptor,
       max_message,
-      max(1, limits$work_bytes - content$work_used)
+      max(1, content$work_limit - content$work_used)
     ),
     error = function(e) {
       if (
@@ -551,7 +602,7 @@ jdv_register <- function(
         .jdv_json_encode(
           descriptor,
           max_message,
-          max(1, limits$work_bytes - content$work_used)
+          max(1, content$work_limit - content$work_used)
         )
       } else {
         stop(e)
@@ -783,7 +834,7 @@ jdv_register <- function(
     cols <- params$cols
     offset <- if (is.null(params$offset)) 0 else params$offset
     limit <- if (is.null(params$limit)) 200 else params$limit
-    budget <- .jdv_budget(entry$holder$limits$work_bytes)
+    budget <- .jdv_budget(entry$holder$limits$page_work_bytes)
     result <- query_page(
       entry$holder,
       offset,
@@ -952,7 +1003,11 @@ jdv_rpc <- function(request) {
         work_limit = if (is.environment(work_budget)) {
           .jdv_budget_remaining(work_budget)
         } else {
-          .jdv_max_work_bytes()
+          if (inherits(result, "error")) {
+            64 * 1024
+          } else {
+            .jdv_page_work_bytes()
+          }
         }
       ),
       error = function(e) e

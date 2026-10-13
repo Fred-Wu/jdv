@@ -391,7 +391,7 @@ column_extract <- function(
   n <- if (is.null(rows)) column_size(x) else length(rows)
   data <- list()
   errors <- list()
-  budget <- budget %||% .jdv_budget(.jdv_max_work_bytes())
+  budget <- budget %||% .jdv_budget(.jdv_page_work_bytes())
   structural <- is.matrix(x) || is.data.frame(x) || schema$type == "list"
   reserved <- .jdv_preflight_column(x, schema, channels, budget, n = n)
   plain <- function(value) {

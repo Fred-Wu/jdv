@@ -63,6 +63,55 @@ test_that(
   }
 )
 
+test_that("default query limits allow five-million-row sorts and filters", {
+  option_names <- c(
+    "jdv.max_work_bytes",
+    "jdv.max_query_rows",
+    "jdv.max_message_bytes",
+    "jdv.snapshot_max_bytes"
+  )
+  old_options <- setNames(lapply(option_names, getOption), option_names)
+  on.exit(options(old_options), add = TRUE)
+  options(setNames(rep(list(NULL), length(option_names)), option_names))
+
+  n <- 5000000L
+
+  numeric_holder <- paged_table(data.frame(value = as.double(seq_len(n))))
+  numeric_sorted <- query_indices(
+    numeric_holder,
+    list(list(col = 0L, desc = TRUE))
+  )
+  expect_length(numeric_sorted, n)
+  expect_identical(numeric_sorted[1L], n)
+  expect_identical(numeric_sorted[[n]], 1L)
+  numeric_filtered <- query_indices(
+    numeric_holder,
+    filter = list(op = "ge", col = 0L, value = as.double(n - 3L))
+  )
+  expect_identical(numeric_filtered, as.integer((n - 3L):n))
+  rm(numeric_holder, numeric_sorted, numeric_filtered)
+  gc()
+
+  character_holder <- paged_table(data.frame(
+    value = rep(c("a", "b"), length.out = n),
+    stringsAsFactors = FALSE
+  ))
+  character_sorted <- query_indices(
+    character_holder,
+    list(list(col = 0L, desc = FALSE))
+  )
+  expect_length(character_sorted, n)
+  expect_identical(character_sorted[1L], 1L)
+  expect_identical(character_sorted[[n]], n)
+  character_filtered <- query_indices(
+    character_holder,
+    filter = list(op = "text_equals", col = 0L, value = "b")
+  )
+  expect_length(character_filtered, n %/% 2L)
+  expect_identical(character_filtered[1L], 2L)
+  expect_identical(character_filtered[[n %/% 2L]], n)
+})
+
 test_that("locale and C character sorting have stable R order semantics", {
   strings <- c("é", "z", "a", "ä", NA, "a")
   x <- data.frame(text = strings, tie = c(2, 1, 2, 1, 0, 1))

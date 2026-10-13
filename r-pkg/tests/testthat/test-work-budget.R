@@ -86,6 +86,101 @@ test_that("wide packed data-frame missingness fails before slicing cells", {
   })
 })
 
+test_that(
+  "unlimited query defaults retain finite registration and page budgets",
+  {
+    restore <- jdv_budget_test_options(list(
+      jdv.max_work_bytes = NULL,
+      jdv.max_query_rows = NULL,
+      jdv.max_message_bytes = NULL,
+      jdv.snapshot_max_bytes = NULL
+    ))
+    on.exit(restore(), add = TRUE)
+
+    expect_identical(.jdv_max_work_bytes(), Inf)
+    expect_identical(.jdv_max_query_rows(), Inf)
+    expect_identical(.jdv_page_work_bytes(), 64 * 1024^2)
+    expect_identical(.jdv_snapshot_work_bytes(), 64 * 1024^2)
+
+    holder <- paged_table(data.frame(value = as.double(1:100)))
+    expect_identical(holder$limits$work_bytes, Inf)
+    expect_identical(holder$limits$query_rows, Inf)
+    expect_identical(holder$limits$page_work_bytes, 64 * 1024^2)
+    expect_identical(
+      query_indices(holder, list(list(col = 0L, desc = TRUE)))[1L],
+      100L
+    )
+  }
+)
+
+test_that(
+  "explicit finite query work and row limits still reject full queries",
+  {
+    row_limited <- paged_table(
+      data.frame(value = as.double(1:100)),
+      limits = list(query_rows = 10L)
+    )
+    work_limited <- paged_table(
+      data.frame(value = as.double(1:100)),
+      limits = list(work_bytes = 1024)
+    )
+    sort <- list(list(col = 0L, desc = TRUE))
+    filter <- list(op = "ge", col = 0L, value = 50)
+    expect_query_code(query_indices(row_limited, sort), "limit_exceeded")
+    expect_query_code(query_indices(work_limited, sort), "limit_exceeded")
+    expect_query_code(
+      query_indices(work_limited, filter = filter),
+      "limit_exceeded"
+    )
+  }
+)
+
+test_that(
+  "finite query and page work share the configured operation allowance",
+  {
+    holder <- paged_table(
+      data.frame(value = as.double(1:100)),
+      limits = list(work_bytes = 8192)
+    )
+    reply <- tryCatch(
+      query_page(
+        holder,
+        limit = 100L,
+        sort = list(list(col = 0L, desc = TRUE))
+      ),
+      error = identity
+    )
+    expect_s3_class(reply, "jdv_query_error")
+    expect_identical(reply$code, "limit_exceeded")
+  }
+)
+
+test_that("public registration and RPC encode with unset work options", {
+  .jdv_close_internal()
+  on.exit(.jdv_close_internal(), add = TRUE)
+  restore <- jdv_budget_test_options(list(
+    jdv.max_work_bytes = NULL,
+    jdv.max_query_rows = NULL
+  ))
+  on.exit(restore(), add = TRUE)
+
+  paged <- jdv_register(data.frame(value = 1:100), mode = "paged")
+  expect_true(nzchar(paged$open))
+  paged_reply <- jdv_budget_test_rpc(
+    "table/rows",
+    list(table = paged$id, generation = 1, offset = 0, limit = 2)
+  )
+  expect_null(paged_reply$error)
+  expect_identical(paged_reply$result$data$row_index, list(1L, 2L))
+
+  .jdv_close_internal(paged$id)
+  snapshot <- jdv_register(data.frame(value = 1:3), mode = "auto")
+  expect_identical(
+    jsonlite::fromJSON(snapshot$open, simplifyVector = FALSE)$params$mode,
+    "snapshot"
+  )
+})
+
 test_that("one-row wide double packed matrices return a shape summary", {
   .jdv_close_internal()
   on.exit(.jdv_close_internal(), add = TRUE)

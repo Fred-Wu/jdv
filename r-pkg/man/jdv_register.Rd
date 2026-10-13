@@ -38,16 +38,23 @@ so a later registration starts with a new ID and generation one. Re-register
 after changing values held by a reference object because the lightweight
 fingerprint does not detect value-only changes. Paged tables capture
 \code{getOption("jdv.max_page_rows", 2000)} at registration; changing the option
-takes effect after re-registering the table. The defaults are 64 MiB for
-\code{jdv.max_work_bytes}, 32 MiB for \code{jdv.max_cache_bytes}, and 10 MiB for
-\code{jdv.snapshot_max_bytes}; \code{jdv.max_query_rows} defaults to 1,000,000 for sort
-and filter operations. Auto mode also uses \code{jdv.snapshot_max_cells} (default
-10,000) and caps the snapshot byte estimate by \code{jdv.max_message_bytes}; if
-Snapshot-only row-name metadata or snapshot construction exceeds its budget,
-Auto retries registration as Paged. Page, work, cache, and query-row settings
-are captured when a table is registered.
-Cache and operation work allowances are separate; these estimates do not
-bound total process memory, source storage, arbitrary user method
-allocations, R allocator and GC overhead, or transient R-internal string
-conversion and sorting scratch.
+takes effect after re-registering the table. \code{jdv.max_work_bytes} and
+\code{jdv.max_query_rows} are unlimited by default for full sort/filter work;
+\code{jdv.max_cache_bytes} defaults to 32 MiB and \code{jdv.snapshot_max_bytes} to 10
+MiB. Snapshot construction, registration probes, pages, and JSON encoding
+retain separate finite derived budgets. Auto mode also uses
+\code{jdv.snapshot_max_cells} (default 10,000) and caps the snapshot byte estimate
+by \code{jdv.max_message_bytes}; if Snapshot-only row-name metadata or snapshot
+construction exceeds its budget, Auto retries registration as Paged. Page,
+work, cache, and query-row settings are captured when a table is registered.
+Snapshot and page work allowances are each the smaller of \code{INT_MAX}, six
+times their output allowance plus 4 MiB, and a finite \code{jdv.max_work_bytes}
+setting. Snapshot uses the smaller of \code{jdv.snapshot_max_bytes} and
+\code{jdv.max_message_bytes}; page work uses \code{jdv.max_message_bytes}. When
+\code{jdv.max_work_bytes} is finite, query work, page extraction, and response
+encoding share that per-operation allowance. In the event-loop request path,
+R defers user interrupts while a sort or filter runs; the viewer UI should
+show that R is busy. These estimates do not bound total process memory,
+source storage, arbitrary user method allocations, R allocator and GC
+overhead, or transient R-internal string conversion and sorting scratch.
 }

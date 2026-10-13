@@ -35,7 +35,7 @@
 
 .jdv_budget_remaining <- function(budget) {
   if (is.null(budget)) {
-    return(.jdv_max_work_bytes())
+    return(.jdv_page_work_bytes())
   }
   max(1, budget$limit - budget$used)
 }

@@ -50,6 +50,8 @@ query_limits <- function(limits = list()) {
     channel_cache = 32L,
     index_cache = 8L,
     work_bytes = .jdv_max_work_bytes(),
+    page_work_bytes = .jdv_page_work_bytes(),
+    snapshot_work_bytes = .jdv_snapshot_work_bytes(),
     cache_bytes = .jdv_max_cache_bytes(),
     query_rows = .jdv_max_query_rows()
   )
@@ -63,7 +65,12 @@ query_limits <- function(limits = list()) {
     query_error("invalid_request", "Invalid query limits.")
   }
   for (name in names(limits)) {
-    value <- query_integer(limits[[name]], name, 1)
+    value <- limits[[name]]
+    if (name %in% c("work_bytes", "query_rows") && identical(value, Inf)) {
+      defaults[[name]] <- Inf
+      next
+    }
+    value <- query_integer(value, name, 1)
     if (value > .Machine$integer.max || (name == "ast_depth" && value > 128L)) {
       query_error("invalid_request", "Query limit exceeds the supported range.")
     }
@@ -120,7 +127,7 @@ query_slice <- function(x, rows) {
 
 query_probe <- function(holder, budget = NULL) {
   x <- holder$source
-  budget <- budget %||% .jdv_budget(holder$limits$work_bytes)
+  budget <- budget %||% .jdv_budget(holder$limits$page_work_bytes)
   rows <- seq_len(min(holder$nrow, holder$limits$probe_rows))
   n <- holder$ncol
   column_names <- colnames(x)
@@ -197,7 +204,7 @@ paged_table <- function(x, collation = "C", limits = list(), budget = NULL) {
     !is.null(rownames(x))
   }
   query_clear(holder)
-  budget <- budget %||% .jdv_budget(limits$work_bytes)
+  budget <- budget %||% .jdv_budget(limits$page_work_bytes)
   query_probe(holder, budget)
   holder
 }
@@ -508,7 +515,8 @@ query_page <- function(
   sort = list(),
   filter = NULL,
   cols = NULL,
-  budget = NULL
+  budget = NULL,
+  query_budget = NULL
 ) {
   query_alive(holder)
   offset <- query_integer(offset, "offset")
@@ -534,10 +542,17 @@ query_page <- function(
   if (length(js) > holder$limits$page_columns) {
     query_error("limit_exceeded", "Too many page columns.")
   }
-  budget <- budget %||% .jdv_budget(holder$limits$work_bytes)
+  budget <- budget %||% .jdv_budget(holder$limits$page_work_bytes)
+  query_budget <- query_budget %||% .jdv_budget(holder$limits$work_bytes)
   has_query <- length(sort) > 0L || !is.null(filter)
   if (has_query) {
-    indices <- query_indices(holder, sort, filter, budget)
+    indices <- query_indices(holder, sort, filter, query_budget)
+    if (is.finite(holder$limits$work_bytes)) {
+      budget$limit <- min(
+        budget$limit,
+        max(1, holder$limits$work_bytes - query_budget$used)
+      )
+    }
     total <- length(indices)
     count <- min(limit, max(0, total - offset))
     rows <- if (count) indices[offset + seq_len(count)] else integer()

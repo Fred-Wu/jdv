@@ -11,7 +11,7 @@ snapshot_table <- function(x, collation = "C", limits = list(), budget = NULL) {
   if (!identical(collation, "C") && !identical(collation, "locale")) {
     query_error("invalid_request", "Invalid collation.")
   }
-  budget <- budget %||% .jdv_budget(.jdv_max_work_bytes())
+  budget <- budget %||% .jdv_budget(.jdv_snapshot_work_bytes())
   .jdv_metadata_budget(
     x,
     min(.jdv_max_message_bytes(), budget$limit),
