@@ -192,6 +192,10 @@ Deno.test({
       if (!asset.headers.get("content-type")?.startsWith("text/javascript")) {
         throw new Error("Viewer JavaScript has the wrong content type.");
       }
+      const favicon = await fetch(new URL("/favicon.ico", server.url));
+      if (favicon.status !== 204) {
+        throw new Error(`Favicon returned ${favicon.status}.`);
+      }
 
       const port = Number(new URL(server.url).port);
       const badHost = await rawHttp(port, {

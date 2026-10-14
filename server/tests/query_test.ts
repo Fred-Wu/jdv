@@ -77,6 +77,15 @@ Deno.test("real R snapshots preserve array channels, omitted displays, zero rows
   assertEquals(selected.data.row_names, ["r1"]);
 });
 
+Deno.test("Snapshot queries derive a local total when nrow is unknown", () => {
+  const snapshot = structuredClone(exported.extras.one_row);
+  snapshot.params.nrow = null;
+  const result = querySnapshot(snapshot);
+  assertEquals(result.total, 1);
+  assertEquals(result.total_unfiltered, 1);
+  assertEquals(result.data.row_index, [1]);
+});
+
 Deno.test("display reconstruction handles omitted semantic channels and NA-last descending", () => {
   const stringSnapshot = exported.cases["utf8-byte-order"];
   const stringSchema = stringSnapshot.params.columns[0];

@@ -23,8 +23,9 @@ export function querySnapshot(descriptor, {
   const table = descriptor?.params ?? descriptor;
   const schemaColumns = table?.schema?.columns ?? table?.columns;
   const payloadColumns = table?.data?.columns;
+  const rowCount = snapshotRowCount(table);
   if (
-    !Number.isSafeInteger(table?.nrow) || table.nrow < 0 ||
+    rowCount === null ||
     !Number.isSafeInteger(table?.ncol) || table.ncol < 0 ||
     !Array.isArray(schemaColumns) || !Array.isArray(payloadColumns) ||
     schemaColumns.length !== table.ncol || payloadColumns.length !== table.ncol
@@ -34,10 +35,10 @@ export function querySnapshot(descriptor, {
   if (
     (table.data.row_index !== undefined &&
       (!Array.isArray(table.data.row_index) ||
-        table.data.row_index.length !== table.nrow)) ||
+        table.data.row_index.length !== rowCount)) ||
     (table.data.row_names !== undefined && table.data.row_names !== null &&
       (!Array.isArray(table.data.row_names) ||
-        table.data.row_names.length !== table.nrow))
+        table.data.row_names.length !== rowCount))
   ) {
     throw queryError("schema_changed", "Invalid row metadata channels.");
   }
@@ -53,9 +54,9 @@ export function querySnapshot(descriptor, {
     const { errors = [], ...data } = raw ?? {};
     return { schema, data, errors };
   });
-  validateChannels(table.nrow, columns);
+  validateChannels(rowCount, columns);
   const request = validateRequest(columns, sort, filter, cols);
-  const allRows = Array.from({ length: table.nrow }, (_, i) => i);
+  const allRows = Array.from({ length: rowCount }, (_, i) => i);
   const selected = filter === null
     ? allRows
     : allRows.filter((row) => testFilter(columns, request.filter, row));
@@ -72,7 +73,7 @@ export function querySnapshot(descriptor, {
     const source = columns[position];
     const data = {};
     for (const [key, value] of Object.entries(source.data)) {
-      if (Array.isArray(value) && value.length === table.nrow) {
+      if (Array.isArray(value) && value.length === rowCount) {
         data[key] = pageIndices.map((row) => value[row]);
       } else if (key !== "errors") {
         data[key] = value;
@@ -86,7 +87,7 @@ export function querySnapshot(descriptor, {
   });
   return {
     total,
-    total_unfiltered: table.nrow,
+    total_unfiltered: rowCount,
     offset,
     limit: effectiveLimit,
     data: {
@@ -97,6 +98,30 @@ export function querySnapshot(descriptor, {
       columns: pageColumns,
     },
   };
+}
+
+function snapshotRowCount(table) {
+  if (Number.isSafeInteger(table?.nrow) && table.nrow >= 0) {
+    return table.nrow;
+  }
+  if (table?.nrow !== null) return null;
+
+  const lengths = [];
+  if (Array.isArray(table.data?.row_index)) {
+    lengths.push(table.data.row_index.length);
+  }
+  if (Array.isArray(table.data?.row_names)) {
+    lengths.push(table.data.row_names.length);
+  }
+  for (const column of table.data?.columns ?? []) {
+    for (const name of ["values", "display", "sortKey", "special", "na"]) {
+      if (Array.isArray(column?.[name])) lengths.push(column[name].length);
+    }
+  }
+  if (lengths.length === 0 || lengths.some((length) => length !== lengths[0])) {
+    return null;
+  }
+  return lengths[0];
 }
 
 /** @param {any|any[]} schema @param {any|any[]} data @param {number[]|null} rowIndex @param {string[]|null} rowNames */

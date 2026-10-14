@@ -172,6 +172,12 @@ function handleHttp(
   }
 
   const url = new URL(request.url);
+  if (url.pathname === "/favicon.ico") {
+    return new Response(null, {
+      status: 204,
+      headers: { "cache-control": "public, max-age=86400" },
+    });
+  }
   if (url.pathname === "/ws") {
     if (requestOrigin !== server.origin) {
       return new Response("Invalid Origin header", { status: 403 });

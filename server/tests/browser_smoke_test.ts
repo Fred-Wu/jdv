@@ -125,6 +125,10 @@ Deno.test({
       const pageErrors: string[] = [];
       page.on("pageerror", (error: Error) => pageErrors.push(error.message));
       await page.goto(server.url, { waitUntil: "networkidle" });
+      assertEquals(
+        await page.evaluate(async () => (await fetch("/favicon.ico")).status),
+        204,
+      );
       await page.waitForSelector('#status[data-state="connected"]');
       await page.getByRole("button", { name: "Open view" }).click();
       await page.waitForSelector("#viewer .tabulator-row");
@@ -425,6 +429,26 @@ Deno.test({
         ),
         "The browser did not send the filter request.",
       );
+      await page.waitForFunction(
+        () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-meta")?.textContent?.startsWith(
+            "2 of 249 rows · 300 columns · paged · ",
+          ) === true;
+        },
+      );
+      assert(
+        (await page.locator("#table-meta").textContent())?.startsWith(
+          "2 of 249 rows · 300 columns · paged · ",
+        ),
+        "The Paged heading should show the filtered and unfiltered totals.",
+      );
+      await page.screenshot({
+        path: "/tmp/jdv-20261014-ui-filtered-count.png",
+        fullPage: true,
+      });
 
       await page.getByRole("button", { name: "Clear" }).click();
       await page.waitForFunction(
@@ -487,11 +511,101 @@ Deno.test({
         },
         { timeout: 5_000 },
       );
+      await page.waitForFunction(() => {
+        const document = (globalThis as unknown as {
+          document: BrowserDocument;
+        }).document;
+        const viewport = document.querySelector("#column-viewport");
+        if (!viewport) return false;
+        const viewportRect = viewport.getBoundingClientRect();
+        const header = viewport.querySelector(
+          '.tabulator-header .tabulator-col[tabulator-field="c299"]',
+        )?.getBoundingClientRect();
+        const cell = viewport.querySelector(
+          '.tabulator-row [tabulator-field="c299"]',
+        )?.getBoundingClientRect();
+        return header !== undefined && cell !== undefined &&
+          header.left >= viewportRect.left - 1 &&
+          header.right <= viewportRect.right + 1 &&
+          cell.left >= viewportRect.left - 1 &&
+          cell.right <= viewportRect.right + 1;
+      }, { timeout: 5_000 });
       assert(
         (await page.locator('.tabulator-row [tabulator-field="c299"]')
           .first().textContent())?.startsWith("value-299-"),
         "The rightmost data cell was not rendered.",
       );
+      const rightEdgeGeometry = await page.locator("#column-viewport").evaluate(
+        (element: BrowserElement) => {
+          const viewportRect = element.getBoundingClientRect();
+          const row = element.querySelector(
+            '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+          );
+          const rowRight = row?.getBoundingClientRect().right ?? Number.NaN;
+          const firstVisible = [
+            ...element.querySelectorAll(
+              '.tabulator-header .tabulator-col[tabulator-field^="c"]',
+            ),
+          ].map((column) => column.getBoundingClientRect()).find((rect) =>
+            rect.right > rowRight && rect.left >= rowRight - 1
+          );
+          const lastHeader = element.querySelector(
+            '.tabulator-header .tabulator-col[tabulator-field="c299"]',
+          );
+          const lastCell = element.querySelector(
+            '.tabulator-row [tabulator-field="c299"]',
+          );
+          const lastHeaderRect = lastHeader?.getBoundingClientRect();
+          const lastCellRect = lastCell?.getBoundingClientRect();
+          return {
+            scrollLeft: element.scrollLeft,
+            scrollWidth: element.scrollWidth,
+            clientWidth: element.clientWidth,
+            viewportLeft: viewportRect.left,
+            viewportRight: viewportRect.right,
+            rowRight,
+            firstDataLeft: firstVisible?.left ?? Number.NaN,
+            lastHeaderLeft: lastHeaderRect?.left ?? Number.NaN,
+            lastHeaderRight: lastHeaderRect?.right ?? Number.NaN,
+            lastCellLeft: lastCellRect?.left ?? Number.NaN,
+            lastCellRight: lastCellRect?.right ?? Number.NaN,
+          };
+        },
+      );
+      assert(
+        Math.abs(
+          rightEdgeGeometry.firstDataLeft - rightEdgeGeometry.rowRight,
+        ) <=
+          1,
+        `A horizontal gap appeared after the frozen Row column: ${
+          JSON.stringify(rightEdgeGeometry)
+        }`,
+      );
+      assert(
+        rightEdgeGeometry.lastHeaderLeft >=
+            rightEdgeGeometry.viewportLeft - 1 &&
+          rightEdgeGeometry.lastHeaderRight <=
+            rightEdgeGeometry.viewportRight + 1 &&
+          rightEdgeGeometry.lastHeaderRight -
+                rightEdgeGeometry.lastHeaderLeft === 180 &&
+          rightEdgeGeometry.lastCellLeft >=
+            rightEdgeGeometry.viewportLeft - 1 &&
+          rightEdgeGeometry.lastCellRight <=
+            rightEdgeGeometry.viewportRight + 1 &&
+          rightEdgeGeometry.lastCellRight - rightEdgeGeometry.lastCellLeft ===
+            180,
+        `The rightmost column must fit fully inside the viewport: ${
+          JSON.stringify(rightEdgeGeometry)
+        }`,
+      );
+      assertEquals(
+        rightEdgeGeometry.scrollLeft,
+        rightEdgeGeometry.scrollWidth - rightEdgeGeometry.clientWidth,
+      );
+      await page.screenshot({
+        path: "/tmp/jdv-20261014-ui-wide-right-edge.png",
+        fullPage: true,
+      }, { timeout: 5_000 });
       console.log(
         "rightmost-column-paged-requests",
         JSON.stringify(
@@ -685,8 +799,93 @@ Deno.test({
           JSON.stringify(rerenderedRowGeometry)
         }`,
       );
+      await page.evaluate(() =>
+        new Promise<void>((resolve) => {
+          const runtime = globalThis as unknown as BrowserRuntime;
+          runtime.requestAnimationFrame(() => {
+            runtime.requestAnimationFrame(() => resolve());
+          });
+        })
+      );
+      const renderedEdgeCells: {
+        loading: boolean;
+        columns: Array<{
+          field: string;
+          headerLeft: number | undefined;
+          headerRight: number | undefined;
+          cellLeft: number | undefined;
+          cellRight: number | undefined;
+          textLeft: number | undefined;
+          textRight: number | undefined;
+          text: string | null | undefined;
+        }>;
+      } = await page.locator("#column-viewport")
+        .evaluate((viewport: BrowserElement) => {
+          const rows = [...viewport.querySelectorAll(".tabulator-row")];
+          const targetRow = rows.find((row) =>
+            row.querySelector('[tabulator-field="row_index"]')?.textContent ===
+              "24"
+          );
+          const cellGeometry = (field: string) => {
+            const header = viewport.querySelector(
+              `.tabulator-header .tabulator-col[tabulator-field="${field}"]`,
+            );
+            const cell = targetRow?.querySelector(
+              `[tabulator-field="${field}"]`,
+            );
+            const headerRect = header?.getBoundingClientRect();
+            const cellRect = cell?.getBoundingClientRect();
+            const textRect = cell?.querySelector("span")
+              ?.getBoundingClientRect();
+            return {
+              headerLeft: headerRect?.left,
+              headerRight: headerRect?.right,
+              cellLeft: cellRect?.left,
+              cellRight: cellRect?.right,
+              textLeft: textRect?.left,
+              textRight: textRect?.right,
+              text: cell?.textContent,
+            };
+          };
+          return {
+            loading: viewport.querySelector("#column-window")?.className
+              .includes("is-loading-window") ?? false,
+            columns: [294, 295, 296, 297, 298, 299].map((position) => ({
+              field: `c${position}`,
+              ...cellGeometry(`c${position}`),
+            })),
+          };
+        });
+      assert(
+        !renderedEdgeCells.loading &&
+          renderedEdgeCells.columns.length === 6 &&
+          renderedEdgeCells.columns.every((column, index) => {
+            const previous = renderedEdgeCells.columns[index - 1];
+            return column.text === `value-${column.field.slice(1)}-24` &&
+              column.headerLeft !== undefined &&
+              column.headerRight !== undefined &&
+              column.cellLeft !== undefined &&
+              column.cellRight !== undefined &&
+              column.textLeft !== undefined && column.textRight !== undefined &&
+              Math.abs(column.headerLeft - column.cellLeft) <= 1 &&
+              Math.abs(column.headerRight - column.cellRight) <= 1 &&
+              column.textLeft >= column.cellLeft - 1 &&
+              column.textRight <= column.cellRight + 1 &&
+              (!previous || (previous.cellRight ?? Infinity) <=
+                  (column.cellLeft ?? -Infinity) + 1) &&
+              (!previous || (previous.textRight ?? Infinity) <=
+                  (column.textLeft ?? -Infinity) + 1);
+          }),
+        `Settled right-edge cells must have exact row 24 values and non-overlapping text/geometry: ${
+          JSON.stringify(renderedEdgeCells)
+        }`,
+      );
+      console.log(
+        "settled-right-edge-row-24",
+        JSON.stringify(renderedEdgeCells),
+      );
       await page.screenshot({
-        path: "/tmp/jdv-phase7-browser-right-edge.png",
+        path: "/tmp/jdv-20261014-ui-wide-right-edge-after-render.png",
         fullPage: true,
       });
       assertEquals(
@@ -713,6 +912,16 @@ Deno.test({
             document.querySelector(
                 '.tabulator-row [tabulator-field="row_index"]',
               )?.textContent === "1";
+        },
+      );
+      await page.waitForFunction(
+        () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-meta")?.textContent?.startsWith(
+            "249 of 249 rows · 3 columns · snapshot · ",
+          ) === true;
         },
       );
       await page.selectOption("#filter-column", "2");
@@ -762,6 +971,12 @@ Deno.test({
           return cells.length === 2 && cells[0].textContent === "249" &&
             cells[1].textContent === "248";
         },
+      );
+      assert(
+        (await page.locator("#table-meta").textContent())?.startsWith(
+          "2 of 249 rows · 3 columns · snapshot · ",
+        ),
+        "Snapshot local filtering should update both row totals.",
       );
       assertEquals(requests.length, pagedRequestsBeforeSnapshot);
 
@@ -882,7 +1097,6 @@ Deno.test({
       await unsupportedCard.getByRole("button", {
         name: "Unsupported view",
       }).waitFor();
-      assertEquals(pageErrors, []);
       assertEquals(pageErrors, []);
     } finally {
       await browser?.close();

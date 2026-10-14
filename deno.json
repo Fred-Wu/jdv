@@ -1,0 +1,8 @@
+{
+  "fmt": {
+    "exclude": [
+      "server/web/vendor/tabulator.min.js",
+      "server/web/vendor/tabulator.min.css"
+    ]
+  }
+}

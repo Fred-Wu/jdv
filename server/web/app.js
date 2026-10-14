@@ -127,6 +127,7 @@ $("#filter-clear").addEventListener("click", clearFilter);
 filterOperator.addEventListener("change", updateFilterInputs);
 filterColumn.addEventListener("change", updateFilterOperators);
 viewport.addEventListener("scroll", scheduleColumnWindow);
+globalThis.addEventListener("resize", updateColumnScrollExtent);
 new ResizeObserver(scheduleColumnWindow).observe(viewport);
 
 function setStatus(message, state = "info") {
@@ -185,6 +186,21 @@ function countLabel(value, noun) {
     return `Unknown ${noun}s`;
   }
   return `${value} ${noun}${value === 1 ? "" : "s"}`;
+}
+
+function queryCountLabel(total, totalUnfiltered) {
+  const count = Number.isSafeInteger(total) && total >= 0 ? total : "Unknown";
+  const unfiltered = Number.isSafeInteger(totalUnfiltered) &&
+      totalUnfiltered >= 0
+    ? totalUnfiltered
+    : "Unknown";
+  return `${count} of ${unfiltered} rows`;
+}
+
+function setTableMeta(state, total, totalUnfiltered) {
+  metaElement.textContent = `${queryCountLabel(total, totalUnfiltered)} · ${
+    countLabel(state.descriptor.ncol, "column")
+  } · ${state.descriptor.mode} · ${state.session}`;
 }
 
 function renderLists() {
@@ -254,7 +270,7 @@ function openTable(session, descriptor) {
   populateColumnChoices();
   const windowState = calculateColumnWindow();
   selected.window = windowState;
-  spacer.style.width = `${windowState.totalWidth}px`;
+  spacer.style.width = `${columnScrollExtent(windowState.totalWidth)}px`;
   windowElement.style.transform = `translateX(${windowState.offsetPx}px)`;
   updateRowColumnCompensation();
   windowElement.style.width = `${
@@ -580,6 +596,20 @@ function calculateColumnWindow() {
   return window;
 }
 
+function columnScrollExtent(totalWidth) {
+  const viewportWidth = viewport.clientWidth || 720;
+  const maximumScroll = Math.max(0, totalWidth - viewportWidth);
+  const alignedMaximum = Math.ceil(maximumScroll / COLUMN_WIDTH) *
+    COLUMN_WIDTH;
+  return Math.max(totalWidth, viewportWidth + alignedMaximum);
+}
+
+function updateColumnScrollExtent() {
+  if (!selected) return;
+  spacer.style.width = `${columnScrollExtent(selected.window.totalWidth)}px`;
+  scheduleColumnWindow();
+}
+
 function scheduleColumnWindow() {
   if (!selected) return;
   if (nextWindowFrame === 0) {
@@ -627,7 +657,7 @@ function updateColumnWindow() {
     state.descriptor.generation,
     "A newer column window replaced this request.",
   );
-  spacer.style.width = `${next.totalWidth}px`;
+  spacer.style.width = `${columnScrollExtent(next.totalWidth)}px`;
   windowElement.style.transform = `translateX(${next.offsetPx}px)`;
   windowElement.style.width = `${
     ROW_WIDTH + next.columns.length * COLUMN_WIDTH
@@ -642,6 +672,21 @@ function updateColumnWindow() {
 
 function requestColumnWindowPage() {
   nextWindowTimer = undefined;
+  if (selected) {
+    spacer.style.width = `${columnScrollExtent(selected.window.totalWidth)}px`;
+  }
+  const maximumScroll = Math.max(
+    0,
+    viewport.scrollWidth - viewport.clientWidth,
+  );
+  const nearRightEdge = maximumScroll - viewport.scrollLeft <= COLUMN_WIDTH;
+  const alignedScrollLeft = nearRightEdge
+    ? maximumScroll
+    : Math.floor(viewport.scrollLeft / COLUMN_WIDTH) * COLUMN_WIDTH;
+  if (alignedScrollLeft !== viewport.scrollLeft) {
+    viewport.scrollLeft = alignedScrollLeft;
+    return;
+  }
   if (!pendingColumnQuery || !selected?.table) return;
   pendingColumnQuery = false;
   selected.table.setPage(selected.page).catch((error) => showTableError(error));
@@ -654,7 +699,6 @@ function buildTableColumns(positions) {
     width: 86,
     minWidth: 86,
     maxWidth: 86,
-    frozen: true,
     headerSort: false,
     resizable: false,
     formatter: textFormatter,
@@ -726,6 +770,7 @@ async function requestRows(params) {
       const data = page.data.columns.map((column) => column.data);
       result = {
         total: page.total,
+        total_unfiltered: page.total_unfiltered,
         rows: decodeRows(
           schemas,
           data,
@@ -747,6 +792,7 @@ async function requestRows(params) {
       throw new Error("This view access method is not supported.");
     }
     if (!isCurrent(state, epoch)) throw abortError("The query was replaced.");
+    setTableMeta(state, result.total, result.total_unfiltered);
     const lastPage = Math.max(1, Math.ceil(result.total / pageSize));
     windowElement.classList.remove("is-loading-window");
     setStatus("Connected.", "connected");

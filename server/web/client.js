@@ -202,6 +202,8 @@ export async function fillRemotePage({
   const warnings = [];
   let cursor = offset;
   let total = 0;
+  let queryTotal = null;
+  let totalUnfiltered = null;
   let remaining = limit;
   while (remaining > 0) {
     if (!isCurrent()) throw abortError("The query was replaced.");
@@ -211,9 +213,26 @@ export async function fillRemotePage({
     if (!result || !result.data || !Array.isArray(result.data.row_index)) {
       throw new Error("R returned an invalid table page.");
     }
-    total = Number(result.total);
+    total = result.total;
+    if (
+      !Number.isSafeInteger(total) || total < 0 ||
+      !Number.isSafeInteger(result.total_unfiltered) ||
+      result.total_unfiltered < 0 || total > result.total_unfiltered
+    ) {
+      throw new Error("R returned invalid query totals.");
+    }
+    if (queryTotal !== null && queryTotal !== total) {
+      throw new Error("R changed the filtered row count between pages.");
+    }
+    queryTotal = total;
+    if (
+      totalUnfiltered !== null && totalUnfiltered !== result.total_unfiltered
+    ) {
+      throw new Error("R changed the unfiltered row count between pages.");
+    }
+    totalUnfiltered = result.total_unfiltered;
     const count = result.data.row_index.length;
-    if (!Number.isSafeInteger(result.offset) || !Number.isFinite(total)) {
+    if (!Number.isSafeInteger(result.offset) || result.offset < 0) {
       throw new Error("R returned invalid page bounds.");
     }
     if (count === 0) {
@@ -234,5 +253,5 @@ export async function fillRemotePage({
     remaining -= count;
     if (cursor >= total) break;
   }
-  return { total, rows, warnings };
+  return { total, total_unfiltered: totalUnfiltered, rows, warnings };
 }

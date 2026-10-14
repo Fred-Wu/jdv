@@ -239,10 +239,30 @@ Deno.test("page fill stops when its epoch changes during a response", async () =
     result: {
       offset: 0,
       total: 2,
+      total_unfiltered: 2,
       data: { row_index: [1], columns: [] },
     },
   });
   await assertRejectsAbort(pending);
+});
+
+Deno.test("page fill returns filtered and unfiltered query totals", async () => {
+  const result = await fillRemotePage({
+    offset: 0,
+    limit: 2,
+    fetchPage: () =>
+      Promise.resolve({
+        result: {
+          offset: 0,
+          total: 1,
+          total_unfiltered: 3,
+          data: { row_index: [2], columns: [] },
+        },
+      }),
+    decode: () => [{ row_index: 2 }],
+  });
+  assertEquals(result.total, 1);
+  assertEquals(result.total_unfiltered, 3);
 });
 
 Deno.test("page fill rejects an empty response before the requested total", async () => {
@@ -253,7 +273,12 @@ Deno.test("page fill rejects an empty response before the requested total", asyn
       limit: 2,
       fetchPage: () =>
         Promise.resolve({
-          result: { offset: 0, total: 2, data: { row_index: [], columns: [] } },
+          result: {
+            offset: 0,
+            total: 2,
+            total_unfiltered: 2,
+            data: { row_index: [], columns: [] },
+          },
         }),
       decode: () => [],
     });

@@ -103,11 +103,15 @@ pipes. No repository checkout, import map, or project configuration is needed
 when started by URL.
 
 ```sh
-deno fmt --check --ignore=server/web/vendor/tabulator.min.js --ignore=server/web/vendor/tabulator.min.css server
+deno fmt --check server
 deno lint --ignore=server/web/vendor/tabulator.min.js --ignore=server/web/vendor/tabulator.min.css server
 deno check server/main.ts
 deno test -A server/tests
 ```
+
+The repository `deno.json` excludes the vendored Tabulator minified JavaScript
+and CSS from formatting. It contains no imports or dependencies; the URL startup
+command uses `--no-config` and remains self-contained.
 
 The Hub, platform, and R framing unit tests need only Deno. The full suite also
 includes R numeric fixtures and an interactive transport regression that runs an
