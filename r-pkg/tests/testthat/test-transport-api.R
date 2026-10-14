@@ -105,6 +105,37 @@ run_mock_host <- function(
   )
 }
 
+run_tcp_unload_host <- function(ready_path, connected_path, eof_path) {
+  python <- Sys.which("python3")
+  script <- test_path("fixtures", "transport-tcp-unload-host.py")
+  callr::r_bg(
+    function(script, python, ready_path, connected_path, eof_path) {
+      output <- system2(
+        python,
+        c(
+          shQuote(script),
+          shQuote(ready_path),
+          shQuote(connected_path),
+          shQuote(eof_path)
+        ),
+        stdout = TRUE,
+        stderr = TRUE
+      )
+      if (!is.null(attr(output, "status")) && attr(output, "status") != 0) {
+        stop(paste(output, collapse = "\n"))
+      }
+    },
+    args = list(
+      script = script,
+      python = python,
+      ready_path = ready_path,
+      connected_path = connected_path,
+      eof_path = eof_path
+    ),
+    supervise = TRUE
+  )
+}
+
 wait_for_file <- function(path, timeout = 10) {
   deadline <- Sys.time() + timeout
   while (!file.exists(path) && Sys.time() < deadline) {
@@ -779,6 +810,113 @@ test_that("a finalizer cannot unload an active transport callback", {
   expect_true(child$reload_rejected)
   expect_false(child$task_callback_present)
   expect_identical(child$registry_entries, 0L)
+})
+
+test_that("native unload closes an active TCP transport", {
+  skip_on_os("windows")
+  skip_if_not_installed("callr")
+  skip_if(
+    !file.exists(file.path(find.package("jdv"), "Meta", "package.rds")),
+    "Active unload requires an installed package"
+  )
+  python <- Sys.which("python3")
+  skip_if(!nzchar(python), "python3 is required for the local TCP host")
+
+  run_case <- function(action) {
+    ready_path <- tempfile("jdv-tcp-unload-ready-")
+    connected_path <- paste0(ready_path, ".connected")
+    eof_path <- paste0(ready_path, ".eof")
+    host <- run_tcp_unload_host(ready_path, connected_path, eof_path)
+    on.exit(
+      {
+        if (host$is_alive()) {
+          host$kill()
+        }
+        try(host$wait(), silent = TRUE)
+        unlink(c(ready_path, connected_path, eof_path))
+      },
+      add = TRUE
+    )
+    expect_true(wait_for_file(ready_path))
+    address <- readLines(ready_path, warn = FALSE)[[1]]
+
+    child <- callr::r(
+      function(libpath, address, connected_path, eof_path, action) {
+        .libPaths(libpath)
+        loadNamespace("jdv")
+        options(jdv.address = address)
+        jdv::jdv_view(data.frame(value = 1:3), mode = "paged")
+        deadline <- Sys.time() + 5
+        while (!file.exists(connected_path) && Sys.time() < deadline) {
+          Sys.sleep(0.01)
+        }
+        stopifnot(file.exists(connected_path))
+
+        hook_eof_seen <- FALSE
+        if (action == "namespace") {
+          unloadNamespace("jdv")
+        } else {
+          if (action == "close") {
+            close <- get("C_jdv_transport_close", asNamespace("jdv"))
+            .Call(close)
+          }
+          if (action == "hook") {
+            unload_hook <- getDLLRegisteredRoutines(getLoadedDLLs()[["jdv"]])[[
+              ".C"
+            ]][["R_unload_jdv"]]
+            .C(unload_hook, 0L)
+            .C(unload_hook, 0L)
+            deadline <- Sys.time() + 2
+            while (!file.exists(eof_path) && Sys.time() < deadline) {
+              Sys.sleep(0.01)
+            }
+            hook_eof_seen <- file.exists(eof_path)
+          }
+          dyn.unload(getLoadedDLLs()[["jdv"]][["path"]])
+        }
+
+        deadline <- Sys.time() + 2
+        while (!file.exists(eof_path) && Sys.time() < deadline) {
+          Sys.sleep(0.01)
+        }
+        list(
+          eof_seen = file.exists(eof_path),
+          hook_eof_seen = hook_eof_seen,
+          namespace_loaded = "jdv" %in% loadedNamespaces(),
+          dll_loaded = "jdv" %in% names(getLoadedDLLs())
+        )
+      },
+      args = list(
+        libpath = .libPaths(),
+        address = address,
+        connected_path = connected_path,
+        eof_path = eof_path,
+        action = action
+      )
+    )
+    child
+  }
+
+  direct <- run_case("direct")
+  expect_true(direct$eof_seen)
+  expect_true(direct$namespace_loaded)
+  expect_false(direct$dll_loaded)
+
+  namespace <- run_case("namespace")
+  expect_true(namespace$eof_seen)
+  expect_false(namespace$namespace_loaded)
+  expect_false(namespace$dll_loaded)
+
+  closed <- run_case("close")
+  expect_true(closed$eof_seen)
+  expect_true(closed$namespace_loaded)
+  expect_false(closed$dll_loaded)
+
+  registered <- run_case("hook")
+  expect_true(registered$hook_eof_seen)
+  expect_true(registered$eof_seen)
+  expect_true(registered$namespace_loaded)
+  expect_false(registered$dll_loaded)
 })
 
 test_that("close-all stops an active transport with an empty registry", {

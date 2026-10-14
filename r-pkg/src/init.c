@@ -111,6 +111,7 @@ SEXP C_jdv_transport_status(void);
 SEXP C_jdv_transport_can_unload(void);
 SEXP C_jdv_transport_housekeeping(void);
 SEXP C_jdv_transport_cleanup(void);
+void R_unload_jdv(DllInfo *dll);
 
 JDV_WRAP_1(jdv_entry_int64_is_na, C_jdv_int64_is_na)
 JDV_WRAP_1(jdv_entry_int64_values, C_jdv_int64_values)
@@ -150,9 +151,14 @@ static const R_CallMethodDef CallEntries[] = {
     {NULL, NULL, 0}
 };
 
+static const R_CMethodDef CEntries[] = {
+    {"R_unload_jdv", (DL_FUNC)&R_unload_jdv, 1},
+    {NULL, NULL, 0}
+};
+
 void R_init_jdv(DllInfo *dll)
 {
-    R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
+    R_registerRoutines(dll, CEntries, CallEntries, NULL, NULL);
     R_useDynamicSymbols(dll, FALSE);
     R_forceSymbols(dll, TRUE);
 }

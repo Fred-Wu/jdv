@@ -26,6 +26,11 @@ test_that("the native library registers only its private routines", {
       )
     )
   )
+  expect_identical(names(getDLLRegisteredRoutines(dll)[[".C"]]), "R_unload_jdv")
+  expect_identical(
+    getDLLRegisteredRoutines(dll)[[".C"]][["R_unload_jdv"]][["numParameters"]],
+    1L
+  )
   expect_identical(
     getDLLRegisteredRoutines(dll)[[".Call"]][["C_jdv_json_encode"]][[
       "numParameters"
@@ -35,6 +40,16 @@ test_that("the native library registers only its private routines", {
   expect_true(.Call(C_jdv_transport_can_unload))
   expect_error(.Call("C_jdv_int64_values", int64_fixture("1"), PACKAGE = "jdv"))
   expect_error(getNativeSymbolInfo("cJSON_Version", PACKAGE = "jdv"))
+})
+
+test_that("the registered unload hook is safe to call repeatedly", {
+  dll <- getLoadedDLLs()[["jdv"]]
+  unload_hook <- getDLLRegisteredRoutines(dll)[[".C"]][["R_unload_jdv"]]
+
+  expect_no_error(.C(unload_hook, 0L))
+  expect_true(.Call(C_jdv_transport_can_unload))
+  expect_no_error(.C(unload_hook, 0L))
+  expect_true(.Call(C_jdv_transport_can_unload))
 })
 
 test_that("the package can unload and load repeatedly in a fresh session", {
