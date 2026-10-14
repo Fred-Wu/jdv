@@ -56,7 +56,7 @@ typedef struct {
     char id_json[JDV_ID_JSON_CAPACITY];
     char id_value[JDV_ID_VALUE_CAPACITY];
     int id_kind;
-    char table[JDV_TABLE_ID_CAPACITY];
+    char view[JDV_TABLE_ID_CAPACITY];
     double generation;
     double deadline;
     int has_deadline;
@@ -794,7 +794,7 @@ static int parse_request_metadata(const char *json, size_t length,
     cJSON *id;
     cJSON *method;
     cJSON *params;
-    cJSON *table;
+    cJSON *view;
     cJSON *generation;
     cJSON *deadline;
     cJSON *encoding;
@@ -866,12 +866,12 @@ static int parse_request_metadata(const char *json, size_t length,
         }
     }
     if (cJSON_IsObject(params)) {
-        table = cJSON_GetObjectItemCaseSensitive(params, "table");
+        view = cJSON_GetObjectItemCaseSensitive(params, "view");
         generation = cJSON_GetObjectItemCaseSensitive(params, "generation");
-        if (cJSON_IsString(table) && table->valuestring &&
-            strlen(table->valuestring) < sizeof(request->table))
-            memcpy(request->table, table->valuestring,
-                   strlen(table->valuestring) + 1);
+        if (cJSON_IsString(view) && view->valuestring &&
+            strlen(view->valuestring) < sizeof(request->view))
+            memcpy(request->view, view->valuestring,
+                   strlen(view->valuestring) + 1);
         if (cJSON_IsNumber(generation) && R_FINITE(generation->valuedouble))
             request->generation = generation->valuedouble;
     }

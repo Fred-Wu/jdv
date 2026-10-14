@@ -12,7 +12,7 @@ export interface WireFrame {
   bytes: number;
   method?: string;
   id?: string | number;
-  table?: string;
+  view?: string;
   generation?: number;
   offset?: number;
   limit?: number;
@@ -48,7 +48,7 @@ interface RelayConnection {
 
 interface BrowserRowRequest {
   id: string;
-  table?: string;
+  view?: string;
   generation?: number;
   offset?: number;
   limit?: number;
@@ -158,7 +158,7 @@ export class TestServer {
           const params = isRecord(message.params) ? message.params : {};
           this.#browserRowsQueue.push({
             id: message.id,
-            table: typeof params.table === "string" ? params.table : undefined,
+            view: typeof params.view === "string" ? params.view : undefined,
             generation: typeof params.generation === "number"
               ? params.generation
               : undefined,
@@ -300,7 +300,7 @@ export class TestServer {
   #recordFrame(frame: WireFrame): void {
     if (frame.direction === "r-to-server") {
       this.#rToServerFrames.push(frame);
-      if (frame.method === "table/open") this.#tableOpenDescriptors.push(frame);
+      if (frame.method === "view/open") this.#tableOpenDescriptors.push(frame);
       if (
         frame.id !== undefined && this.#requestMethods.has(String(frame.id))
       ) {
@@ -319,7 +319,7 @@ export class TestServer {
         this.#requestMethods.set(String(frame.id), frame.method);
         if (frame.method === "table/rows") {
           const index = this.#browserRowsQueue.findIndex((request) =>
-            request.table === frame.table &&
+            request.view === frame.view &&
             request.generation === frame.generation &&
             request.offset === frame.offset &&
             request.limit === frame.limit
@@ -327,7 +327,7 @@ export class TestServer {
           const matched = index >= 0
             ? this.#browserRowsQueue.splice(index, 1)[0]
             : this.#browserRowsQueue.find((request) =>
-              request.table === frame.table &&
+              request.view === frame.view &&
               request.generation === frame.generation
             );
           if (matched) {
@@ -682,7 +682,7 @@ function summarizeFrame(
   const result = isRecord(value.result) ? value.result : undefined;
   const payload = params ?? result;
   if (payload) {
-    if (typeof payload.table === "string") frame.table = payload.table;
+    if (typeof payload.view === "string") frame.view = payload.view;
     if (typeof payload.generation === "number") {
       frame.generation = payload.generation;
     }

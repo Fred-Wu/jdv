@@ -89,11 +89,31 @@ function isRecord(value: unknown): value is JsonRecord {
 }
 
 function openTable(connection: MemoryConnection, generation = 1): void {
-  connection.inject(notification("table/open", {
-    table: "table-1",
+  connection.inject(notification("view/open", {
+    view: "table-1",
     generation,
+    kind: "grid",
+    access: "snapshot",
+    encoding: "r-json",
     title: "Snapshot",
     mode: "snapshot",
+    nrow: 1,
+    ncol: 1,
+    columns: [{
+      position: 0,
+      name: "x",
+      type: "integer",
+      sortable: true,
+      filterable: true,
+    }],
+    capabilities: {
+      seek: true,
+      sort: true,
+      filter: true,
+      known_total: true,
+      next: false,
+      children: false,
+    },
     data: { columns: ["x"], rows: [[1]] },
   }));
 }
@@ -163,14 +183,39 @@ Deno.test("R request ids are remapped and table close updates the Snapshot cache
   const browser = new MemoryBrowser();
   hub.attach(browser);
   openTable(connection);
-  await browser.nextMessage((message) => message.type === "table/open");
+  await browser.nextMessage((message) => message.type === "view/open");
+
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "legacy-method",
+    session: "r-1-1",
+    method: "table/schema",
+    params: { table: "table-1", generation: 1 },
+  });
+  assertEquals(
+    (await browser.nextMessage((message) => message.id === "legacy-method"))
+      .code,
+    "method_not_found",
+  );
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "legacy-id-key",
+    session: "r-1-1",
+    method: "view/schema",
+    params: { table: "table-1", generation: 1 },
+  });
+  assertEquals(
+    (await browser.nextMessage((message) => message.id === "legacy-id-key"))
+      .code,
+    "invalid_request",
+  );
 
   hub.handleBrowser(browser, {
     type: "request",
     id: "browser-1",
     session: "r-1-1",
-    method: "table/schema",
-    params: { table: "table-1", generation: 1 },
+    method: "view/schema",
+    params: { view: "table-1", generation: 1 },
   });
   const request = await connection.nextWrite(0);
   assertEquals(typeof request.id, "string");
@@ -186,18 +231,18 @@ Deno.test("R request ids are remapped and table close updates the Snapshot cache
     type: "request",
     id: "browser-close",
     session: "r-1-1",
-    method: "table/close",
-    params: { table: "table-1", generation: 1 },
+    method: "view/close",
+    params: { view: "table-1", generation: 1 },
   });
   const closeRequest = await connection.nextWrite(1);
   connection.inject({
     id: closeRequest.id,
-    result: { table: "table-1", generation: 1, closed: true },
+    result: { view: "table-1", generation: 1, closed: true },
   });
   const closed = await browser.nextMessage((message) =>
-    message.type === "table/closed"
+    message.type === "view/closed"
   );
-  assertEquals((closed.message as JsonRecord).method, "table/closed");
+  assertEquals((closed.message as JsonRecord).method, "view/closed");
   const welcome = await browser.nextMessage((message) =>
     message.type === "response" && message.id === "browser-close"
   );
@@ -205,7 +250,7 @@ Deno.test("R request ids are remapped and table close updates the Snapshot cache
   const lateBrowser = new MemoryBrowser();
   hub.attach(lateBrowser);
   assertEquals(
-    (lateBrowser.messages[0].sessions as JsonRecord[])[0].tables,
+    (lateBrowser.messages[0].sessions as JsonRecord[])[0].views,
     [],
   );
   hub.close();
@@ -223,13 +268,13 @@ Deno.test("cancelled late replies release their request slot without reaching th
   const browser = new MemoryBrowser();
   hub.attach(browser);
   openTable(connection);
-  await browser.nextMessage((message) => message.type === "table/open");
+  await browser.nextMessage((message) => message.type === "view/open");
   hub.handleBrowser(browser, {
     type: "request",
     id: "cancel-me",
     session: "r-2-1",
     method: "table/rows",
-    params: { table: "table-1", generation: 1, offset: 0, limit: 10 },
+    params: { view: "table-1", generation: 1, offset: 0, limit: 10 },
   });
   const request = await connection.nextWrite(0);
   hub.handleBrowser(browser, {
@@ -262,14 +307,14 @@ Deno.test("queued row pages coalesce and wait behind the already sent page", asy
   const browser = new MemoryBrowser();
   hub.attach(browser);
   openTable(connection);
-  await browser.nextMessage((message) => message.type === "table/open");
+  await browser.nextMessage((message) => message.type === "view/open");
   const request = (id: string, offset: number) =>
     hub.handleBrowser(browser, {
       type: "request",
       id,
       session: "r-3-1",
       method: "table/rows",
-      params: { table: "table-1", generation: 1, offset, limit: 10 },
+      params: { view: "table-1", generation: 1, offset, limit: 10 },
     });
   request("page-1", 0);
   const sent = await connection.nextWrite(0);
@@ -301,33 +346,33 @@ Deno.test("terminal replies free request slots without acknowledging wire credit
   const browser = new MemoryBrowser();
   hub.attach(browser);
   openTable(connection);
-  await browser.nextMessage((message) => message.type === "table/open");
+  await browser.nextMessage((message) => message.type === "view/open");
 
   for (let index = 0; index < 32; index++) {
     hub.handleBrowser(browser, {
       type: "request",
       id: `request-${index}`,
       session: "r-4-1",
-      method: "table/schema",
-      params: { table: "table-1", generation: 1 },
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
     });
   }
   await waitFor(() =>
     connection.writes.filter((line) =>
-      (JSON.parse(line) as JsonRecord).method === "table/schema"
+      (JSON.parse(line) as JsonRecord).method === "view/schema"
     ).length >= 32
   );
   hub.handleBrowser(browser, {
     type: "request",
     id: "request-33",
     session: "r-4-1",
-    method: "table/schema",
-    params: { table: "table-1", generation: 1 },
+    method: "view/schema",
+    params: { view: "table-1", generation: 1 },
   });
   await new Promise((resolve) => setTimeout(resolve, 5));
   assertEquals(
     connection.writes.filter((line) =>
-      (JSON.parse(line) as JsonRecord).method === "table/schema"
+      (JSON.parse(line) as JsonRecord).method === "view/schema"
     ).length,
     32,
   );
@@ -341,7 +386,7 @@ Deno.test("terminal replies free request slots without acknowledging wire credit
   await new Promise((resolve) => setTimeout(resolve, 5));
   assertEquals(
     connection.writes.filter((line) =>
-      (JSON.parse(line) as JsonRecord).method === "table/schema"
+      (JSON.parse(line) as JsonRecord).method === "view/schema"
     ).length,
     33,
   );
@@ -349,13 +394,13 @@ Deno.test("terminal replies free request slots without acknowledging wire credit
     type: "request",
     id: "request-34",
     session: "r-4-1",
-    method: "table/schema",
-    params: { table: "table-1", generation: 1 },
+    method: "view/schema",
+    params: { view: "table-1", generation: 1 },
   });
   connection.inject({ id: second.id, result: { columns: [] } });
   await waitFor(() =>
     connection.writes.filter((line) =>
-      (JSON.parse(line) as JsonRecord).method === "table/schema"
+      (JSON.parse(line) as JsonRecord).method === "view/schema"
     ).length === 34
   );
   hub.close();
@@ -374,25 +419,25 @@ Deno.test("repeated limit errors release request slots but retain frame credit",
   hub.attach(browser);
   openTable(connection);
   try {
-    await browser.nextMessage((message) => message.type === "table/open");
+    await browser.nextMessage((message) => message.type === "view/open");
     for (let index = 0; index < 96; index++) {
       const id = `reject-${index}`;
       hub.handleBrowser(browser, {
         type: "request",
         id,
         session: "r-11-1",
-        method: "table/schema",
-        params: { table: "table-1", generation: 1 },
+        method: "view/schema",
+        params: { view: "table-1", generation: 1 },
       });
       await waitFor(() =>
         connection.writes.filter((line) =>
-          (JSON.parse(line) as JsonRecord).method === "table/schema"
+          (JSON.parse(line) as JsonRecord).method === "view/schema"
         ).length > index
       );
       const request = connection.writes.map((line) =>
         JSON.parse(line) as JsonRecord
       ).filter((frame) =>
-        frame.method === "table/schema"
+        frame.method === "view/schema"
       )[index];
       connection.inject({
         id: request.id,
@@ -407,8 +452,8 @@ Deno.test("repeated limit errors release request slots but retain frame credit",
       type: "request",
       id: "blocked-by-frame-credit",
       session: "r-11-1",
-      method: "table/schema",
-      params: { table: "table-1", generation: 1 },
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
     });
     await browser.nextMessage((message) =>
       message.type === "busy" && message.reason === "wire_credit"
@@ -416,7 +461,7 @@ Deno.test("repeated limit errors release request slots but retain frame credit",
     await new Promise((resolve) => setTimeout(resolve, 25));
     assertEquals(
       connection.writes.filter((line) =>
-        (JSON.parse(line) as JsonRecord).method === "table/schema"
+        (JSON.parse(line) as JsonRecord).method === "view/schema"
       ).length,
       96,
     );
@@ -442,20 +487,20 @@ Deno.test("reserved cancellation slots remain usable behind a full ordinary queu
   const browser = new MemoryBrowser();
   hub.attach(browser);
   openTable(connection);
-  await browser.nextMessage((message) => message.type === "table/open");
+  await browser.nextMessage((message) => message.type === "view/open");
 
   for (let index = 0; index < 32; index++) {
     hub.handleBrowser(browser, {
       type: "request",
       id: `active-${index}`,
       session: "r-5-1",
-      method: "table/schema",
-      params: { table: "table-1", generation: 1 },
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
     });
   }
   await waitFor(() =>
     connection.writes.filter((line) =>
-      (JSON.parse(line) as JsonRecord).method === "table/schema"
+      (JSON.parse(line) as JsonRecord).method === "view/schema"
     ).length === 32
   );
 
@@ -464,8 +509,8 @@ Deno.test("reserved cancellation slots remain usable behind a full ordinary queu
       type: "request",
       id: `queued-${index}`,
       session: "r-5-1",
-      method: "table/schema",
-      params: { table: "table-1", generation: 1 },
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
     });
   }
   for (let index = 0; index < 32; index++) {
@@ -482,7 +527,7 @@ Deno.test("reserved cancellation slots remain usable behind a full ordinary queu
   );
   assertEquals(
     connection.writes.filter((line) =>
-      (JSON.parse(line) as JsonRecord).method === "table/schema"
+      (JSON.parse(line) as JsonRecord).method === "view/schema"
     ).length,
     32,
   );
@@ -501,14 +546,14 @@ Deno.test("late close results update only their still-current table generation",
   const browser = new MemoryBrowser();
   hub.attach(browser);
   openTable(connection, 1);
-  await browser.nextMessage((message) => message.type === "table/open");
+  await browser.nextMessage((message) => message.type === "view/open");
 
   hub.handleBrowser(browser, {
     type: "request",
     id: "old-close",
     session: "r-6-1",
-    method: "table/close",
-    params: { table: "table-1", generation: 1 },
+    method: "view/close",
+    params: { view: "table-1", generation: 1 },
   });
   const oldClose = await connection.nextWrite(0);
   hub.handleBrowser(browser, {
@@ -519,12 +564,12 @@ Deno.test("late close results update only their still-current table generation",
   openTable(connection, 2);
   await browser.nextMessage((message) => {
     const event = message.message;
-    return message.type === "table/open" && isRecord(event) &&
+    return message.type === "view/open" && isRecord(event) &&
       isRecord(event.params) && event.params.generation === 2;
   });
   connection.inject({
     id: oldClose.id,
-    result: { table: "table-1", generation: 1, closed: true },
+    result: { view: "table-1", generation: 1, closed: true },
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
   const lateBrowser = new MemoryBrowser();
@@ -532,9 +577,10 @@ Deno.test("late close results update only their still-current table generation",
   const welcome = lateBrowser.messages[0];
   const session = (welcome.sessions as JsonRecord[])[0];
   assertEquals(
-    ((session.tables as JsonRecord[])[0].params as JsonRecord).generation,
+    ((session.views as JsonRecord[])[0].params as JsonRecord).generation,
     2,
   );
+  assertEquals("tables" in session, false);
   hub.close();
 });
 
@@ -550,13 +596,13 @@ Deno.test("a cancelled table close still clears its current Snapshot cache", asy
   const browser = new MemoryBrowser();
   hub.attach(browser);
   openTable(connection);
-  await browser.nextMessage((message) => message.type === "table/open");
+  await browser.nextMessage((message) => message.type === "view/open");
   hub.handleBrowser(browser, {
     type: "request",
     id: "close-timeout",
     session: "r-7-1",
-    method: "table/close",
-    params: { table: "table-1", generation: 1 },
+    method: "view/close",
+    params: { view: "table-1", generation: 1 },
   });
   const closeRequest = await connection.nextWrite(0);
   hub.handleBrowser(browser, {
@@ -567,9 +613,9 @@ Deno.test("a cancelled table close still clears its current Snapshot cache", asy
   await connection.nextWrite(1);
   connection.inject({
     id: closeRequest.id,
-    result: { table: "table-1", generation: 1, closed: true },
+    result: { view: "table-1", generation: 1, closed: true },
   });
-  await browser.nextMessage((message) => message.type === "table/closed");
+  await browser.nextMessage((message) => message.type === "view/closed");
   assertEquals(
     browser.messages.some((message) =>
       message.type === "response" && message.id === "close-timeout"
@@ -579,7 +625,7 @@ Deno.test("a cancelled table close still clears its current Snapshot cache", asy
   const lateBrowser = new MemoryBrowser();
   hub.attach(lateBrowser);
   assertEquals(
-    (lateBrowser.messages[0].sessions as JsonRecord[])[0].tables,
+    (lateBrowser.messages[0].sessions as JsonRecord[])[0].views,
     [],
   );
   hub.close();
@@ -598,13 +644,13 @@ Deno.test("request timeout stops wakes and ignores a later result", async () => 
   hub.attach(browser);
   openTable(connection);
   try {
-    await browser.nextMessage((message) => message.type === "table/open");
+    await browser.nextMessage((message) => message.type === "view/open");
     hub.handleBrowser(browser, {
       type: "request",
       id: "times-out",
       session: "r-8-1",
-      method: "table/schema",
-      params: { table: "table-1", generation: 1 },
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
       timeoutMs: 100,
     });
     const request = await connection.nextWrite(0);
@@ -649,13 +695,13 @@ Deno.test("request timeout stops wakes and ignores a later result", async () => 
       type: "request",
       id: "after-late-result",
       session: "r-8-1",
-      method: "table/schema",
-      params: { table: "table-1", generation: 1 },
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
     });
     await waitFor(() =>
       connection.writes.some((line) => {
         const value = JSON.parse(line) as JsonRecord;
-        return value.method === "table/schema" && value.id !== request.id;
+        return value.method === "view/schema" && value.id !== request.id;
       })
     );
   } finally {
@@ -676,13 +722,13 @@ Deno.test("silent wake traffic pauses at the frame window and resumes on a resul
   hub.attach(browser);
   openTable(connection);
   try {
-    await browser.nextMessage((message) => message.type === "table/open");
+    await browser.nextMessage((message) => message.type === "view/open");
     hub.handleBrowser(browser, {
       type: "request",
       id: "long-running",
       session: "r-9-1",
-      method: "table/schema",
-      params: { table: "table-1", generation: 1 },
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
       timeoutMs: 10_000,
     });
     const first = await connection.nextWrite(0);
@@ -708,14 +754,14 @@ Deno.test("silent wake traffic pauses at the frame window and resumes on a resul
       type: "request",
       id: "waiting-request",
       session: "r-9-1",
-      method: "table/schema",
-      params: { table: "table-1", generation: 1 },
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
     assertEquals(
       connection.writes.some((line) => {
         const value = JSON.parse(line) as JsonRecord;
-        return value.method === "table/schema" && value.id !== first.id;
+        return value.method === "view/schema" && value.id !== first.id;
       }),
       false,
     );
@@ -726,7 +772,7 @@ Deno.test("silent wake traffic pauses at the frame window and resumes on a resul
     await waitFor(() =>
       connection.writes.some((line) => {
         const value = JSON.parse(line) as JsonRecord;
-        return value.method === "table/schema" && value.id !== first.id;
+        return value.method === "view/schema" && value.id !== first.id;
       })
     );
   } finally {
@@ -755,18 +801,18 @@ Deno.test("future ACKs and terminal replies cannot free wire credit", async () =
   hub.attach(browser);
   openTable(connection);
   try {
-    await browser.nextMessage((message) => message.type === "table/open");
+    await browser.nextMessage((message) => message.type === "view/open");
     const request = (id: string) =>
       hub.handleBrowser(browser, {
         type: "request",
         id,
         session: "r-5001-1",
-        method: "table/schema",
-        params: { table: "table-1", generation: 1 },
+        method: "view/schema",
+        params: { view: "table-1", generation: 1 },
       });
     request("one");
     const first = await connection.nextWrite(0);
-    assertEquals(first.method, "table/schema");
+    assertEquals(first.method, "view/schema");
 
     connection.inject(notification("ack", { frames: 2 }));
     connection.inject({ id: first.id, result: { columns: [] } });
@@ -774,14 +820,14 @@ Deno.test("future ACKs and terminal replies cannot free wire credit", async () =
     await new Promise((resolve) => setTimeout(resolve, 30));
     assertEquals(
       connection.writes.filter((line) =>
-        (JSON.parse(line) as JsonRecord).method === "table/schema"
+        (JSON.parse(line) as JsonRecord).method === "view/schema"
       ).length,
       1,
     );
 
     connection.inject(notification("ack", { frames: 1 }));
     const second = await connection.nextWrite(1);
-    assertEquals(second.method, "table/schema");
+    assertEquals(second.method, "view/schema");
     connection.inject(notification("ack", { frames: 1 }));
     connection.inject({ id: second.id, result: { columns: [] } });
     await browser.nextMessage((message) =>
@@ -791,13 +837,13 @@ Deno.test("future ACKs and terminal replies cannot free wire credit", async () =
     await new Promise((resolve) => setTimeout(resolve, 20));
     assertEquals(
       connection.writes.filter((line) =>
-        (JSON.parse(line) as JsonRecord).method === "table/schema"
+        (JSON.parse(line) as JsonRecord).method === "view/schema"
       ).length,
       2,
     );
     connection.inject(notification("ack", { frames: 2 }));
     const third = await connection.nextWrite(2);
-    assertEquals(third.method, "table/schema");
+    assertEquals(third.method, "view/schema");
     connection.inject(notification("ack", { frames: 3 }));
     connection.inject({ id: third.id, result: { columns: [] } });
   } finally {
@@ -822,13 +868,13 @@ Deno.test("a request larger than R's negotiated single-request limit is rejected
   hub.attach(browser);
   openTable(connection);
   try {
-    await browser.nextMessage((message) => message.type === "table/open");
+    await browser.nextMessage((message) => message.type === "view/open");
     hub.handleBrowser(browser, {
       type: "request",
       id: "too-large",
       session: "r-5004-1",
-      method: "table/schema",
-      params: { table: "table-1", generation: 1 },
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
     });
     const rejected = await browser.nextMessage((message) =>
       message.type === "error" && message.id === "too-large"
@@ -857,14 +903,14 @@ Deno.test("a single request larger than R's queue byte limit is rejected", async
   hub.attach(browser);
   openTable(connection);
   try {
-    await browser.nextMessage((message) => message.type === "table/open");
+    await browser.nextMessage((message) => message.type === "view/open");
     hub.handleBrowser(browser, {
       type: "request",
       id: "too-many-bytes",
       session: "r-5006-1",
-      method: "table/schema",
+      method: "view/schema",
       params: {
-        table: "table-1",
+        view: "table-1",
         generation: 1,
         padding: "x".repeat(1500),
       },
@@ -900,14 +946,14 @@ Deno.test("a one-message R queue retains the latest unsent page behind a live pa
   hub.attach(browser);
   openTable(connection);
   try {
-    await browser.nextMessage((message) => message.type === "table/open");
+    await browser.nextMessage((message) => message.type === "view/open");
     const requestPage = (id: string, offset: number) =>
       hub.handleBrowser(browser, {
         type: "request",
         id,
         session: "r-5005-1",
         method: "table/rows",
-        params: { table: "table-1", generation: 1, offset, limit: 10 },
+        params: { view: "table-1", generation: 1, offset, limit: 10 },
       });
     requestPage("live-page", 0);
     const first = await connection.nextWrite(0);
@@ -952,15 +998,15 @@ Deno.test("R queue bytes are charged on send and retained through a terminal rep
   hub.attach(browser);
   openTable(connection);
   try {
-    await browser.nextMessage((message) => message.type === "table/open");
+    await browser.nextMessage((message) => message.type === "view/open");
     const request = (id: string) =>
       hub.handleBrowser(browser, {
         type: "request",
         id,
         session: "r-5002-1",
-        method: "table/schema",
+        method: "view/schema",
         params: {
-          table: "table-1",
+          view: "table-1",
           generation: 1,
           padding: "x".repeat(512),
         },
@@ -968,7 +1014,7 @@ Deno.test("R queue bytes are charged on send and retained through a terminal rep
     request("first");
     await waitFor(() => connection.writes.length >= 1);
     const first = await connection.nextWrite(0);
-    assertEquals(first.method, "table/schema");
+    assertEquals(first.method, "view/schema");
     connection.inject(notification("ack", { frames: 1 }));
     request("second");
     await new Promise((resolve) => setTimeout(resolve, 15));
@@ -979,7 +1025,7 @@ Deno.test("R queue bytes are charged on send and retained through a terminal rep
       message.type === "response" && message.id === "first"
     );
     const second = await connection.nextWrite(1);
-    assertEquals(second.method, "table/schema");
+    assertEquals(second.method, "view/schema");
     connection.inject(
       notification("ack", { frames: connection.writes.length }),
     );
@@ -1006,15 +1052,15 @@ Deno.test("more than 32 cancelled request waves leave the session usable", async
   hub.attach(browser);
   openTable(connection);
   try {
-    await browser.nextMessage((message) => message.type === "table/open");
+    await browser.nextMessage((message) => message.type === "view/open");
     for (let index = 0; index < 40; index++) {
       const start = connection.writes.length;
       hub.handleBrowser(browser, {
         type: "request",
         id: `cancel-${index}`,
         session: "r-5003-1",
-        method: "table/schema",
-        params: { table: "table-1", generation: 1 },
+        method: "view/schema",
+        params: { view: "table-1", generation: 1 },
       });
       const request = await connection.nextWrite(start);
       hub.handleBrowser(browser, {
@@ -1038,11 +1084,11 @@ Deno.test("more than 32 cancelled request waves leave the session usable", async
       type: "request",
       id: "after-cancel-waves",
       session: "r-5003-1",
-      method: "table/schema",
-      params: { table: "table-1", generation: 1 },
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
     });
     const finalRequest = await connection.nextWrite(finalStart);
-    assertEquals(finalRequest.method, "table/schema");
+    assertEquals(finalRequest.method, "view/schema");
   } finally {
     hub.close();
   }
@@ -1061,28 +1107,28 @@ Deno.test("large ordinary frames stop at the 496 KiB byte budget", async () => {
   hub.attach(browser);
   openTable(connection);
   try {
-    await browser.nextMessage((message) => message.type === "table/open");
+    await browser.nextMessage((message) => message.type === "view/open");
     for (let index = 0; index < 8; index++) {
       hub.handleBrowser(browser, {
         type: "request",
         id: `large-${index}`,
         session: "r-10-1",
-        method: "table/schema",
+        method: "view/schema",
         params: {
-          table: "table-1",
+          view: "table-1",
           generation: 1,
           padding: "x".repeat(60 * 1024),
         },
       });
       await waitFor(() =>
         connection.writes.filter((line) =>
-          (JSON.parse(line) as JsonRecord).method === "table/schema"
+          (JSON.parse(line) as JsonRecord).method === "view/schema"
         ).length > index
       );
       const request = connection.writes.map((line) =>
         JSON.parse(line) as JsonRecord
       ).filter((frame) =>
-        frame.method === "table/schema"
+        frame.method === "view/schema"
       )[index];
       connection.inject({
         id: request.id,
@@ -1096,9 +1142,9 @@ Deno.test("large ordinary frames stop at the 496 KiB byte budget", async () => {
       type: "request",
       id: "large-8",
       session: "r-10-1",
-      method: "table/schema",
+      method: "view/schema",
       params: {
-        table: "table-1",
+        view: "table-1",
         generation: 1,
         padding: "x".repeat(60 * 1024),
       },
@@ -1108,7 +1154,7 @@ Deno.test("large ordinary frames stop at the 496 KiB byte budget", async () => {
       JSON.parse(line) as JsonRecord
     );
     assertEquals(
-      frames.filter((frame) => frame.method === "table/schema").length,
+      frames.filter((frame) => frame.method === "view/schema").length,
       8,
     );
     const bytes = connection.writes.reduce(

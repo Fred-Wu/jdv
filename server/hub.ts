@@ -132,7 +132,7 @@ export class Hub {
       protocol: 1,
       sessions: [...this.#sessions.values()].map((session) => ({
         hello: session.hello,
-        tables: [...session.tables.values()].map((table) => table.descriptor),
+        views: [...session.tables.values()].map((table) => table.descriptor),
       })),
     });
   }
@@ -214,7 +214,7 @@ export class Hub {
       });
       return;
     }
-    if (!["table/rows", "table/schema", "table/close"].includes(method)) {
+    if (!["table/rows", "view/schema", "view/close"].includes(method)) {
       client.send({
         type: "error",
         id: browserId,
@@ -223,14 +223,14 @@ export class Hub {
       });
       return;
     }
-    const table = params.table;
+    const table = params.view;
     const generation = params.generation;
     if (typeof table !== "string" || !Number.isSafeInteger(generation)) {
       client.send({
         type: "error",
         id: browserId,
         code: "invalid_request",
-        message: "A table and safe integer generation are required.",
+        message: "A view and safe integer generation are required.",
       });
       return;
     }
@@ -240,7 +240,7 @@ export class Hub {
         type: "error",
         id: browserId,
         code: "stale_generation",
-        message: "The table is no longer current.",
+        message: "The view is no longer current.",
       });
       return;
     }
@@ -427,10 +427,10 @@ export class Hub {
     const table = session.tables.get(pending.table);
     const deliver = !pending.localEnded && pending.state === "live" && table &&
       table.generation === pending.generation && Date.now() < pending.deadline;
-    const closedCurrentTable = pending.method === "table/close" &&
+    const closedCurrentTable = pending.method === "view/close" &&
       table?.generation === pending.generation &&
       isObject(message.result) && message.result.closed === true &&
-      message.result.table === pending.table &&
+      message.result.view === pending.table &&
       message.result.generation === pending.generation;
     if (deliver) {
       pending.client?.send({
@@ -445,11 +445,11 @@ export class Hub {
       this.#cancelTableGeneration(session, pending.table, pending.generation);
       session.tables.delete(pending.table);
       this.#broadcast({
-        type: "table/closed",
+        type: "view/closed",
         session: session.id,
         message: {
-          method: "table/closed",
-          params: { table: pending.table, generation: pending.generation },
+          method: "view/closed",
+          params: { view: pending.table, generation: pending.generation },
         },
       });
     }
@@ -459,11 +459,11 @@ export class Hub {
   #handleNotification(session: RSession, message: JsonObject): void {
     const params = message.params;
     if (
-      message.method === "table/open" && isObject(params) &&
-      typeof params.table === "string" &&
+      message.method === "view/open" && isObject(params) &&
+      typeof params.view === "string" &&
       Number.isSafeInteger(params.generation)
     ) {
-      const tableId = params.table;
+      const tableId = params.view;
       const generation = Number(params.generation);
       const previous = session.tables.get(tableId);
       if (previous && generation <= previous.generation) return;
@@ -472,19 +472,19 @@ export class Hub {
       }
       const table: TableRecord = { generation, descriptor: message };
       session.tables.set(tableId, table);
-      this.#broadcast({ type: "table/open", session: session.id, message });
+      this.#broadcast({ type: "view/open", session: session.id, message });
       return;
     }
     if (
-      message.method === "table/closed" && isObject(params) &&
-      typeof params.table === "string" &&
+      message.method === "view/closed" && isObject(params) &&
+      typeof params.view === "string" &&
       Number.isSafeInteger(params.generation)
     ) {
-      const table = session.tables.get(params.table);
+      const table = session.tables.get(params.view);
       if (table && table.generation === params.generation) {
-        this.#cancelTableGeneration(session, params.table, table.generation);
-        session.tables.delete(params.table);
-        this.#broadcast({ type: "table/closed", session: session.id, message });
+        this.#cancelTableGeneration(session, params.view, table.generation);
+        session.tables.delete(params.view);
+        this.#broadcast({ type: "view/closed", session: session.id, message });
       }
       return;
     }

@@ -52,7 +52,7 @@ test_that("auto row estimates include compact zero-column row indices", {
   expect_identical(mode_safety_rpc_json(registered$open)$params$mode, "paged")
   reply <- mode_safety_rpc_call(
     "table/rows",
-    list(table = registered$id, generation = 1, offset = 799999997, limit = 3)
+    list(view = registered$id, generation = 1, offset = 799999997, limit = 3)
   )
   expect_identical(
     reply$result$data$row_index,
@@ -113,7 +113,7 @@ test_that("oversized user channel results fail the request without downgrade", {
       registered <- jdv_register(x, mode = "paged")
       reply <- mode_safety_rpc_call(
         "table/rows",
-        list(table = registered$id, generation = 1, offset = 0, limit = 2)
+        list(view = registered$id, generation = 1, offset = 0, limit = 2)
       )
       expect_identical(reply$error$code, "limit_exceeded")
     }

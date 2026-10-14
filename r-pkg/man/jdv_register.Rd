@@ -24,21 +24,21 @@ generation; NULL titles always create independent tables.}
 argument takes precedence.}
 }
 \value{
-A list containing a table \code{id}, its \code{open} JSON message, and any pending
+A list containing a view \code{id}, its \code{open} JSON message, and any pending
 transport notifications as JSON strings in \code{notifications} (for example, a
-\code{table/closed} message emitted when the registry evicts an older table).
+\code{view/closed} message emitted when the registry evicts an older view).
 }
 \description{
 Register a table for a transport-independent viewer
 }
 \details{
-Re-registering a title that is still active reuses its table ID and
-increments its generation. Closing that table removes the title association,
-so a later registration starts with a new ID and generation one. Re-register
-after changing values held by a reference object because the lightweight
+Re-registering a title that is still active reuses its view ID and increments
+its generation. Closing that view removes the title association, so a later
+registration starts with a new ID and generation one. Re-register after
+changing values held by a reference object because the lightweight
 fingerprint does not detect value-only changes. Paged tables capture
 \code{getOption("jdv.max_page_rows", 2000)} at registration; changing the option
-takes effect after re-registering the table. \code{jdv.max_work_bytes} and
+takes effect after re-registering the view. \code{jdv.max_work_bytes} and
 \code{jdv.max_query_rows} are unlimited by default for full sort/filter work;
 \code{jdv.max_cache_bytes} defaults to 32 MiB and \code{jdv.snapshot_max_bytes} to 10
 MiB. Snapshot construction, registration probes, pages, and JSON encoding

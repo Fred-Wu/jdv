@@ -7,8 +7,8 @@
 jdv_close(id = NULL)
 }
 \arguments{
-\item{id}{Optional table id returned by \code{jdv_view()}. When omitted, all
-active tables are closed.}
+\item{id}{Optional view id returned by \code{jdv_view()}. When omitted, all active
+tables are closed.}
 }
 \value{
 The ids that were closed, invisibly.

@@ -85,8 +85,8 @@ rpc_fixture_snapshot <- function(open_message, template) {
 rpc_fixture_close <- function(id, generation = 1L) {
   request <- rpc_fixture_json(list(
     id = 1L,
-    method = "table/close",
-    params = list(table = id, generation = generation)
+    method = "view/close",
+    params = list(view = id, generation = generation)
   ))
   invisible(try(jdv_rpc(request), silent = TRUE))
 }
@@ -96,7 +96,7 @@ rpc_fixture_page <- function(id, query) {
     id = 1L,
     method = "table/rows",
     params = list(
-      table = id,
+      view = id,
       generation = 1L,
       offset = 0L,
       limit = 200L,
@@ -129,7 +129,7 @@ test_that("public RPC round-trips every shared query fixture", {
           snapshot$open,
           simplifyVector = FALSE
         )
-        expect_identical(open_message$method, "table/open")
+        expect_identical(open_message$method, "view/open")
         expect_identical(open_message$params$mode, "snapshot")
         expect_identical(
           as.integer(unlist(

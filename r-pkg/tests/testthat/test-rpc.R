@@ -18,6 +18,28 @@ expect_rpc_code <- function(response, expected) {
   invisible(response)
 }
 
+test_that("internal grid source dispatch preserves matrix recognition", {
+  source <- getFromNamespace("jdv_source", "jdv")
+  frame <- structure(
+    list(value = 1:2),
+    class = c("custom_frame", "data.frame"),
+    row.names = c(NA_integer_, -2L)
+  )
+  matrix <- structure(matrix(1:4, nrow = 2L), class = "custom_matrix")
+
+  expect_identical(source(frame)$kind, "grid")
+  expect_identical(source(frame)$data, frame)
+  expect_true(is.matrix(matrix))
+  expect_false(inherits(matrix, "matrix"))
+  expect_identical(source(matrix)$kind, "grid")
+  expect_identical(source(matrix)$data, matrix)
+  expect_query_code(source(list(value = 1:2)), "unsupported")
+
+  registered <- jdv_register(matrix, mode = "snapshot")
+  on.exit(.jdv_close_internal(registered$id), add = TRUE)
+  expect_identical(rpc_json(registered$open)$params$nrow, 2L)
+})
+
 test_that("the JSON bridge preserves arrays, objects, and strict syntax", {
   parse <- getFromNamespace(".jdv_json_parse", "jdv")
   parsed <- parse('{"a":[],"b":{},"c":[[],{}]}')
@@ -57,7 +79,39 @@ test_that("registration returns snapshots and reuses titled generations", {
   x <- data.frame(id = c(1, NA), text = c("one", "two"))
   first <- jdv_register(x, title = "table", mode = "snapshot")
   open <- rpc_json(first$open)
-  expect_identical(open$method, "table/open")
+  expect_identical(open$method, "view/open")
+  expect_match(first$id, "^v-[0-9]+$")
+  expect_identical(
+    names(open$params),
+    c(
+      "view",
+      "kind",
+      "access",
+      "encoding",
+      "capabilities",
+      "generation",
+      "title",
+      "mode",
+      "collation",
+      "nrow",
+      "ncol",
+      "row_names",
+      "columns",
+      "data"
+    )
+  )
+  expect_null(open$params$table)
+  expect_identical(open$params$kind, "grid")
+  expect_identical(open$params$access, "snapshot")
+  expect_identical(open$params$encoding, "r-json")
+  expect_identical(
+    open$params$capabilities,
+    setNames(
+      as.list(c(rep(TRUE, 4L), FALSE, FALSE)),
+      c("seek", "sort", "filter", "known_total", "next", "children")
+    )
+  )
+  expect_null(open$params$total_rows)
   expect_identical(open$params$mode, "snapshot")
   expect_length(open$params$data$columns, 2)
   expect_identical(open$params$data$row_index, list(1L, 2L))
@@ -69,27 +123,46 @@ test_that("registration returns snapshots and reuses titled generations", {
   expect_identical(second$id, first$id)
   expect_identical(second_open$params$generation, 2L)
   expect_identical(second_open$params$mode, "paged")
+  expect_identical(second_open$params$access, "random")
+  expect_named(
+    second_open$params$capabilities,
+    c("seek", "sort", "filter", "known_total", "next", "children")
+  )
   expect_rpc_code(
-    rpc_call("table/schema", list(table = first$id, generation = 1)),
+    rpc_call("view/schema", list(view = first$id, generation = 1)),
     "stale_generation"
   )
   expect_type(
     rpc_call(
-      "table/schema",
-      list(table = first$id, generation = 2)
+      "view/schema",
+      list(view = first$id, generation = 2)
     )$result$columns,
     "list"
   )
   expect_null(rpc_call(
-    "table/close",
-    list(table = first$id, generation = 2)
+    "view/close",
+    list(view = first$id, generation = 2)
   )$error)
   after_close <- jdv_register(x, title = "table", mode = "paged")
   expect_false(identical(after_close$id, first$id))
   expect_identical(rpc_json(after_close$open)$params$generation, 1L)
 })
 
-test_that("table/schema preserves schema arrays for factors", {
+test_that("legacy table RPC names are not aliases for view requests", {
+  old_field <- rpc_json(jdv_rpc(paste0(
+    '{"id":1,"method":"table/rows","params":',
+    '{"table":"v-1","generation":1}}'
+  )))
+  old_method <- rpc_json(jdv_rpc(paste0(
+    '{"id":2,"method":"table/schema","params":',
+    '{"view":"v-1","generation":1}}'
+  )))
+
+  expect_rpc_code(old_field, "invalid_request")
+  expect_rpc_code(old_method, "method_not_found")
+})
+
+test_that("view/schema preserves schema arrays for factors", {
   .jdv_close_internal()
   on.exit(.jdv_close_internal(), add = TRUE)
   x <- data.frame(
@@ -99,8 +172,8 @@ test_that("table/schema preserves schema arrays for factors", {
   registered <- jdv_register(x, mode = "paged")
   open_columns <- rpc_json(registered$open)$params$columns
   schema_columns <- rpc_call(
-    "table/schema",
-    list(table = registered$id, generation = 1)
+    "view/schema",
+    list(view = registered$id, generation = 1)
   )$result$columns
 
   expect_identical(schema_columns, open_columns)
@@ -159,7 +232,7 @@ test_that("RPC pages preserve schema, channel errors, and source row indices", {
       reply <- rpc_call(
         "table/rows",
         list(
-          table = registered$id,
+          view = registered$id,
           generation = 1,
           offset = 1,
           limit = 2,
@@ -199,7 +272,7 @@ test_that("RPC retains typed query error details", {
       response <- rpc_call(
         "table/rows",
         list(
-          table = registered$id,
+          view = registered$id,
           generation = 1,
           sort = list(list(col = 0, desc = FALSE))
         )
@@ -218,30 +291,30 @@ test_that(
     on.exit(.jdv_close_internal(), add = TRUE)
     registered <- jdv_register(data.frame(x = 1:2), mode = "paged")
     params <- list(
-      table = registered$id,
+      view = registered$id,
       generation = 1,
       future = list(any = TRUE)
     )
     ok <- rpc_call(
-      "table/schema",
+      "view/schema",
       params,
       extra = list(future_envelope_field = list())
     )
     expect_null(ok$error)
     expect_rpc_code(rpc_call("no/such/method"), "method_not_found")
     expect_rpc_code(
-      rpc_call("table/schema", list(table = "missing", generation = 1)),
-      "table_not_found"
+      rpc_call("view/schema", list(view = "missing", generation = 1)),
+      "view_not_found"
     )
     expect_rpc_code(
-      rpc_call("table/schema", list(table = registered$id, generation = 9)),
+      rpc_call("view/schema", list(view = registered$id, generation = 9)),
       "stale_generation"
     )
     expect_rpc_code(
       rpc_call(
         "table/rows",
         list(
-          table = registered$id,
+          view = registered$id,
           generation = 1,
           sort = list(list(col = 99, desc = FALSE))
         )
@@ -251,12 +324,12 @@ test_that(
     expect_null(jdv_rpc('{"method":"wake"}'))
     expect_null(jdv_rpc('{"method":"cancel","params":{"id":"pending"}}'))
     expect_rpc_code(
-      rpc_call("table/schema", params, extra = list(deadline = 1)),
+      rpc_call("view/schema", params, extra = list(deadline = 1)),
       "expired"
     )
     expect_rpc_code(
       rpc_call(
-        "table/schema",
+        "view/schema",
         params,
         extra = list(deadline = list(special = "pos_inf"))
       ),
@@ -311,7 +384,7 @@ test_that(
     expect_length(next_table$notifications, 3)
     expect_true(all(vapply(
       next_table$notifications,
-      function(message) identical(rpc_json(message)$method, "table/closed"),
+      function(message) identical(rpc_json(message)$method, "view/closed"),
       logical(1L)
     )))
     expect_length(ls(.jdv_state$entries, all.names = TRUE), 1)
@@ -348,8 +421,8 @@ test_that(
         registered <- jdv_register(x, title = "reentrant", mode = "paged")
         trigger <- TRUE
         schema <- rpc_call(
-          "table/schema",
-          list(table = registered$id, generation = 1)
+          "view/schema",
+          list(view = registered$id, generation = 1)
         )
         expect_null(schema$error)
         current <- get(registered$id, envir = .jdv_state$entries)
@@ -357,8 +430,8 @@ test_that(
         fail <- TRUE
         calls_before_close <- calls
         closed <- rpc_call(
-          "table/close",
-          list(table = registered$id, generation = 2)
+          "view/close",
+          list(view = registered$id, generation = 2)
         )
         expect_null(closed$error)
         expect_identical(calls, calls_before_close)
@@ -381,7 +454,7 @@ test_that(
     x$text <- c("changed", "values")
     page <- rpc_call(
       "table/rows",
-      list(table = first$id, generation = 1, limit = 2)
+      list(view = first$id, generation = 1, limit = 2)
     )
     expect_identical(page$result$data$columns[[1]]$data$values, list("z", "a"))
     refreshed <- jdv_register(
@@ -405,20 +478,20 @@ test_that("the page row cap is captured when a paged table is registered", {
   first <- jdv_register(x, title = "row-cap", mode = "paged")
   first_page <- rpc_call(
     "table/rows",
-    list(table = first$id, generation = 1, limit = 5)
+    list(view = first$id, generation = 1, limit = 5)
   )
   expect_identical(first_page$result$limit, 2L)
 
   options(jdv.max_page_rows = 4)
   still_capped <- rpc_call(
     "table/rows",
-    list(table = first$id, generation = 1, limit = 5)
+    list(view = first$id, generation = 1, limit = 5)
   )
   expect_identical(still_capped$result$limit, 2L)
   refreshed <- jdv_register(x, title = "row-cap", mode = "paged")
   refreshed_page <- rpc_call(
     "table/rows",
-    list(table = refreshed$id, generation = 2, limit = 5)
+    list(view = refreshed$id, generation = 2, limit = 5)
   )
   expect_identical(refreshed_page$result$limit, 4L)
 })
@@ -462,7 +535,7 @@ test_that("row pages shrink to fit the configured message bound", {
       registered <- jdv_register(x, mode = "paged")
       response <- jdv_rpc(rpc_request(
         "table/rows",
-        list(table = registered$id, generation = 1, limit = 30)
+        list(view = registered$id, generation = 1, limit = 30)
       ))
       expect_lte(nchar(response, type = "bytes"), 2048)
       result <- rpc_json(response)$result
@@ -483,7 +556,7 @@ test_that("public calls leave last value and process options intact", {
   set.seed(234)
   rng_before <- .Random.seed
   registered <- jdv_register(data.frame(x = 1:3), mode = "paged")
-  rpc_call("table/rows", list(table = registered$id, generation = 1))
+  rpc_call("table/rows", list(view = registered$id, generation = 1))
   expect_identical(.Last.value, previous)
   expect_identical(options(), options_before)
   expect_identical(.Random.seed, rng_before)

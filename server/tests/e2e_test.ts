@@ -113,12 +113,12 @@ async function openedTable(
   const event = await nextMessage(
     browser,
     (message) => {
-      if (message.type !== "table/open") return false;
+      if (message.type !== "view/open") return false;
       const envelope = asRecord(message.message);
       const params = asRecord(envelope.params);
       return params.title === title;
     },
-    `table/open for ${title}`,
+    `view/open for ${title}`,
   );
   const envelope = asRecord(event.message);
   return {
@@ -130,7 +130,7 @@ async function openedTable(
 
 async function request(
   browser: TestBrowser,
-  table: TableOpen,
+  view: TableOpen,
   id: string,
   method: string,
   params: Record<string, unknown>,
@@ -138,11 +138,11 @@ async function request(
   browser.send({
     type: "request",
     id,
-    session: table.session,
+    session: view.session,
     method,
     params: {
-      table: table.params.table,
-      generation: table.params.generation,
+      view: view.params.view,
+      generation: view.params.generation,
       ...params,
     },
   });
@@ -368,7 +368,7 @@ Deno.test({
       runtime = await startRuntime();
       const { server, arf, browser } = runtime;
 
-      // A Snapshot is complete at table/open, so the consumer can sort, filter,
+      // A Snapshot is complete at view/open, so the consumer can sort, filter,
       // and page it while the real R process is inside Sys.sleep().
       await arf.eval(
         fixtureTableCode("numeric-special", "snapshot", "e2e-snapshot"),
@@ -428,7 +428,7 @@ Deno.test({
         session: busyTable.session,
         method: "table/rows",
         params: {
-          table: busyTable.params.table,
+          view: busyTable.params.view,
           generation: busyTable.params.generation,
           offset: 0,
           limit: 2,
@@ -441,7 +441,7 @@ Deno.test({
             wire.tableRowsRequests.length >
               wireBeforeBusyRequest.tableRowsRequests.length &&
             wire.tableRowsRequests.some((frame) =>
-              frame.table === busyTable.params.table &&
+              frame.view === busyTable.params.view &&
               frame.generation === busyTable.params.generation &&
               frame.offset === 0 && frame.limit === 2
             ),
@@ -557,7 +557,7 @@ Deno.test({
       const largeWireResponse = server.wire.snapshot().tableRowsResponses.find((
         frame,
       ) =>
-        frame.table === largeTable.params.table &&
+        frame.view === largeTable.params.view &&
         frame.generation === largeTable.params.generation &&
         frame.offset === 49_997
       );
@@ -740,12 +740,12 @@ Deno.test({
           agreeSnapshot.session
       );
       assert(cachedSession, "Browser reconnect welcome omitted the R session.");
-      const cachedTables = cachedSession.tables as Array<
+      const cachedTables = cachedSession.views as Array<
         Record<string, unknown>
       >;
       const cachedSnapshot = cachedTables.find((entry) => {
         const envelope = asRecord(entry);
-        return asRecord(envelope.params).table === agreeSnapshot.params.table;
+        return asRecord(envelope.params).view === agreeSnapshot.params.view;
       });
       assert(
         cachedSnapshot,
@@ -789,7 +789,7 @@ Deno.test({
           message.session === agreeSnapshot.session,
         "old R session cleanup",
       );
-      const oldTableId = String(agreeSnapshot.params.table);
+      const oldTableId = String(agreeSnapshot.params.view);
       const reopenedCode = fixtureTableCode(
         "numeric-special",
         "paged",

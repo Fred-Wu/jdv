@@ -208,14 +208,14 @@
   if (
     is.character(method) &&
       length(method) == 1L &&
-      method %in% c("table/rows", "table/schema", "table/close")
+      method %in% c("table/rows", "view/schema", "view/close")
   ) {
     params <- request$params
     if (
       is.list(params) &&
-        is.character(params$table) &&
-        length(params$table) == 1L &&
-        !is.na(params$table) &&
+        is.character(params$view) &&
+        length(params$view) == 1L &&
+        !is.na(params$view) &&
         is.numeric(params$generation) &&
         !is.object(params$generation) &&
         length(params$generation) == 1L &&
@@ -224,13 +224,13 @@
         params$generation >= 1 &&
         params$generation == floor(params$generation)
     ) {
-      id <- params$table
+      id <- params$view
       if (!exists(id, envir = .jdv_state$entries, inherits = FALSE)) {
-        return(transport_error("table_not_found", "The table is not open."))
+        return(transport_error("view_not_found", "The view is not open."))
       }
       entry <- get(id, envir = .jdv_state$entries, inherits = FALSE)
       if (entry$closed) {
-        return(transport_error("table_not_found", "The table is closed."))
+        return(transport_error("view_not_found", "The view is closed."))
       }
       if (
         !identical(as.numeric(entry$generation), as.numeric(params$generation))
@@ -367,7 +367,7 @@
 #'   used; explicitly passing `NULL` creates an independent table slot.
 #' @param mode One of `"auto"`, `"snapshot"`, or `"paged"`.
 #' @param collation String ordering policy, `"C"` or `"locale"`.
-#' @return The table id, invisibly.
+#' @return The view id, invisibly.
 #' @details
 #' The viewer connection is opened on the first call. An address can be set in
 #' `options(jdv.address = ...)` or `JDV_ADDRESS`; otherwise jdv reads
@@ -407,6 +407,8 @@ jdv_view <- function(
   if (missing(title)) {
     title <- deparse1(substitute(x))
   }
+  source <- jdv_source(x)
+  x <- source$data
   mode <- match.arg(mode)
   .jdv_transport_housekeeping()
   .jdv_assert_active()
@@ -474,8 +476,8 @@ jdv_view <- function(
 
 #' Close one or all tables in the local jdv viewer
 #'
-#' @param id Optional table id returned by `jdv_view()`. When omitted, all
-#'   active tables are closed.
+#' @param id Optional view id returned by `jdv_view()`. When omitted, all active
+#'   tables are closed.
 #' @return The ids that were closed, invisibly.
 #' @details
 #' Closing the last table stops the transport event source and closes the local
@@ -490,7 +492,7 @@ jdv_close <- function(id = NULL) {
     !is.null(id) &&
       (!is.character(id) || length(id) != 1L || is.na(id) || !nzchar(id))
   ) {
-    stop("'id' must be NULL or one non-empty table id.", call. = FALSE)
+    stop("'id' must be NULL or one non-empty view id.", call. = FALSE)
   }
   ids <- if (is.null(id)) {
     ls(.jdv_state$entries, all.names = TRUE)

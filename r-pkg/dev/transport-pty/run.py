@@ -307,7 +307,7 @@ def run_case(lib, scenario, transport, timeout, folder):
             ) else "fail"
         elif scenario == "close":
             closed_events = [m.get("method") for m in host_result.get("close_messages", [])]
-            outcome["close_notification_seen"] = "table/closed" in closed_events
+            outcome["close_notification_seen"] = "view/closed" in closed_events
             outcome["status"] = "pass" if outcome.get("post_close_r_command_ran") else "fail"
         elif scenario == "unload":
             connections = host_result.get("connections", [])

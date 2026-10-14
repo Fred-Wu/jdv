@@ -328,8 +328,21 @@ jdv_json_object <- function(x = list()) {
 }
 
 .jdv_descriptor <- function(content, id, generation, title) {
+  capabilities <- list(
+    seek = TRUE,
+    sort = TRUE,
+    filter = TRUE,
+    known_total = TRUE,
+    children = FALSE
+  )
+  capabilities <- append(capabilities, list(FALSE), after = 4L)
+  names(capabilities)[[5L]] <- "next"
   params <- list(
-    table = id,
+    view = id,
+    kind = "grid",
+    access = if (content$mode == "snapshot") "snapshot" else "random",
+    encoding = "r-json",
+    capabilities = capabilities,
     generation = generation,
     title = title,
     mode = content$mode,
@@ -342,7 +355,7 @@ jdv_json_object <- function(x = list()) {
   if (content$mode == "snapshot") {
     params$data <- content$data
   }
-  list(method = "table/open", params = params)
+  list(method = "view/open", params = params)
 }
 
 .jdv_install <- function(content, title, id, generation) {
@@ -393,8 +406,8 @@ jdv_json_object <- function(x = list()) {
       rm(list = key, envir = .jdv_state$entries)
       if (notify) {
         event <- list(
-          method = "table/closed",
-          params = list(table = entry$id, generation = entry$generation)
+          method = "view/closed",
+          params = list(view = entry$id, generation = entry$generation)
         )
         .jdv_state$outbox[[length(.jdv_state$outbox) + 1L]] <- .jdv_json_encode(
           event
@@ -435,13 +448,13 @@ jdv_json_object <- function(x = list()) {
 #'   `getOption("jdv.collation", "C")` supplies the default; an explicit
 #'   argument takes precedence.
 #' @details
-#' Re-registering a title that is still active reuses its table ID and
-#' increments its generation. Closing that table removes the title association,
-#' so a later registration starts with a new ID and generation one. Re-register
-#' after changing values held by a reference object because the lightweight
+#' Re-registering a title that is still active reuses its view ID and increments
+#' its generation. Closing that view removes the title association, so a later
+#' registration starts with a new ID and generation one. Re-register after
+#' changing values held by a reference object because the lightweight
 #' fingerprint does not detect value-only changes. Paged tables capture
 #' `getOption("jdv.max_page_rows", 2000)` at registration; changing the option
-#' takes effect after re-registering the table. `jdv.max_work_bytes` and
+#' takes effect after re-registering the view. `jdv.max_work_bytes` and
 #' `jdv.max_query_rows` are unlimited by default for full sort/filter work;
 #' `jdv.max_cache_bytes` defaults to 32 MiB and `jdv.snapshot_max_bytes` to 10
 #' MiB. Snapshot construction, registration probes, pages, and JSON encoding
@@ -463,9 +476,9 @@ jdv_json_object <- function(x = list()) {
 #' allocations, R allocator and GC overhead, or transient R-internal string
 #' conversion and sorting scratch.
 #' @return
-#' A list containing a table `id`, its `open` JSON message, and any pending
+#' A list containing a view `id`, its `open` JSON message, and any pending
 #' transport notifications as JSON strings in `notifications` (for example, a
-#' `table/closed` message emitted when the registry evicts an older table).
+#' `view/closed` message emitted when the registry evicts an older view).
 #' @export
 jdv_register <- function(
   x,
@@ -474,6 +487,8 @@ jdv_register <- function(
   collation = c("C", "locale")
 ) {
   .jdv_assert_active()
+  source <- jdv_source(x)
+  x <- source$data
   mode <- match.arg(mode)
   if (missing(collation)) {
     collation <- getOption("jdv.collation", "C")
@@ -567,14 +582,14 @@ jdv_register <- function(
   }
   id <- if (is.null(title)) {
     paste0(
-      "t-",
+      "v-",
       format(.jdv_state$next_id + 1, scientific = FALSE, trim = TRUE)
     )
   } else if (!is.null(previous)) {
     previous$id
   } else {
     paste0(
-      "t-",
+      "v-",
       format(.jdv_state$next_id + 1, scientific = FALSE, trim = TRUE)
     )
   }
@@ -604,14 +619,14 @@ jdv_register <- function(
         }
         id <<- if (is.null(title)) {
           paste0(
-            "t-",
+            "v-",
             format(.jdv_state$next_id + 1, scientific = FALSE, trim = TRUE)
           )
         } else if (!is.null(previous)) {
           previous$id
         } else {
           paste0(
-            "t-",
+            "v-",
             format(.jdv_state$next_id + 1, scientific = FALSE, trim = TRUE)
           )
         }
@@ -739,10 +754,10 @@ jdv_register <- function(
 
 .jdv_rpc_entry <- function(id, generation) {
   if (!is.character(id) || length(id) != 1L || is.na(id)) {
-    query_error("invalid_request", "Table id must be one string.")
+    query_error("invalid_request", "View id must be one string.")
   }
   if (!exists(id, envir = .jdv_state$entries, inherits = FALSE)) {
-    query_error("table_not_found", "Table is not registered.")
+    query_error("view_not_found", "View is not registered.")
   }
   entry <- get(id, envir = .jdv_state$entries, inherits = FALSE)
   generation <- query_integer(generation, "generation", 1)
@@ -753,7 +768,7 @@ jdv_register <- function(
     )
   }
   if (entry$closed) {
-    query_error("table_not_found", "Table is closed.")
+    query_error("view_not_found", "View is closed.")
   }
   entry$inflight <- entry$inflight + 1L
   entry
@@ -819,15 +834,15 @@ jdv_register <- function(
     )
   }
   params <- request$params
-  if (method %in% c("table/rows", "table/schema", "table/close")) {
+  if (method %in% c("table/rows", "view/schema", "view/close")) {
     .jdv_fields(
       params,
-      c("table", "generation", "offset", "limit", "sort", "filter", "cols"),
-      c("table", "generation")
+      c("view", "generation", "offset", "limit", "sort", "filter", "cols"),
+      c("view", "generation")
     )
-    entry <- .jdv_rpc_entry(params$table, params$generation)
+    entry <- .jdv_rpc_entry(params$view, params$generation)
     on.exit(.jdv_release_entry(entry), add = TRUE)
-    if (method == "table/close") {
+    if (method == "view/close") {
       current <- if (
         exists(entry$id, envir = .jdv_state$entries, inherits = FALSE)
       ) {
@@ -843,15 +858,15 @@ jdv_register <- function(
       }
       .jdv_close_internal(entry$id, expected = entry)
       return(list(
-        table = entry$id,
+        view = entry$id,
         generation = entry$generation,
         closed = TRUE
       ))
     }
     .jdv_check_fingerprint(entry)
-    if (method == "table/schema") {
+    if (method == "view/schema") {
       return(list(
-        table = entry$id,
+        view = entry$id,
         generation = entry$generation,
         nrow = entry$nrow,
         ncol = entry$ncol,
@@ -882,7 +897,7 @@ jdv_register <- function(
     work_used <- budget$used
     result$data$columns <- lapply(result$data$columns, .jdv_page_column)
     output <- list(
-      table = entry$id,
+      view = entry$id,
       generation = entry$generation,
       total = result$total,
       total_unfiltered = result$total_unfiltered,

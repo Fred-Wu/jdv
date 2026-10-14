@@ -22,7 +22,7 @@ used; explicitly passing \code{NULL} creates an independent table slot.}
 \item{collation}{String ordering policy, \code{"C"} or \code{"locale"}.}
 }
 \value{
-The table id, invisibly.
+The view id, invisibly.
 }
 \description{
 Open a table in the local jdv viewer

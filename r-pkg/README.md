@@ -63,7 +63,7 @@ host_send(registered$open)
 request <- sprintf(
   paste0(
     '{"id":1,"method":"table/rows","params":',
-    '{"table":"%s","generation":1,"offset":0,"limit":20}}'
+    '{"view":"%s","generation":1,"offset":0,"limit":20}}'
   ),
   registered$id
 )
@@ -73,8 +73,8 @@ cat(response, "\n")
 # Close this table generation when the host no longer needs it.
 close_request <- sprintf(
   paste0(
-    '{"id":2,"method":"table/close","params":',
-    '{"table":"%s","generation":1}}'
+    '{"id":2,"method":"view/close","params":',
+    '{"view":"%s","generation":1}}'
   ),
   registered$id
 )

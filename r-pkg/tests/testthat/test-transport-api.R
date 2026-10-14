@@ -227,8 +227,8 @@ with_mock_transport <- function(
   received <- jsonlite::fromJSON(result_path, simplifyVector = FALSE)
   received$debug_transport_status <- transport_status_summary()
   expect_identical(received$hello$method, "hello")
-  expect_identical(received$open$method, "table/open")
-  expect_identical(received$open$params$table, id)
+  expect_identical(received$open$method, "view/open")
+  expect_identical(received$open$params$view, id)
   expect_identical(received$open$params$title, "x")
   expect_setequal(
     names(received$hello$params$limits),
@@ -373,7 +373,7 @@ with_mock_transport <- function(
       if (scenario == "stale-generation") {
         "stale_generation"
       } else {
-        "table_not_found"
+        "view_not_found"
       }
     )
   }
@@ -424,8 +424,8 @@ with_mock_transport <- function(
     paste0(result_path, ".closed"),
     simplifyVector = FALSE
   )
-  expect_identical(closed$method, "table/closed")
-  expect_identical(closed$params$table, id)
+  expect_identical(closed$method, "view/closed")
+  expect_identical(closed$params$view, id)
   expect_identical(.jdv_transport_status(), NULL)
   invisible(received)
 }
@@ -673,7 +673,7 @@ test_that("a finalizer cannot unload an active transport callback", {
           assign("jdv_unload_finalizer_ran", TRUE, envir = .GlobalEnv)
           parsed <- .Call(
             get("C_jdv_json_parse", envir = old_namespace),
-            '{"method":"table/schema","params":{}}',
+            '{"method":"view/schema","params":{}}',
             1024^2
           )
           assign(
@@ -894,7 +894,7 @@ test_that("stale and closed table requests receive terminal errors", {
   stale <- with_mock_transport("stale-generation", data.frame(value = 11:13))
   missing <- with_mock_transport("missing-table", data.frame(value = 11:13))
   expect_identical(stale$responses[[1L]]$error$code, "stale_generation")
-  expect_identical(missing$responses[[1L]]$error$code, "table_not_found")
+  expect_identical(missing$responses[[1L]]$error$code, "view_not_found")
 })
 
 test_that(
@@ -934,8 +934,8 @@ test_that("synchronous expired requests return a typed error", {
   registered <- jdv_register(data.frame(value = 1), mode = "paged")
   on.exit(.jdv_close_internal(registered$id), add = TRUE)
   response <- transport_rpc_call(
-    "table/schema",
-    list(table = registered$id, generation = 1),
+    "view/schema",
+    list(view = registered$id, generation = 1),
     extra = list(deadline = 1)
   )
   expect_transport_rpc_code(response, "expired")

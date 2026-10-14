@@ -47,10 +47,10 @@ and DNS-rebound host names are rejected. This checks browser origin; it is not
 authentication against other local processes.
 
 On connect, a client receives a `welcome` object containing protocol version 1
-and the current R sessions and cached table descriptors. Later server events use
-`session/open`, `session/closed`, `table/open`, `table/closed`, and
-`notification` message types. A `table/open` message preserves the original R
-protocol message, including the complete `data` payload for Snapshot tables.
+and the current R sessions and cached view descriptors. Later server events use
+`session/open`, `session/closed`, `view/open`, `view/closed`, and `notification`
+message types. A `view/open` message preserves the original R protocol message,
+including the complete `data` payload for Snapshot views.
 
 Send requests with a unique string id per WebSocket client and session:
 
@@ -60,17 +60,17 @@ Send requests with a unique string id per WebSocket client and session:
   "id": "page-1",
   "session": "r-1234-1",
   "method": "table/rows",
-  "params": { "table": "t-1", "generation": 1, "offset": 0, "limit": 200 }
+  "params": { "view": "v-1", "generation": 1, "offset": 0, "limit": 200 }
 }
 ```
 
-The server currently accepts `table/rows`, `table/schema`, and `table/close`.
+The server currently accepts `table/rows`, `view/schema`, and `view/close`.
 Responses use `type: "response"` and carry the original client id. A `busy`
 event is informational and does not cancel the request. A client may send
 `{"type":"cancel","id":"page-1","session":"r-1234-1"}`; it is forwarded as an R
 `cancel` notification when the request was already sent. Unsent `table/rows`
-requests for the same client, session, table, and generation are coalesced to
-the latest page. A request already sent to R is allowed to finish; later scroll
+requests for the same client, session, view, and generation are coalesced to the
+latest page. A request already sent to R is allowed to finish; later scroll
 requests wait behind it.
 
 Browser WebSocket input frames are limited to 64 KiB. Incoming R NDJSON frames

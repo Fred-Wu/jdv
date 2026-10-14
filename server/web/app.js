@@ -13,6 +13,7 @@ const viewer = $("#viewer");
 const titleElement = $("#table-title");
 const metaElement = $("#table-meta");
 const sortList = $("#sort-list");
+const sortFieldset = sortList.closest("fieldset");
 const sortColumn = $("#sort-column");
 const sortDirection = $("#sort-direction");
 const filterColumn = $("#filter-column");
@@ -20,6 +21,7 @@ const filterOperator = $("#filter-op");
 const filterValue = $("#filter-value");
 const filterUpper = $("#filter-upper");
 const filterHelp = $("#filter-help");
+const filterFieldset = filterHelp.closest("fieldset");
 const viewport = $("#column-viewport");
 const spacer = $("#column-spacer");
 const windowElement = $("#column-window");
@@ -77,8 +79,8 @@ socket.addEventListener("message", (event) => {
   if (message.type === "welcome") {
     for (const entry of message.sessions ?? []) {
       addSession(entry.hello?.params?.session, entry.hello);
-      for (const table of entry.tables ?? []) {
-        addTable(entry.hello?.params?.session, table);
+      for (const view of entry.views ?? []) {
+        addTable(entry.hello?.params?.session, view);
       }
     }
   } else if (message.type === "session/open") {
@@ -91,24 +93,24 @@ socket.addEventListener("message", (event) => {
     transport.cancelSession(message.session);
     if (selected?.session === message.session) closeSelectedTable();
     renderLists();
-  } else if (message.type === "table/open") {
+  } else if (message.type === "view/open") {
     addTable(message.session, message.message);
-  } else if (message.type === "table/closed") {
+  } else if (message.type === "view/closed") {
     const descriptor = message.message?.params;
     if (descriptor) {
-      const key = `${message.session}\0${descriptor.table}`;
+      const key = `${message.session}\0${descriptor.view}`;
       const current = knownTables.get(key);
       if (current?.descriptor.generation === descriptor.generation) {
         knownTables.delete(key);
       }
       transport.cancelTable(
         message.session,
-        descriptor.table,
+        descriptor.view,
         descriptor.generation,
       );
       if (
         selected?.session === message.session &&
-        selected.descriptor.table === descriptor.table &&
+        selected.descriptor.view === descriptor.view &&
         selected.descriptor.generation === descriptor.generation
       ) closeSelectedTable();
     }
@@ -141,21 +143,48 @@ function addSession(id, hello) {
 function addTable(session, message) {
   const descriptor = message?.params;
   if (
-    typeof session !== "string" || typeof descriptor?.table !== "string" ||
+    typeof session !== "string" || typeof descriptor?.view !== "string" ||
     !Number.isSafeInteger(descriptor.generation)
   ) return;
-  const key = `${session}\0${descriptor.table}`;
+  const key = `${session}\0${descriptor.view}`;
   const previous = knownTables.get(key);
   if (
     previous && descriptor.generation <= previous.descriptor.generation
   ) return;
   const replaceSelected = selected?.session === session &&
-    selected.descriptor.table === descriptor.table &&
+    selected.descriptor.view === descriptor.view &&
     selected.descriptor.generation < descriptor.generation;
   if (replaceSelected) closeSelectedTable();
   knownTables.set(key, { session, descriptor });
   renderLists();
   if (replaceSelected) openTable(session, descriptor);
+}
+
+function viewSupport(descriptor) {
+  const capabilities = descriptor?.capabilities;
+  const capabilityNames = [
+    "seek",
+    "sort",
+    "filter",
+    "known_total",
+    "next",
+    "children",
+  ];
+  return descriptor?.kind === "grid" &&
+    descriptor.encoding === "r-json" &&
+    (descriptor.access === "snapshot" || descriptor.access === "random") &&
+    descriptor.mode ===
+      (descriptor.access === "snapshot" ? "snapshot" : "paged") &&
+    Array.isArray(descriptor.columns) &&
+    capabilities !== null && typeof capabilities === "object" &&
+    capabilityNames.every((name) => typeof capabilities[name] === "boolean");
+}
+
+function countLabel(value, noun) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    return `Unknown ${noun}s`;
+  }
+  return `${value} ${noun}${value === 1 ? "" : "s"}`;
 }
 
 function renderLists() {
@@ -180,19 +209,27 @@ function renderLists() {
     heading.textContent = descriptor.title ?? "Untitled table";
     const detail = document.createElement("p");
     detail.className = "muted";
-    detail.textContent = `${descriptor.nrow ?? 0} rows · ${
-      descriptor.ncol ?? 0
-    } columns · ${descriptor.mode ?? "unknown"} · ${session}`;
+    detail.textContent = `${countLabel(descriptor.nrow, "row")} · ${
+      countLabel(descriptor.ncol, "column")
+    } · ${descriptor.mode ?? "unknown"} · ${session}`;
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = "View table";
-    button.addEventListener("click", () => openTable(session, descriptor));
+    const support = viewSupport(descriptor);
+    button.textContent = support ? "Open view" : "Unsupported view";
+    button.disabled = !support;
+    if (support) {
+      button.addEventListener("click", () => openTable(session, descriptor));
+    }
     item.append(heading, detail, button);
     tablesElement.append(item);
   }
 }
 
 function openTable(session, descriptor) {
+  if (!viewSupport(descriptor)) {
+    setStatus("This view format is not supported by this viewer.", "error");
+    return;
+  }
   closeSelectedTable();
   const columns = Array.isArray(descriptor.columns) ? descriptor.columns : [];
   selected = {
@@ -209,9 +246,9 @@ function openTable(session, descriptor) {
   };
   viewer.hidden = false;
   titleElement.textContent = descriptor.title ?? "Untitled table";
-  metaElement.textContent = `${descriptor.nrow ?? 0} rows · ${
-    descriptor.ncol ?? 0
-  } columns · ${descriptor.mode ?? "unknown"} · ${session}`;
+  metaElement.textContent = `${countLabel(descriptor.nrow, "row")} · ${
+    countLabel(descriptor.ncol, "column")
+  } · ${descriptor.mode} · ${session}`;
   warningsElement.replaceChildren();
   paginationElement.replaceChildren();
   populateColumnChoices();
@@ -236,7 +273,8 @@ function openTable(session, descriptor) {
     columns: initialColumns,
     index: "row_index",
     placeholder: "No rows match this query.",
-    pagination: true,
+    pagination: descriptor.capabilities.seek === true &&
+      descriptor.capabilities.known_total === true,
     paginationMode: "remote",
     paginationSize: PAGE_SIZE,
     paginationButtonCount: 5,
@@ -258,7 +296,7 @@ function closeSelectedTable() {
   selected.epoch++;
   transport.cancelTable(
     selected.session,
-    selected.descriptor.table,
+    selected.descriptor.view,
     selected.descriptor.generation,
     "The selected table was closed.",
   );
@@ -272,6 +310,10 @@ function populateColumnChoices() {
   if (!selected) return;
   fillColumnSelect(sortColumn, true);
   fillColumnSelect(filterColumn, false);
+  sortFieldset.hidden = selected.descriptor.capabilities.sort !== true ||
+    !selected.columns.some((schema) => schema.sortable === true);
+  filterFieldset.hidden = selected.descriptor.capabilities.filter !== true ||
+    selected.columns.length === 0;
   updateFilterOperators();
 }
 
@@ -290,6 +332,7 @@ function fillColumnSelect(select, sortableOnly) {
 
 function filterOperators(schema) {
   if (!schema) return [];
+  if (selected?.descriptor.capabilities.filter !== true) return [];
   const common = [["is_na", "Is missing"]];
   if (schema.filterable !== true) return common;
   if (["string", "factor", "other"].includes(schema.type)) {
@@ -371,8 +414,13 @@ function valuePlaceholder(schema, fallback = "Value") {
 function addSortTerm() {
   if (!selected) return;
   const position = Number(sortColumn.value);
+  const schema = selected.columns.find((column) =>
+    column.position === position
+  );
   if (
+    selected.descriptor.capabilities.sort !== true ||
     !Number.isSafeInteger(position) ||
+    schema?.sortable !== true ||
     selected.sort.some((item) => item.col === position)
   ) return;
   if (selected.sort.length >= 16) {
@@ -420,8 +468,11 @@ function buildFilterAst() {
   const schema = selected?.columns.find((column) =>
     column.position === position
   );
-  if (!schema) throw new Error("Choose a filterable column.");
   const op = filterOperator.value;
+  if (
+    selected?.descriptor.capabilities.filter !== true || !schema ||
+    (schema.filterable !== true && op !== "is_na")
+  ) throw new Error("Choose a filterable column.");
   const node = { op, col: position };
   if (op === "is_na" || op === "is_true" || op === "is_false") return node;
   const value = parseFilterValue(schema, filterValue.value);
@@ -503,7 +554,7 @@ function reloadFirstPage() {
   selected.epoch++;
   transport.cancelTable(
     selected.session,
-    selected.descriptor.table,
+    selected.descriptor.view,
     selected.descriptor.generation,
     "A newer query replaced this request.",
   );
@@ -572,7 +623,7 @@ function updateColumnWindow() {
   updateRowColumnCompensation();
   transport.cancelTable(
     state.session,
-    state.descriptor.table,
+    state.descriptor.view,
     state.descriptor.generation,
     "A newer column window replaced this request.",
   );
@@ -651,7 +702,7 @@ async function requestRows(params) {
   const epoch = ++state.epoch;
   transport.cancelTable(
     state.session,
-    state.descriptor.table,
+    state.descriptor.view,
     state.descriptor.generation,
     "A newer page request replaced this request.",
   );
@@ -663,7 +714,7 @@ async function requestRows(params) {
   windowElement.classList.add("is-loading-window");
   try {
     let result;
-    if (state.descriptor.mode === "snapshot") {
+    if (state.descriptor.access === "snapshot") {
       const page = querySnapshot(state.descriptor, {
         sort,
         filter,
@@ -683,7 +734,7 @@ async function requestRows(params) {
         ),
         warnings: page.warnings ?? [],
       };
-    } else {
+    } else if (state.descriptor.access === "random") {
       result = await requestPagedRows(state, {
         epoch,
         offset,
@@ -692,6 +743,8 @@ async function requestRows(params) {
         filter,
         cols,
       });
+    } else {
+      throw new Error("This view access method is not supported.");
     }
     if (!isCurrent(state, epoch)) throw abortError("The query was replaced.");
     const lastPage = Math.max(1, Math.ceil(result.total / pageSize));
@@ -713,7 +766,7 @@ async function requestPagedRows(state, query) {
     limit: query.limit,
     fetchPage: ({ offset, limit }) =>
       sendPagedRequest(state, {
-        table: state.descriptor.table,
+        view: state.descriptor.view,
         generation: state.descriptor.generation,
         offset,
         limit,

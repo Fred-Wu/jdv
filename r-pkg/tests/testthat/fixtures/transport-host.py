@@ -123,8 +123,8 @@ def main():
             hello = json.loads(hello_line.decode("utf-8")) if hello_line else None
             opened = json.loads(opened_line.decode("utf-8")) if opened_line else None
             if hello is None or opened is None:
-                raise RuntimeError("connection ended before hello and table/open")
-            if hello.get("method") != "hello" or opened.get("method") != "table/open":
+                raise RuntimeError("connection ended before hello and view/open")
+            if hello.get("method") != "hello" or opened.get("method") != "view/open":
                 raise RuntimeError("unexpected connection setup message order")
             params = opened["params"]
             if args.scenario == "disconnect":
@@ -144,9 +144,9 @@ def main():
             if args.scenario == "preflight-frame":
                 request = {
                     "id": "preflight-schema-1",
-                    "method": "table/schema",
+                    "method": "view/schema",
                     "params": {
-                        "table": params["table"],
+                        "view": params["view"],
                         "generation": params["generation"],
                     },
                 }
@@ -172,7 +172,7 @@ def main():
                 "id": "mock-rows-1",
                 "method": "table/rows",
                 "params": {
-                    "table": params["table"],
+                    "view": params["view"],
                     "generation": params["generation"],
                     "offset": 0,
                     "limit": 2,
@@ -211,9 +211,9 @@ def main():
             elif args.scenario == "empty-registry-close":
                 request = {
                     "id": "close-table",
-                    "method": "table/close",
+                    "method": "view/close",
                     "params": {
-                        "table": params["table"],
+                        "view": params["view"],
                         "generation": params["generation"],
                     },
                 }
@@ -230,9 +230,9 @@ def main():
                 for index in range(1, 6):
                     queued_request = {
                         "id": f"overflow-{index}",
-                        "method": "table/schema",
+                        "method": "view/schema",
                         "params": {
-                            "table": params["table"],
+                            "view": params["view"],
                             "generation": params["generation"],
                         },
                         "padding": "x" * 400,
@@ -299,7 +299,7 @@ def main():
                 )
             elif args.scenario == "invalid-control":
                 request["id"] = "invalid-control"
-                request["params"] = {"table": params["table"]}
+                request["params"] = {"view": params["view"]}
                 expected_ids = ["invalid-control"]
                 connection.sendall(
                     json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -309,7 +309,7 @@ def main():
                 if args.scenario == "stale-generation":
                     request["params"]["generation"] += 1
                 else:
-                    request["params"]["table"] = "missing-table"
+                    request["params"]["view"] = "missing-view"
                 expected_ids = [args.scenario]
                 connection.sendall(
                     json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -353,9 +353,9 @@ def main():
                     }
                     followup = {
                         "id": "followup",
-                        "method": "table/schema",
+                        "method": "view/schema",
                         "params": {
-                            "table": params["table"],
+                            "view": params["view"],
                             "generation": params["generation"],
                         },
                     }
@@ -398,9 +398,9 @@ def main():
                     time.sleep(0.2)
                     followup = {
                         "id": "followup",
-                        "method": "table/schema",
+                        "method": "view/schema",
                         "params": {
-                            "table": params["table"],
+                            "view": params["view"],
                             "generation": params["generation"],
                         },
                     }
@@ -415,9 +415,9 @@ def main():
             elif args.scenario == "maximum-frame":
                 request = {
                     "id": "maximum-frame",
-                    "method": "table/schema",
+                    "method": "view/schema",
                     "params": {
-                        "table": params["table"],
+                        "view": params["view"],
                         "generation": params["generation"],
                     },
                     "padding": "",
@@ -451,9 +451,9 @@ def main():
                 time.sleep(0.25)
                 followup = {
                     "id": "followup",
-                    "method": "table/schema",
+                    "method": "view/schema",
                     "params": {
-                        "table": params["table"],
+                        "view": params["view"],
                         "generation": params["generation"],
                     },
                 }

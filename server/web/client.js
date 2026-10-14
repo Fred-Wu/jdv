@@ -91,7 +91,7 @@ export function createBrowserTransport(socket, handlers = {}) {
   function cancelTable(session, table, generation, reason) {
     for (const item of [...pending.values()]) {
       if (
-        item.session === session && item.params?.table === table &&
+        item.session === session && item.params?.view === table &&
         item.params?.generation === generation
       ) cancel(item.id, reason ?? "The table is no longer available.");
     }

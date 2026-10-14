@@ -84,7 +84,7 @@ query_alive <- function(holder) {
     query_error("invalid_request", "Expected a paged table holder.")
   }
   if (holder$closed) {
-    query_error("table_not_found", "The table was disposed.")
+    query_error("view_not_found", "The view was disposed.")
   }
   invisible(holder)
 }

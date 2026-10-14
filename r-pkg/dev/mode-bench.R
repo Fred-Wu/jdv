@@ -332,7 +332,7 @@ if (phase == "prepare") {
       collation = collation
     )
   })
-  descriptor <- get_ns(".jdv_descriptor")(content, "t-bench", 1, "bench")
+  descriptor <- get_ns(".jdv_descriptor")(content, "v-bench", 1, "bench")
   encoded_result <- measure_encoder(
     get_ns(".jdv_json_encode"),
     descriptor,
@@ -430,7 +430,7 @@ if (phase == "prepare") {
       page$data$row_names <- get_ns(".jdv_json_values")(page$data$row_names)
     }
     result <- list(
-      table = "t-bench",
+      view = "v-bench",
       generation = 1,
       total = page$total,
       total_unfiltered = page$total_unfiltered,
@@ -456,7 +456,7 @@ if (phase == "prepare") {
   request <- sprintf(
     paste0(
       '{"id":1,"method":"table/rows","params":',
-      '{"table":"%s","generation":1,"offset":0,"limit":200}}'
+      '{"view":"%s","generation":1,"offset":0,"limit":200}}'
     ),
     registered$id
   )
@@ -473,7 +473,7 @@ if (phase == "prepare") {
     tail_request <- sprintf(
       paste0(
         '{"id":2,"method":"table/rows","params":',
-        '{"table":"%s","generation":1,"offset":799999998,"limit":2}}'
+        '{"view":"%s","generation":1,"offset":799999998,"limit":2}}'
       ),
       registered$id
     )
@@ -521,7 +521,7 @@ if (phase == "prepare") {
     sprintf(
       paste0(
         '{"id":%d,"method":"table/rows","params":',
-        '{"table":"%s","generation":1,"offset":0,"limit":200%s}}'
+        '{"view":"%s","generation":1,"offset":0,"limit":200%s}}'
       ),
       request_id,
       registered$id,
@@ -613,7 +613,7 @@ if (phase == "prepare") {
     request <- sprintf(
       paste0(
         '{"id":2,"method":"table/rows","params":',
-        '{"table":"%s","generation":1,"offset":0,"limit":1}}'
+        '{"view":"%s","generation":1,"offset":0,"limit":1}}'
       ),
       registered$id
     )

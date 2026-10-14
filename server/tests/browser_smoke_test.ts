@@ -86,15 +86,19 @@ Deno.test({
       },
     });
     await writeFrame(rConnection, {
-      method: "table/open",
+      method: "view/open",
       params: {
-        table: "wide-paged",
+        view: "wide-paged",
         generation: 1,
+        kind: "grid",
+        access: "random",
+        encoding: "r-json",
         mode: "paged",
         title: "Browser smoke",
         nrow: 249,
         ncol: columns.length,
         columns,
+        capabilities: gridCapabilities(),
       },
     });
     const requests: Array<Record<string, unknown>> = [];
@@ -122,7 +126,7 @@ Deno.test({
       page.on("pageerror", (error: Error) => pageErrors.push(error.message));
       await page.goto(server.url, { waitUntil: "networkidle" });
       await page.waitForSelector('#status[data-state="connected"]');
-      await page.getByRole("button", { name: "View table" }).click();
+      await page.getByRole("button", { name: "Open view" }).click();
       await page.waitForSelector("#viewer .tabulator-row");
       await page.selectOption("#filter-column", "299");
       assertEquals(
@@ -692,13 +696,13 @@ Deno.test({
 
       const pagedRequestsBeforeSnapshot = requests.length;
       await writeFrame(rConnection, {
-        method: "table/open",
+        method: "view/open",
         params: snapshotDescriptor(columns.slice(0, 3)),
       });
       const snapshotCard = page.locator("#tables article").filter({
         hasText: "Snapshot smoke",
       });
-      await snapshotCard.getByRole("button", { name: "View table" }).click();
+      await snapshotCard.getByRole("button", { name: "Open view" }).click();
       await page.waitForFunction(
         () => {
           const document = (globalThis as unknown as {
@@ -764,7 +768,7 @@ Deno.test({
       const pagedCard = page.locator("#tables article").filter({
         hasText: "Browser smoke",
       });
-      await pagedCard.getByRole("button", { name: "View table" }).click();
+      await pagedCard.getByRole("button", { name: "Open view" }).click();
       await page.waitForFunction(
         () => {
           const document = (globalThis as unknown as {
@@ -778,15 +782,19 @@ Deno.test({
         },
       );
       await writeFrame(rConnection, {
-        method: "table/open",
+        method: "view/open",
         params: {
-          table: "wide-paged",
+          view: "wide-paged",
           generation: 2,
+          kind: "grid",
+          access: "random",
+          encoding: "r-json",
           mode: "paged",
           title: "Generation 2",
           nrow: 3,
           ncol: 2,
           columns: columns.slice(0, 2),
+          capabilities: gridCapabilities(),
         },
       });
       await page.waitForFunction(
@@ -802,8 +810,8 @@ Deno.test({
         },
       );
       await writeFrame(rConnection, {
-        method: "table/closed",
-        params: { table: "wide-paged", generation: 1 },
+        method: "view/closed",
+        params: { view: "wide-paged", generation: 1 },
       });
       await page.waitForTimeout(100);
       assertEquals(
@@ -821,6 +829,60 @@ Deno.test({
           .first().textContent(),
         "1001",
       );
+
+      const limitedView = snapshotDescriptor(columns.slice(0, 3));
+      limitedView.view = "limited-grid";
+      limitedView.title = "Limited capabilities";
+      limitedView.nrow = null;
+      limitedView.capabilities = {
+        ...gridCapabilities(),
+        sort: false,
+        filter: false,
+      };
+      await writeFrame(rConnection, {
+        method: "view/open",
+        params: limitedView,
+      });
+      const limitedCard = page.locator("#tables article").filter({
+        hasText: "Limited capabilities",
+      });
+      await limitedCard.getByRole("button", { name: "Open view" }).click();
+      await page.waitForFunction(
+        () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-title")?.textContent ===
+            "Limited capabilities";
+        },
+      );
+      assert(
+        (await limitedCard.textContent())?.includes("Unknown rows"),
+        "A missing row count should be labeled unknown.",
+      );
+      assertEquals(
+        await page.locator(".query-tools fieldset").evaluateAll(
+          (elements: BrowserElement[]) =>
+            elements.every((element) => element.hidden),
+        ),
+        true,
+      );
+
+      const unsupported = snapshotDescriptor(columns.slice(0, 3));
+      unsupported.view = "unsupported-list";
+      unsupported.title = "Unsupported list";
+      unsupported.kind = "list";
+      await writeFrame(rConnection, {
+        method: "view/open",
+        params: unsupported,
+      });
+      const unsupportedCard = page.locator("#tables article").filter({
+        hasText: "Unsupported list",
+      });
+      await unsupportedCard.getByRole("button", {
+        name: "Unsupported view",
+      }).waitFor();
+      assertEquals(pageErrors, []);
       assertEquals(pageErrors, []);
     } finally {
       await browser?.close();
@@ -953,7 +1015,7 @@ async function respondToR(
     await writeFrame(connection, {
       id: request.id,
       result: {
-        table: "wide-paged",
+        view: "wide-paged",
         generation,
         total,
         total_unfiltered: rowCount,
@@ -988,19 +1050,25 @@ async function clickNextPage(
   await page.locator('.tabulator-page[data-page="next"]').click();
 }
 
-function snapshotDescriptor(columns: Array<Record<string, unknown>>) {
+function snapshotDescriptor(
+  columns: Array<Record<string, unknown>>,
+): Record<string, unknown> {
   const values = Array.from({ length: 249 }, (_, index) => index + 1);
   const strings = values.map((value) =>
     value === 1 ? "<img src=x onerror=alert(1)>" : `value-${value}`
   );
   return {
-    table: "wide-snapshot",
+    view: "wide-snapshot",
     generation: 1,
+    kind: "grid",
+    access: "snapshot",
+    encoding: "r-json",
     mode: "snapshot",
     title: "Snapshot smoke",
     nrow: values.length,
     ncol: columns.length,
     columns,
+    capabilities: gridCapabilities(),
     row_names: values.map((value) => `row-${value}`),
     data: {
       row_index: values,
@@ -1024,5 +1092,16 @@ function snapshotDescriptor(columns: Array<Record<string, unknown>>) {
         },
       ],
     },
+  };
+}
+
+function gridCapabilities() {
+  return {
+    seek: true,
+    sort: true,
+    filter: true,
+    known_total: true,
+    next: false,
+    children: false,
   };
 }

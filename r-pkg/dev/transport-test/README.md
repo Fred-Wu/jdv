@@ -2,9 +2,9 @@
 
 The transport integration tests run the package against a callr-managed local
 NDJSON mock host. The mock uses a Unix-domain socket to verify `hello`,
-`table/open`, host-initiated requests, partial and maximum-sized frames,
+`view/open`, host-initiated requests, partial and maximum-sized frames,
 multi-megabyte output, cancellation and deadline handling, invalid control
-messages, duplicate request ids, EOF cleanup, bounded sends, `table/closed`,
+messages, duplicate request ids, EOF cleanup, bounded sends, `view/closed`,
 and normal transport shutdown. The fixture lives under
 `tests/testthat/fixtures` so it is available in source and installed test runs.
 

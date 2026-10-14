@@ -591,9 +591,9 @@ test_that("cache limits, clear, disposal, pages, and row names are explicit", {
   expect_null(holder$source)
   expect_null(holder$schema)
   expect_length(holder$column_cache, 0L)
-  expect_query_code(query_page(holder), "table_not_found")
-  expect_query_code(query_clear(holder), "table_not_found")
-  expect_query_code(query_dispose(holder), "table_not_found")
+  expect_query_code(query_page(holder), "view_not_found")
+  expect_query_code(query_clear(holder), "view_not_found")
+  expect_query_code(query_dispose(holder), "view_not_found")
   expect_null(query_page(paged_table(data.frame(a = 1:3)))$data$row_names)
   expect_identical(
     query_page(

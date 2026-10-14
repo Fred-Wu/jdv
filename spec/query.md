@@ -34,7 +34,7 @@ builds a new holder and cache before replacing the current generation.
 | `query_indices(holder, sort = list(), filter = NULL)` | Original one-based row numbers after filtering and sorting. |
 | `query_page(holder, offset = 0L, limit = 200L, sort = list(), filter = NULL, cols = NULL)` | A page with totals, effective pagination, original row numbers, optional row names, and selected column extraction results. |
 | `query_clear(holder)` | Clear all result caches while retaining the same source and initial schema. Returns the holder invisibly. |
-| `query_dispose(holder)` | Clear caches and release source/schema references. Subsequent queries fail with `table_not_found`. |
+| `query_dispose(holder)` | Clear caches and release source/schema references. Subsequent queries fail with `view_not_found`. |
 | `snapshot_table(x, collation = "C", limits = list())` | Eagerly materialized channels for the independent Snapshot reference consumer. |
 | `snapshot_indices(snapshot, sort = list(), filter = NULL)` | Reference row selection and stable ordering from those materialized channels. |
 
@@ -340,7 +340,7 @@ Conditions inherit from `jdv_query_error`, `error`, and `condition`, and expose
 | `limit_exceeded` | Registration, page width, sort width, AST, or string budget is exceeded. |
 | `schema_changed` | A column's full shape/class differs from its probe, subsetting changes class/size, or a required channel returns an invalid/missing result. |
 | `r_error` | Source access, class methods, or another requested R operation fails. |
-| `table_not_found` | The holder has been disposed. |
+| `view_not_found` | The holder has been disposed. |
 
 ## Independent Snapshot reference and shared fixtures
 

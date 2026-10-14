@@ -356,15 +356,15 @@ Deno.test({
         "R table setup",
       );
       const opened = await browserMessages.waitFor(
-        (message) => message.type === "table/open",
+        (message) => message.type === "view/open",
         10_000,
-        "R table/open event",
+        "R view/open event",
       );
       const openMessage = opened.value;
       const session = String(openMessage.session);
       const openEnvelope = openMessage.message as Record<string, unknown>;
       const openParams = openEnvelope.params as Record<string, unknown>;
-      const table = String(openParams.table);
+      const table = String(openParams.view);
       const generation = Number(openParams.generation);
       assert(session.startsWith("r-"), "R did not announce its real session.");
       assert(
@@ -374,14 +374,14 @@ Deno.test({
 
       const sendRows = async (id: string, offset: number) => {
         await sendRequest(id, "table/rows", {
-          table,
+          view: table,
           generation,
           offset,
           limit: 1,
         });
       };
       const sendSchema = async (id: string) => {
-        await sendRequest(id, "table/schema", { table, generation });
+        await sendRequest(id, "view/schema", { view: table, generation });
       };
       const sendRequest = async (
         id: string,
@@ -402,8 +402,8 @@ Deno.test({
           offset;
       const rSchemaRequest = (after: number) => (frame: WireFrame) =>
         frame.time >= after && frame.direction === "to-r" &&
-        frame.value.method === "table/schema" &&
-        (frame.value.params as Record<string, unknown> | undefined)?.table ===
+        frame.value.method === "view/schema" &&
+        (frame.value.params as Record<string, unknown> | undefined)?.view ===
           table;
       const terminal = (wireId: string) => (frame: WireFrame) =>
         frame.direction === "from-r" && frame.value.id === wireId &&

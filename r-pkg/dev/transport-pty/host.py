@@ -38,8 +38,8 @@ def receive_open(connection):
     opened = read_message(stream)
     if not isinstance(hello, dict) or hello.get("method") != "hello":
         raise RuntimeError("expected hello as the first message")
-    if not isinstance(opened, dict) or opened.get("method") != "table/open":
-        raise RuntimeError("expected table/open after hello")
+    if not isinstance(opened, dict) or opened.get("method") != "view/open":
+        raise RuntimeError("expected view/open after hello")
     return stream, hello, opened
 
 
@@ -49,7 +49,7 @@ def rows_request(opened, request_id):
         "id": request_id,
         "method": "table/rows",
         "params": {
-            "table": params["table"],
+            "view": params["view"],
             "generation": params["generation"],
             "offset": 0,
             "limit": 64,

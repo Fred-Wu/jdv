@@ -119,8 +119,8 @@ Deno.test("Snapshot query applies sort and filter before paging", () => {
 Deno.test("browser transport ignores stale responses after table replacement", async () => {
   const socket = new FakeSocket();
   const transport = createBrowserTransport(socket);
-  const oldRequest = transport.request("r-1-1", "table/page", {
-    table: "t1",
+  const oldRequest = transport.request("r-1-1", "table/rows", {
+    view: "t1",
     generation: 1,
     offset: 0,
     limit: 200,
@@ -140,8 +140,8 @@ Deno.test("browser transport ignores stale responses after table replacement", a
     result: { data: { row_index: [1] } },
   });
 
-  const currentRequest = transport.request("r-1-1", "table/page", {
-    table: "t1",
+  const currentRequest = transport.request("r-1-1", "table/rows", {
+    view: "t1",
     generation: 2,
     offset: 0,
     limit: 200,
@@ -165,8 +165,8 @@ Deno.test("transport settles pending requests on clear and disconnect", async ()
       disconnects++;
     },
   });
-  const cleared = transport.request("r-1-1", "table/page", {
-    table: "t1",
+  const cleared = transport.request("r-1-1", "table/rows", {
+    view: "t1",
     generation: 1,
   });
   const clearedFrame = socket.take();
@@ -178,8 +178,8 @@ Deno.test("transport settles pending requests on clear and disconnect", async ()
     session: "r-1-1",
   });
 
-  const sessionRequest = transport.request("r-2-1", "table/page", {
-    table: "t2",
+  const sessionRequest = transport.request("r-2-1", "table/rows", {
+    view: "t2",
     generation: 1,
   });
   const sessionFrame = socket.take();
@@ -191,8 +191,8 @@ Deno.test("transport settles pending requests on clear and disconnect", async ()
     session: "r-2-1",
   });
 
-  const disconnected = transport.request("r-1-1", "table/page", {
-    table: "t1",
+  const disconnected = transport.request("r-1-1", "table/rows", {
+    view: "t1",
     generation: 1,
   });
   socket.take();
@@ -204,8 +204,8 @@ Deno.test("transport settles pending requests on clear and disconnect", async ()
 Deno.test("transport settles server cancellation and ignores a late reply", async () => {
   const socket = new FakeSocket();
   const transport = createBrowserTransport(socket);
-  const request = transport.request("r-1-1", "table/page", {
-    table: "t1",
+  const request = transport.request("r-1-1", "table/rows", {
+    view: "t1",
     generation: 1,
   });
   const frame = socket.take();
@@ -310,8 +310,22 @@ function snapshot(nrow: number) {
   const values = Array.from({ length: nrow }, (_, index) => index + 1);
   return {
     params: {
+      view: "snapshot-fixture",
+      generation: 1,
+      kind: "grid",
+      access: "snapshot",
+      encoding: "r-json",
+      mode: "snapshot",
       nrow,
       ncol: 2,
+      capabilities: {
+        seek: true,
+        sort: true,
+        filter: true,
+        known_total: true,
+        next: false,
+        children: false,
+      },
       columns: [
         {
           position: 0,

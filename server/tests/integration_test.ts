@@ -250,18 +250,38 @@ Deno.test({
       });
       assertMessage(await browser.read(), "session/open");
       const snapshot = {
-        method: "table/open",
+        method: "view/open",
         params: {
-          table: "t-snapshot",
+          view: "t-snapshot",
           generation: 1,
+          kind: "grid",
+          access: "snapshot",
+          encoding: "r-json",
           mode: "snapshot",
           title: "snapshot fixture",
+          nrow: 2,
+          ncol: 1,
+          columns: [{
+            position: 0,
+            name: "x",
+            type: "integer",
+            sortable: true,
+            filterable: true,
+          }],
+          capabilities: {
+            seek: true,
+            sort: true,
+            filter: true,
+            known_total: true,
+            next: false,
+            children: false,
+          },
           data: { columns: [{ name: "x", values: [4, 9] }] },
         },
       };
       await writeLine(rConnection, snapshot);
       const opened = await browser.read();
-      assertMessage(opened, "table/open");
+      assertMessage(opened, "view/open");
 
       const reconnect = await RawWebSocket.connect(server.url);
       clients.push(reconnect);
@@ -271,7 +291,7 @@ Deno.test({
       if (sessions.length !== 1) {
         throw new Error("Welcome did not cache the R session.");
       }
-      const tables = sessions[0].tables as Array<Record<string, unknown>>;
+      const tables = sessions[0].views as Array<Record<string, unknown>>;
       if (tables.length !== 1) {
         throw new Error("Welcome did not cache the table.");
       }
@@ -283,22 +303,22 @@ Deno.test({
         type: "request",
         id: "close-table",
         session: "r-4242-1",
-        method: "table/close",
-        params: { table: "t-snapshot", generation: 1 },
+        method: "view/close",
+        params: { view: "t-snapshot", generation: 1 },
       });
       const closeRequest = await readJsonLine(rConnection);
-      if (closeRequest.method !== "table/close") {
+      if (closeRequest.method !== "view/close") {
         throw new Error("The close request was not relayed to R.");
       }
       await writeLine(rConnection, {
         id: closeRequest.id,
-        result: { closed: true, table: "t-snapshot", generation: 1 },
+        result: { closed: true, view: "t-snapshot", generation: 1 },
         warnings: [],
       });
       const response = await reconnect.read();
       assertMessage(response, "response");
       const closed = await reconnect.read();
-      assertMessage(closed, "table/closed");
+      assertMessage(closed, "view/closed");
 
       rConnection.close();
       rConnection = undefined;
@@ -484,12 +504,12 @@ Deno.test({
       }
       assertMessage(sessionOpen, "session/open");
       const tableOpen = await browserClient.read();
-      assertMessage(tableOpen, "table/open");
+      assertMessage(tableOpen, "view/open");
       const descriptor = tableOpen.message as Record<string, unknown>;
       const params = descriptor.params as Record<string, unknown>;
-      if (params.table !== tableId || params.generation !== 1) {
+      if (params.view !== tableId || params.generation !== 1) {
         throw new Error(
-          "R table/open does not match the installed API result.",
+          "R view/open does not match the installed API result.",
         );
       }
 
@@ -497,8 +517,8 @@ Deno.test({
         type: "request",
         id: "schema-from-installed-r",
         session: sessionOpen.session,
-        method: "table/schema",
-        params: { table: tableId, generation: 1 },
+        method: "view/schema",
+        params: { view: tableId, generation: 1 },
       });
       const response = await browserClient.read();
       assertMessage(response, "response");
@@ -528,7 +548,7 @@ Deno.test({
         const error = await new Response(rChild.stderr).text();
         throw new Error(`Installed R package exited ${status.code}: ${error}`);
       }
-      assertMessage(await browserClient.read(), "table/closed");
+      assertMessage(await browserClient.read(), "view/closed");
       assertMessage(await browserClient.read(), "session/closed");
     } finally {
       browser?.close();

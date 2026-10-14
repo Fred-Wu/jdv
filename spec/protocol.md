@@ -1,10 +1,10 @@
 # jdv Protocol v1
 
 This document defines the JSON protocol implemented by `jdv_register()`,
-`jdv_rpc()`, and the Phase 5 local transport. It describes the R table
-registry, newline-delimited JSON (NDJSON) messages, and request and response
-messages shared by the package, reference server, and viewer. It does not
-define the browser-to-server protocol.
+`jdv_rpc()`, and the local transport. It describes the R view registry,
+newline-delimited JSON (NDJSON) messages, and request and response messages
+shared by the package, reference server, and viewer. It does not define the
+browser-to-server protocol.
 
 The envelope is JSON-RPC-like, but it is not JSON-RPC 2.0: messages use a
 `method` and `params`, while successful responses use `id`, `result`, and
@@ -20,7 +20,7 @@ as `wake`, `cancel`, and `ack` omit the id and have no response.
 - The only supported envelope encoding is `json`; the only supported
   compression is `none`. Both fields may be omitted to select those defaults.
   Unknown values produce an `unsupported` error.
-- A table id is a string. Only column positions are zero-based. `row_index` is
+- A view id is a string. Only column positions are zero-based. `row_index` is
   the original one-based R row number, including after filtering and sorting.
 - Request ids are either strings of at most 128 UTF-8 bytes or JSON integer
   literal tokens from 0 through `2^53 - 1`. Fractional and exponent-form
@@ -31,9 +31,12 @@ as `wake`, `cancel`, and `ack` omit the id and have no response.
 - Envelope and method-parameter objects ignore unknown fields for forward
   compatibility. Filter and sort objects remain strict. Duplicate object
   keys are rejected. Unknown methods return `method_not_found`.
-- Unknown optional schema fields must be ignored by clients. Protocol v1
-  allows a future optional `parent` field on a table descriptor for nested
-  child tables; `open_cell` is not defined in v1.
+- The page request method remains `table/rows` and identifies its owner with
+  `params.view`. Lifecycle methods use the view names listed below; the former
+  `table/open`, `table/closed`, `table/schema`, and `table/close` names are not
+  aliases.
+- Unknown optional schema fields must be ignored by clients. Protocol v1 does
+  not define nested child views or cell inspection.
 - The parser rejects malformed JSON number grammar, invalid UTF-8, decoded
   U+0000, trailing non-whitespace data, nesting deeper than 128, more than
   100,000 JSON nodes, or an object with more than 1,024 members. The literal
@@ -66,17 +69,19 @@ jdv_close(id = NULL)
 ```
 
 `x` must be a data frame or matrix. `jdv_register()` returns
-`list(id, open, notifications)`. `open` is a `table/open` JSON message.
+`list(id, open, notifications)`. `open` is a `view/open` JSON message.
 `notifications` is a character vector of pending
 notification JSON messages, or `character()` when there are none. The embedding
 host must deliver each notification in vector order before delivering `open`.
 Registration does not open a socket.
 
-`jdv_view()` registers the table, opens the local connection on first use,
-sends `hello`, pending `table/closed` notifications, then `table/open`, and
-returns the table id invisibly. Its default title is the deparsed expression
+`jdv_view()` registers the view, opens the local connection on first use,
+sends `hello`, pending `view/closed` notifications, then `view/open`, and
+returns the view id invisibly. The R API keeps the return-list key `id` and
+generates opaque view id strings such as `v-1`; consumers must not interpret
+the id format. Its default title is the deparsed expression
 passed as `x`; an explicit `title = NULL` creates a new slot. `jdv_close(id)`
-closes one table, and `jdv_close()` closes every table. Closing the last table
+closes one view, and `jdv_close()` closes every view. Closing the last view
 stops the connection. `jdv_rpc()` with no argument or `NULL` explicitly polls
 the active connection and drains at most eight requests. This recovery path
 bypasses the normal event gate and is non-reentrant. Passing a JSON string to
@@ -97,8 +102,8 @@ Windows named pipes must use byte-type mode; message-type pipes are unsupported.
 The Windows transport has not yet been exercised on a Windows host.
 
 A non-`NULL` title identifies one active display slot. Registering that active
-title again replaces its contents, reuses its table id, and increments its
-generation. The new table is prepared before the prior table is replaced, so a
+title again replaces its contents, reuses its view id, and increments its
+generation. The new view is prepared before the prior view is replaced, so a
 failed registration leaves the prior registration intact. Closing or evicting
 a title removes its title mapping; registering it later creates a new id at
 generation 1. `NULL` titles always create independent registrations. A new
@@ -107,7 +112,7 @@ count, registration evicts as many oldest entries as needed to satisfy it.
 
 Snapshot registration materializes and encodes its data in the `open` message.
 After successful message construction, the R registry retains only table
-metadata; the host is responsible for caching the snapshot. A Snapshot table
+metadata; the host is responsible for caching the snapshot. A Snapshot view
 has no `table/rows` endpoint. Paged registration retains the source and its
 initial schema in R and returns schema and dimensions in `open`; rows are
 computed on demand.
@@ -144,16 +149,27 @@ Snapshot mode returns `limit_exceeded` instead.
 
 ## Message envelopes
 
-A table descriptor is sent as a notification:
+A view descriptor is sent as a notification:
 
 ```json
 {
-  "method": "table/open",
+  "method": "view/open",
   "params": {
-    "table": "t-1",
+    "view": "v-1",
     "generation": 1,
     "title": "example",
     "mode": "paged",
+    "kind": "grid",
+    "access": "random",
+    "encoding": "r-json",
+    "capabilities": {
+      "seek": true,
+      "sort": true,
+      "filter": true,
+      "known_total": true,
+      "next": false,
+      "children": false
+    },
     "collation": "C",
     "nrow": 100,
     "ncol": 2,
@@ -163,9 +179,22 @@ A table descriptor is sent as a notification:
 }
 ```
 
-The example omits schema entries for brevity. `table/open` has no request id
+The example omits schema entries for brevity. `view/open` has no request id
 and is not passed to `jdv_rpc()`; it is returned by `jdv_register()` for the
-host to deliver. In Snapshot mode, `params.data` contains the full data payload
+host to deliver. `kind` is `grid`; `access` is `snapshot` or `random` for
+Snapshot or Paged mode, respectively; and `encoding` is `r-json`. Every
+descriptor includes all six `capabilities` fields shown: `seek`, `sort`,
+`filter`, and `known_total` are `true`; `next` and `children` are `false`.
+These view-level flags declare the grid operations available in protocol v1;
+each column's `sortable` field constrains sorting, and `filterable` constrains
+value-based filter operators. `is_na` remains valid when a valid missingness
+mask is available, even when `filterable` is false. Clients must accept
+`nrow: null`
+when a view's row count is unknown; the protocol does not define
+`total_rows`. The descriptor's `encoding` field does not change the envelope's
+`encoding: "json"` setting.
+Snapshot mode's
+`params.data` contains the full data payload
 as described under [Column payloads](#column-payloads).
 
 A request envelope has this shape:
@@ -175,7 +204,7 @@ A request envelope has this shape:
   "id": 1,
   "method": "table/rows",
   "params": {
-    "table": "t-1",
+    "view": "v-1",
     "generation": 1,
     "offset": 0,
     "limit": 200
@@ -187,7 +216,7 @@ A request envelope has this shape:
 ```
 
 Only `method` is required at the envelope level. `id` is required for methods
-that return a result. `params` is required by table methods and `cancel`.
+that return a result. `params` is required by view methods and `cancel`.
 Unknown envelope and method-parameter fields are ignored. `encoding`,
 `compression`, and `deadline` are optional. `deadline`, when provided, must be
 a finite JSON number containing an absolute Unix timestamp in seconds. A
@@ -233,8 +262,8 @@ the failure class; `message` is bounded text and must not be used as a stable
 machine-readable discriminator. An error may also include `details`. Every
 accepted request receives exactly one terminal response. Work cancelled,
 expired, or stale before it begins receives an error response with code
-`cancelled`, `expired`, or `stale_generation`; a closed table receives
-`table_not_found`. A synchronous `jdv_rpc()` call is an embedding path and does
+`cancelled`, `expired`, or `stale_generation`; a closed view receives
+`view_not_found`. A synchronous `jdv_rpc()` call is an embedding path and does
 not apply the local transport execution gate. It treats `wake` and `cancel` as
 no-op notifications and returns `NULL` for them; the transport queue matches
 cancellation ids to pending work before execution. `ack` is transport-owned and
@@ -244,22 +273,22 @@ flows only from R to the host; it is not passed to `jdv_rpc()`.
 
 | Method | Direction | Kind | Result |
 | --- | --- | --- | --- |
-| `table/open` | R/host to viewer | Notification | Descriptor and, for Snapshot, all column payloads. Returned by `jdv_register()`. |
-| `table/schema` | Host to R | Request | Current dimensions and schema. |
-| `table/rows` | Host to R | Request | One selected page from a Paged table. |
-| `table/close` | Host to R | Request | Closes one table generation. |
-| `table/closed` | R to host | Notification | Removes an evicted generation from the host cache. |
+| `view/open` | R/host to viewer | Notification | Descriptor and, for Snapshot, all column payloads. Returned by `jdv_register()`. |
+| `view/schema` | Host to R | Request | Current dimensions and schema. |
+| `table/rows` | Host to R | Request | One selected page from a Paged view. |
+| `view/close` | Host to R | Request | Closes one view generation. |
+| `view/closed` | R to host | Notification | Removes a closed, replaced, or evicted generation from the host cache. |
 | `hello` | R to host | Notification | Announces protocol and runtime versions for a new connection. |
 | `wake` | Host to R | Notification | No result; asks the event loop to check its execution gate again. |
 | `cancel` | Host to R | Notification | Names pending work for the local queue to cancel. |
 | `ack` | R to host | Notification | Cumulatively acknowledges complete host-to-R NDJSON frames read on this connection. |
 
-### `table/schema`
+### `view/schema`
 
-Parameters are `table` and `generation`. The result contains `table`,
+Parameters are `view` and `generation`. The result contains `view`,
 `generation`, `nrow`, `ncol`, and `columns`. A generation that is no longer
 current produces `stale_generation` when handled synchronously. A missing or
-closed table produces `table_not_found`.
+closed view produces `view_not_found`.
 
 ### `table/rows`
 
@@ -267,15 +296,15 @@ Parameters are:
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `table` | Yes | Registered table id. |
-| `generation` | Yes | Generation returned by `table/open`. |
+| `view` | Yes | Registered view id. |
+| `generation` | Yes | Generation returned by `view/open`. |
 | `offset` | No | Zero-based offset after filtering and sorting; defaults to 0. |
 | `limit` | No | Requested page size; defaults to 200 and is clamped to the query engine's page row limit. |
 | `sort` | No | Array of `{ "col": zeroBasedPosition, "desc": boolean }` objects; defaults to no sort. |
 | `filter` | No | Filter AST defined by [`query.md`](query.md); defaults to no filter. |
 | `cols` | No | Array of zero-based column positions; omitted or `null` selects all columns. |
 
-The result contains `table`, `generation`, `total`, `total_unfiltered`,
+The result contains `view`, `generation`, `total`, `total_unfiltered`,
 `offset`, `limit`, and `data`. `data` contains `row_index`, optional
 `row_names`, and `columns`. The effective `limit` is clamped to the query
 engine's row limit and may be reduced further to fit the JSON output budget.
@@ -290,21 +319,21 @@ fails with `limit_exceeded`; columns are never silently dropped. Snapshot
 registrations reject row requests with `unsupported` because their payload is
 host-cached.
 
-### `table/close` and `table/closed`
+### `view/close` and `view/closed`
 
-A `table/close` request has `table` and `generation` parameters. The result
-contains the same table id and generation with `closed: true`. The entry is
+A `view/close` request has `view` and `generation` parameters. The result
+contains the same view id and generation with `closed: true`. The entry is
 removed from the active registry immediately. If a request is already using
 its entry, source and holder cleanup is deferred until that request releases
 it.
 
 When the registry evicts its oldest active table to satisfy `jdv.max_tables`,
-it queues a `table/closed` notification with the evicted `table` and
+it queues a `view/closed` notification with the evicted `view` and
 `generation`. `jdv_register()` drains pending notifications into its
 `notifications` return value. An embedding host delivers them in order before
-the associated new `table/open`. Explicit host-initiated `table/close` returns
-a successful close result without a separate `table/closed` notification.
-`jdv_close()` sends `table/closed` for tables it closes. Re-registering an
+the associated new `view/open`. Explicit host-initiated `view/close` returns
+a successful close result without a separate `view/closed` notification.
+`jdv_close()` sends `view/closed` for views it closes. Re-registering an
 active title replaces the same id with a newer generation; after close or
 eviction, a later registration uses a new id and generation 1.
 
@@ -356,8 +385,17 @@ of each reported value and their own configured bound.
 ### `wake` and `cancel`
 
 `wake` has no response and no parameters. In the synchronous API it is a
-no-op returning `NULL`. The Phase 5 host uses it to ask the receiver to
-recheck its execution gate; it does not poll or resubmit a request itself.
+no-op returning `NULL`. On the local transport it asks the R receiver to
+check whether queued requests can run; receiving a wake does not itself
+dispatch a request. A normal package API-entry preflight is receive-only and
+does not dispatch requests. While R is executing a function frame, the receive
+callback can read and queue a request but cannot dispatch it. Hosts must send
+wakes repeatedly at a regular interval while one or more requests are
+awaiting terminal responses. A single wake is not guaranteed to cause a
+pending request to run because it may arrive during either receive-only
+preflight or function-frame execution. A 50 ms interval is a valid host
+implementation choice, but that exact interval is not required of every host.
+Hosts must keep wakes within applicable frame, byte, and send-rate limits.
 
 `cancel` has no response and takes `{ "id": requestId }` in `params`. It
 identifies a request by the same string-or-safe-integer rules as envelope ids.
@@ -392,9 +430,8 @@ Column identity is its zero-based `position`; `name` is display metadata and
 may be empty, duplicated, or otherwise unusual. A schema entry includes
 `position`, `name`, `type`, `class`, `sortable`, and `filterable`. Factor
 schemas also include `levels` and `ordered`; datetime schemas include `tz`.
-Future optional schema fields, including a possible `drillable`, must be
-ignored when unknown. This permits adding nested-table metadata without
-changing v1 clients.
+Unknown optional schema fields must be ignored by clients so future schema
+extensions remain compatible.
 
 A Snapshot column payload is columnar. Channel arrays are omitted when absent:
 
@@ -452,7 +489,7 @@ The following encoding rules apply:
 - `row_index` always reports original one-based R row numbers. Snapshot
   `row_names` and Paged page `row_names` contain values only for explicit row
   names; otherwise the field is `null`. Automatic row names are not
-  materialized as a separate channel. A Paged `table/open` descriptor has
+  materialized as a separate channel. A Paged `view/open` descriptor has
   `row_names: null`; requested explicit names arrive with the page.
 
 The cJSON writer first tries a 15-significant-digit representation for a finite
@@ -510,7 +547,7 @@ Error codes are stable machine-readable values. The `error` object contains
 | `cancelled` | The accepted request was cancelled before processing began. |
 | `expired` | The request deadline elapsed before processing began. |
 | `stale_generation` | The request names a generation that is no longer active. |
-| `table_not_found` | The table id is missing or closed. |
+| `view_not_found` | The view id is missing or closed. |
 | `method_not_found` | No implementation exists for the requested method. |
 
 Per-column channel failures are represented in the page payload and do not
@@ -591,7 +628,15 @@ toward the frame limit. A host that exceeds either callback quota is
 disconnected. Each receive callback acknowledges the cumulative number of
 complete frames read, including malformed or rejected frames; the host
 releases frame and byte credit through that boundary.
-Hosts must keep at most 32 table requests awaiting a response. Before sending
+While at least one request is awaiting a terminal response, hosts must send
+`wake` notifications repeatedly at a regular interval until no live requests
+remain. A single wake is insufficient: a normal package API-entry preflight is
+receive-only and does not dispatch work, and receiving a wake while R is in a
+function frame only allows requests to be queued for later dispatch. A 50 ms
+interval is a valid implementation choice, but the protocol does not require
+every host to use that interval. Wake frames remain subject to the same
+applicable credit and rate limits as other traffic.
+Hosts must keep at most 32 view requests awaiting a response. Before sending
 a page request that makes an unsent page request obsolete, hosts must replace
 the unsent request with the newer page. Hosts must bound the cumulative
 unconfirmed output prefix to the receive callback's frame and byte quotas so
@@ -599,7 +644,7 @@ multiple writes cannot exceed one callback's budget when coalesced. Each
 `cancel` and `wake` frame consumes the same frame and byte credit as a
 request. Before dispatch, the transport removes cancelled and expired queued
 requests and sends their terminal errors, including while another R method is
-running. The R adapter returns `table_not_found` for a closed or missing table
+running. The R adapter returns `view_not_found` for a closed or missing view
 and `stale_generation` for an obsolete generation. For each
 request, dispatch requires native `busy == 0` and a single `sys.nframe()`
 evaluation in `R_BaseEnv` to return zero. If the queue is empty, the gate skips
@@ -642,5 +687,5 @@ the previous native owner is still active.
 
 R evaluation, condition handling, and interrupt state use installed public R
 APIs. The POSIX input handler uses the installed `R_ext/eventloop.h` external
-interface, which is not a stable API; it is the event-loop mechanism adopted
-for Phase S and Phase 5. No GPL R source or `later` implementation is copied.
+interface, which is not a stable API. No GPL R source or `later`
+implementation is copied.
