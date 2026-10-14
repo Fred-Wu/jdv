@@ -232,6 +232,72 @@ test_that("date and datetime values preserve timezone and fractional seconds", {
   )
 })
 
+test_that("date and datetime values use four-digit ISO years", {
+  dates <- as.Date(c(
+    "0000-01-01",
+    "0001-01-01",
+    "0099-12-31",
+    "0100-02-03",
+    "0999-02-03",
+    "2024-02-29",
+    NA
+  ))
+  expect_identical(
+    column_extract(dates)$data$values,
+    c(
+      "0000-01-01",
+      "0001-01-01",
+      "0099-12-31",
+      "0100-02-03",
+      "0999-02-03",
+      "2024-02-29",
+      NA_character_
+    )
+  )
+
+  seconds <- as.numeric(dates) * 86400 + 10 * 3600 + 4 * 60 + 56.125
+  times <- as.POSIXct(seconds, origin = "1970-01-01", tz = "UTC")
+  expect_identical(
+    column_extract(times)$data$values,
+    c(
+      "0000-01-01T10:04:56.125+00:00",
+      "0001-01-01T10:04:56.125+00:00",
+      "0099-12-31T10:04:56.125+00:00",
+      "0100-02-03T10:04:56.125+00:00",
+      "0999-02-03T10:04:56.125+00:00",
+      "2024-02-29T10:04:56.125+00:00",
+      NA_character_
+    )
+  )
+  expect_identical(class(dates), "Date")
+  expect_true(inherits(times, "POSIXct"))
+  expect_identical(as.numeric(unclass(dates)), as.numeric(dates))
+  expect_identical(as.numeric(unclass(times)), as.numeric(times))
+})
+
+test_that("early-year fractional datetime wire values round-trip exactly", {
+  date <- as.Date("0001-01-01")
+  value <- as.POSIXct(
+    as.numeric(date) * 86400 + 10 * 3600 + 4 * 60 + 56.123456,
+    origin = "1970-01-01",
+    tz = "UTC"
+  )
+  wire <- column_extract(value)$data$values
+  expect_match(wire, "^0001-01-01T10:04:56\\.[0-9]+\\+00:00$")
+  expect_identical(query_iso_time(wire, "UTC"), as.numeric(value))
+
+  x <- data.frame(time = value)
+  holder <- paged_table(x)
+  wire_snapshot <- query_wire_snapshot(snapshot_table(x))
+  filter <- list(
+    op = "eq",
+    col = 0L,
+    value = "0001-01-01T10:04:56.123456+00:00"
+  )
+  expect_identical(query_indices(holder, filter = filter), 1L)
+  expect_identical(snapshot_indices(wire_snapshot, filter = filter), 1L)
+})
+
 test_that(
   "date subclasses customize display without changing canonical values",
   {

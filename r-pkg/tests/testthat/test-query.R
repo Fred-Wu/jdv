@@ -486,6 +486,62 @@ test_that("invalid integer64 and ISO query values are client errors", {
   }
 })
 
+test_that("four-digit early-year date filters agree across query modes", {
+  dates <- as.Date(c(
+    "0000-01-01",
+    "0001-01-01",
+    "0099-12-31",
+    "0100-02-03",
+    "0999-02-03",
+    "2024-02-29",
+    NA
+  ))
+  seconds <- as.numeric(dates) * 86400 + 10 * 3600 + 4 * 60 + 56.125
+  x <- data.frame(id = seq_along(dates))
+  x$date <- dates
+  x$time <- as.POSIXct(seconds, origin = "1970-01-01", tz = "UTC")
+  holder <- paged_table(x)
+  wire_snapshot <- query_wire_snapshot(snapshot_table(x))
+
+  date_operands <- c(
+    "0000-01-01",
+    "0001-01-01",
+    "0099-12-31",
+    "0100-02-03",
+    "0999-02-03",
+    "2024-02-29"
+  )
+  time_operands <- sub(
+    "10:04:56\\.125\\+00:00$",
+    "12:34:56.125+02:30",
+    c(
+      "0000-01-01T10:04:56.125+00:00",
+      "0001-01-01T10:04:56.125+00:00",
+      "0099-12-31T10:04:56.125+00:00",
+      "0100-02-03T10:04:56.125+00:00",
+      "0999-02-03T10:04:56.125+00:00",
+      "2024-02-29T10:04:56.125+00:00"
+    )
+  )
+  for (i in seq_along(date_operands)) {
+    date_filter <- list(op = "eq", col = 1L, value = date_operands[[i]])
+    time_filter <- list(op = "eq", col = 2L, value = time_operands[[i]])
+    expect_identical(query_indices(holder, filter = date_filter), i)
+    expect_identical(snapshot_indices(wire_snapshot, filter = date_filter), i)
+    expect_identical(query_indices(holder, filter = time_filter), i)
+    expect_identical(snapshot_indices(wire_snapshot, filter = time_filter), i)
+  }
+
+  expect_no_error(query_date_value("0000-02-29", list(type = "date"), 4096L))
+  expect_no_error(query_date_value("2000-02-29", list(type = "date"), 4096L))
+  for (value in c("0001-02-29", "0100-02-29", "1900-02-29", "2023-02-29")) {
+    expect_query_code(
+      query_indices(holder, filter = list(op = "eq", col = 1L, value = value)),
+      "invalid_request"
+    )
+  }
+})
+
 test_that("bad full methods expose channel details and can recover", {
   broken <- TRUE
   with_column_method(

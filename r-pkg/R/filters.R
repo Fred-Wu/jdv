@@ -73,35 +73,93 @@ query_numeric_value <- function(value) {
 
 query_iso_time <- function(text, tz) {
   explicit <- grepl("(Z|[+-][0-9]{2}:[0-9]{2})$", text)
-  normalized <- sub("Z$", "+0000", text)
-  normalized <- sub("([+-][0-9]{2}):([0-9]{2})$", "\\1\\2", normalized)
   result <- rep(NA_real_, length(text))
   for (has_offset in c(FALSE, TRUE)) {
     at <- which(!is.na(text) & explicit == has_offset)
     if (length(at)) {
-      format <- if (has_offset) "%Y-%m-%dT%H:%M:%OS%z" else "%Y-%m-%dT%H:%M:%OS"
-      result[at] <- as.numeric(as.POSIXct(
-        normalized[at],
-        format = format,
-        tz = tz
+      if (!has_offset) {
+        result[at] <- as.numeric(as.POSIXct(
+          text[at],
+          format = "%Y-%m-%dT%H:%M:%OS",
+          tz = tz
+        ))
+        next
+      }
+      date <- as.Date(substr(text[at], 1L, 10L), format = "%Y-%m-%d")
+      hour <- as.integer(substr(text[at], 12L, 13L))
+      minute <- as.integer(substr(text[at], 15L, 16L))
+      second <- as.integer(substr(text[at], 18L, 19L))
+      fraction_match <- regexpr("\\.[0-9]+", text[at])
+      has_fraction <- fraction_match > 0L
+      fraction <- numeric(length(at))
+      fraction[has_fraction] <- as.numeric(paste0(
+        "0",
+        regmatches(
+          text[at][has_fraction],
+          regexpr("\\.[0-9]+", text[at][has_fraction])
+        )
       ))
+      suffix <- rep("+00:00", length(at))
+      has_numeric_offset <- !endsWith(text[at], "Z")
+      suffix[has_numeric_offset] <- regmatches(
+        text[at][has_numeric_offset],
+        regexpr("[+-][0-9]{2}:[0-9]{2}$", text[at][has_numeric_offset])
+      )
+      sign <- ifelse(substr(suffix, 1L, 1L) == "-", -1, 1)
+      offset <- sign *
+        (as.integer(substr(suffix, 2L, 3L)) * 3600 +
+          as.integer(substr(suffix, 5L, 6L)) * 60)
+      result[at] <- as.numeric(date) * 86400 +
+        hour * 3600 +
+        minute * 60 +
+        second +
+        fraction -
+        offset
     }
   }
   result
 }
 
+query_valid_iso_date <- function(text) {
+  if (!grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", text)) {
+    return(FALSE)
+  }
+  year <- as.integer(substr(text, 1L, 4L))
+  month <- as.integer(substr(text, 6L, 7L))
+  day <- as.integer(substr(text, 9L, 10L))
+  if (month < 1L || month > 12L || day < 1L) {
+    return(FALSE)
+  }
+  leap <- year %% 4L == 0L && (year %% 100L != 0L || year %% 400L == 0L)
+  month_days <- c(
+    31L,
+    if (leap) 29L else 28L,
+    31L,
+    30L,
+    31L,
+    30L,
+    31L,
+    31L,
+    30L,
+    31L,
+    30L,
+    31L
+  )
+  day <= month_days[[month]]
+}
+
 query_date_value <- function(value, schema, limit) {
   text <- query_string(value, limit)
-  valid_date <- grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", substr(text, 1L, 10L))
-  date <- if (valid_date) {
+  date_text <- substr(text, 1L, 10L)
+  date <- if (query_valid_iso_date(date_text)) {
     query_try(
-      function() suppressWarnings(as.Date(substr(text, 1L, 10L))),
+      function() suppressWarnings(as.Date(date_text, format = "%Y-%m-%d")),
       "invalid_request"
     )
   } else {
     NA
   }
-  if (is.na(date) || format(date, "%Y-%m-%d") != substr(text, 1L, 10L)) {
+  if (is.na(date)) {
     query_error("invalid_request", "Invalid ISO date.")
   }
   if (schema$type == "date") {

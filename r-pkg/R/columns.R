@@ -51,6 +51,16 @@ column_tz <- function(x) {
   if (is.null(tz) || !length(tz) || is.na(tz[[1L]])) "" else tz[[1L]]
 }
 
+pad_iso_year <- function(value) {
+  matches <- regmatches(value, regexec("^([0-9]{1,3})-", value))
+  at <- which(lengths(matches) == 2L)
+  if (length(at)) {
+    years <- vapply(matches[at], `[[`, character(1L), 2L)
+    value[at] <- paste0(strrep("0", 4L - nchar(years)), value[at])
+  }
+  value
+}
+
 column_size <- function(x) {
   if (is.matrix(x) || is.data.frame(x)) nrow(x) else length(x)
 }
@@ -154,7 +164,7 @@ dense_key <- function(x) {
 #' @export
 col_values.Date <- function(x, ...) {
   canonical <- structure(unclass(x), class = "Date")
-  format.Date(canonical, format = "%Y-%m-%d")
+  pad_iso_year(format.Date(canonical, format = "%Y-%m-%d"))
 }
 #' @export
 col_sort_key.Date <- function(x, collation = "C", ...) as.numeric(unclass(x))
@@ -163,7 +173,11 @@ col_sort_key.Date <- function(x, collation = "C", ...) as.numeric(unclass(x))
 col_values.POSIXct <- function(x, ...) {
   seconds <- as.numeric(unclass(x))
   whole <- as.POSIXct(floor(seconds), origin = "1970-01-01", tz = column_tz(x))
-  result <- format(whole, format = "%Y-%m-%dT%H:%M:%S", tz = column_tz(x))
+  result <- pad_iso_year(format(
+    whole,
+    format = "%Y-%m-%dT%H:%M:%S",
+    tz = column_tz(x)
+  ))
   fraction <- format(
     seconds - floor(seconds),
     scientific = FALSE,

@@ -720,6 +720,84 @@ Deno.test({
       assertEquals(pagedColumn.schema, snapshotColumn.schema);
       assertEquals(pagedColumn.data, snapshotColumn.data);
 
+      // Early four-digit years, offset datetime filters, fractional seconds,
+      // and missing values must agree across the browser and R query paths.
+      const calendarSource = [
+        'jdv_e2e_calendar_date <- as.Date(c("0000-01-01", "0001-01-01", "0099-12-31", "0100-02-03", "0999-02-03", "2024-02-29", NA), format = "%Y-%m-%d")',
+        'jdv_e2e_calendar_time <- as.POSIXct(as.numeric(jdv_e2e_calendar_date) * 86400 + 10 * 3600 + 4 * 60 + 56.125, origin = "1970-01-01", tz = "UTC")',
+        'jdv_e2e_calendar_time_decimal <- as.POSIXct(as.numeric(jdv_e2e_calendar_date) * 86400 + 10 * 3600 + 4 * 60 + 56.123456, origin = "1970-01-01", tz = "UTC")',
+        "jdv_e2e_calendar <- data.frame(date = jdv_e2e_calendar_date, time = jdv_e2e_calendar_time, time_decimal = jdv_e2e_calendar_time_decimal)",
+      ].join("; ");
+      const calendarSnapshotTitle = "e2e-calendar-snapshot";
+      await arf.eval(
+        `${calendarSource}; jdv_view(jdv_e2e_calendar, title = ${
+          rQuote(calendarSnapshotTitle)
+        }, mode = "snapshot")`,
+      );
+      const calendarSnapshot = await openedTable(
+        browser,
+        calendarSnapshotTitle,
+      );
+      const calendarSnapshotRows = querySnapshot({
+        params: calendarSnapshot.params,
+      });
+      const calendarPagedTitle = "e2e-calendar-paged";
+      await arf.eval(
+        `${calendarSource}; jdv_view(jdv_e2e_calendar, title = ${
+          rQuote(calendarPagedTitle)
+        }, mode = "paged")`,
+      );
+      const calendarPaged = await openedTable(browser, calendarPagedTitle);
+      const calendarQueries = [
+        {
+          filter: { op: "lt", col: 0, value: "1000-01-01" },
+          expected: [1, 2, 3, 4, 5],
+        },
+        {
+          filter: {
+            op: "eq",
+            col: 1,
+            value: "0001-01-01T12:34:56.125+02:30",
+          },
+          expected: [2],
+        },
+        {
+          filter: {
+            op: "eq",
+            col: 2,
+            value: "0001-01-01T12:34:56.123456+02:30",
+          },
+          expected: [2],
+        },
+        { filter: { op: "is_na", col: 0 }, expected: [7] },
+      ];
+      for (let index = 0; index < calendarQueries.length; index++) {
+        const query = calendarQueries[index];
+        const local = querySnapshot({ params: calendarSnapshot.params }, {
+          filter: query.filter,
+        });
+        assertEquals(local.data.row_index, query.expected);
+        const remote = await request(
+          browser,
+          calendarPaged,
+          `e2e-calendar-filter-${index}`,
+          "table/rows",
+          { offset: 0, limit: 20, filter: query.filter, cols: [0, 1, 2] },
+        );
+        assertEquals(responseRowIndex(remote), local.data.row_index);
+      }
+      const calendarRemoteAll = await request(
+        browser,
+        calendarPaged,
+        "e2e-calendar-all-rows",
+        "table/rows",
+        { offset: 0, limit: 20, cols: [0, 1, 2] },
+      );
+      assertEquals(
+        responseRowIndex(calendarRemoteAll),
+        calendarSnapshotRows.data.row_index,
+      );
+
       const sharedRegistry = await arf.eval(
         'jdv_e2e_shared_id <- jdv_register(data.frame(value = 99L), title = "e2e-shared-registry", mode = "paged")$id; jdv_e2e_shared_id',
       );
