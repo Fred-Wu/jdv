@@ -133,7 +133,7 @@
     .jdv_transport_remove_task_callback()
     return(FALSE)
   }
-  try(.Call(C_jdv_transport_housekeeping), silent = TRUE)
+  try(.Call(C_jdv_transport_cleanup), silent = TRUE)
   if (is.null(.jdv_state$transport)) {
     .jdv_transport_remove_task_callback()
     return(FALSE)

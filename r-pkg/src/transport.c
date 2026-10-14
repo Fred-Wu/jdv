@@ -1572,6 +1572,21 @@ static void release_preflight_state(void *data)
     call->owns_housekeeping = 0;
 }
 
+static int housekeeping_is_safe(void)
+{
+    return jdv_module_depth() == 1 && !dispatch_depth && !gate_depth &&
+        !drain_depth && !housekeeping_depth && !construction_depth &&
+        !reclamation_depth;
+}
+
+static int cleanup_retiring_state(void)
+{
+    jdv_transport_state *state = retiring_state;
+    if (state && state->pending_disconnect)
+        return run_disconnect_callback(state);
+    return 1;
+}
+
 void jdv_transport_on_readable(void)
 {
     jdv_transport_state *state = active_state;
@@ -1899,9 +1914,7 @@ SEXP C_jdv_transport_status(void)
 SEXP C_jdv_transport_housekeeping(void)
 {
     jdv_transport_state *state;
-    int complete = 1;
-    if (jdv_module_depth() != 1 || dispatch_depth || gate_depth || drain_depth ||
-        housekeeping_depth || construction_depth || reclamation_depth)
+    if (!housekeeping_is_safe())
         return Rf_ScalarLogical(1);
 
     state = active_state;
@@ -1915,11 +1928,13 @@ SEXP C_jdv_transport_housekeeping(void)
     }
 
     /* service_state releases its hold before EOF cleanup can run. */
-    state = retiring_state;
-    if (state && state->pending_disconnect) {
-        complete = run_disconnect_callback(state);
-    }
-    return Rf_ScalarLogical(complete);
+    return Rf_ScalarLogical(cleanup_retiring_state());
+}
+
+SEXP C_jdv_transport_cleanup(void)
+{
+    if (!housekeeping_is_safe()) return Rf_ScalarLogical(1);
+    return Rf_ScalarLogical(cleanup_retiring_state());
 }
 
 SEXP C_jdv_transport_can_unload(void)

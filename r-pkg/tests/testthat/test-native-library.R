@@ -20,7 +20,8 @@ test_that("the native library registers only its private routines", {
           "close",
           "status",
           "can_unload",
-          "housekeeping"
+          "housekeeping",
+          "cleanup"
         )
       )
     )

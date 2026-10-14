@@ -110,6 +110,7 @@ SEXP C_jdv_transport_close(void);
 SEXP C_jdv_transport_status(void);
 SEXP C_jdv_transport_can_unload(void);
 SEXP C_jdv_transport_housekeeping(void);
+SEXP C_jdv_transport_cleanup(void);
 
 JDV_WRAP_1(jdv_entry_int64_is_na, C_jdv_int64_is_na)
 JDV_WRAP_1(jdv_entry_int64_values, C_jdv_int64_values)
@@ -127,6 +128,7 @@ JDV_WRAP_0(jdv_entry_transport_status, C_jdv_transport_status)
 JDV_WRAP_0(jdv_entry_transport_can_unload, C_jdv_transport_can_unload)
 JDV_WRAP_0(jdv_entry_transport_housekeeping,
            C_jdv_transport_housekeeping)
+JDV_WRAP_0(jdv_entry_transport_cleanup, C_jdv_transport_cleanup)
 
 static const R_CallMethodDef CallEntries[] = {
     {"C_jdv_int64_is_na", (DL_FUNC)&jdv_entry_int64_is_na, 1},
@@ -144,6 +146,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_jdv_transport_status", (DL_FUNC)&jdv_entry_transport_status, 0},
     {"C_jdv_transport_can_unload", (DL_FUNC)&jdv_entry_transport_can_unload, 0},
     {"C_jdv_transport_housekeeping", (DL_FUNC)&jdv_entry_transport_housekeeping, 0},
+    {"C_jdv_transport_cleanup", (DL_FUNC)&jdv_entry_transport_cleanup, 0},
     {NULL, NULL, 0}
 };
 
