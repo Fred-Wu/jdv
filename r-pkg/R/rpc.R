@@ -6,6 +6,7 @@
   state$titles <- new.env(hash = TRUE, parent = emptyenv())
   state$next_id <- 0
   state$sequence <- 0
+  state$eviction_pins <- character()
   state$outbox <- list()
   state$rpc_depth <- 0L
   state$transport <- NULL
@@ -149,9 +150,9 @@ jdv_json_object <- function(x = list()) {
   )
 }
 
-.jdv_json_parse <- function(x) {
+.jdv_json_parse <- function(x, limit = .jdv_max_request_bytes()) {
   tryCatch(
-    .Call(C_jdv_json_parse, enc2utf8(x), .jdv_max_request_bytes()),
+    .Call(C_jdv_json_parse, enc2utf8(x), limit),
     error = function(e) {
       message <- conditionMessage(e)
       code <- if (identical(message, "jdv_json_input_limit")) {
@@ -389,13 +390,76 @@ jdv_json_object <- function(x = list()) {
     }
     entry$holder <- NULL
     entry$source <- NULL
+    entry$tree_value <- NULL
     entry$fingerprint <- NULL
     entry$close_pending <- FALSE
   }
   invisible(NULL)
 }
 
-.jdv_close_internal <- function(id = NULL, notify = FALSE, expected = NULL) {
+.jdv_close_children <- function(entry, notify = FALSE) {
+  child_ids <- entry$children %||% character()
+  entry$children <- character()
+  for (child_id in child_ids) {
+    if (!exists(child_id, envir = .jdv_state$entries, inherits = FALSE)) {
+      next
+    }
+    child <- get(child_id, envir = .jdv_state$entries, inherits = FALSE)
+    if (
+      !identical(child$parent_entry, entry) ||
+        !identical(child$parent_generation, entry$generation)
+    ) {
+      next
+    }
+    tryCatch(
+      .jdv_close_internal(child_id, notify = notify, reason = "parent_closed"),
+      error = function(error) {
+        if (exists(child_id, envir = .jdv_state$entries, inherits = FALSE)) {
+          rm(list = child_id, envir = .jdv_state$entries)
+        }
+      }
+    )
+  }
+  invisible(NULL)
+}
+
+.jdv_close_notification <- function(entry, reason = NULL) {
+  event <- list(
+    method = "view/closed",
+    params = list(view = entry$id, generation = entry$generation)
+  )
+  if (!is.null(reason)) {
+    event$params$reason <- reason
+  }
+  encoded <- tryCatch(
+    .jdv_json_encode(event, work_limit = 64 * 1024),
+    error = function(e) NULL
+  )
+  if (!is.null(encoded)) {
+    return(encoded)
+  }
+  # View IDs are generated as v-N and the reason is a fixed protocol token.
+  reason_field <- if (is.null(reason)) {
+    ""
+  } else {
+    paste0(',"reason":"', reason, '"')
+  }
+  paste0(
+    '{"method":"view/closed","params":{"view":"',
+    entry$id,
+    '","generation":',
+    format(entry$generation, scientific = FALSE),
+    reason_field,
+    "}}"
+  )
+}
+
+.jdv_close_internal <- function(
+  id = NULL,
+  notify = FALSE,
+  expected = NULL,
+  reason = NULL
+) {
   ids <- if (is.null(id)) ls(.jdv_state$entries, all.names = TRUE) else id
   for (key in ids) {
     if (exists(key, envir = .jdv_state$entries, inherits = FALSE)) {
@@ -403,16 +467,24 @@ jdv_json_object <- function(x = list()) {
       if (!is.null(expected) && !identical(entry, expected)) {
         next
       }
+      .jdv_close_children(entry, notify = notify)
       rm(list = key, envir = .jdv_state$entries)
+      parent <- entry$parent_entry
+      if (
+        !is.null(parent) &&
+          identical(parent$generation, entry$parent_generation) &&
+          .jdv_tree_entry_is_current(parent)
+      ) {
+        parent$children <- setdiff(parent$children, entry$id)
+      }
       if (notify) {
-        event <- list(
-          method = "view/closed",
-          params = list(view = entry$id, generation = entry$generation)
+        .jdv_state$outbox[[
+          length(.jdv_state$outbox) + 1L
+        ]] <- .jdv_close_notification(entry, reason)
+        outbox_limit <- tryCatch(
+          max(64L, 4L * .jdv_option_limit("jdv.max_tables", 64)),
+          error = function(error) 256L
         )
-        .jdv_state$outbox[[length(.jdv_state$outbox) + 1L]] <- .jdv_json_encode(
-          event
-        )
-        outbox_limit <- max(64L, 4L * .jdv_option_limit("jdv.max_tables", 64))
         if (length(.jdv_state$outbox) > outbox_limit) {
           .jdv_state$outbox <- utils::tail(.jdv_state$outbox, outbox_limit)
         }
@@ -438,15 +510,16 @@ jdv_json_object <- function(x = list()) {
   invisible(NULL)
 }
 
-#' Register a table for a transport-independent viewer
+#' Register an object for a transport-independent viewer
 #'
-#' @param x A data frame or matrix.
+#' @param x A data frame or matrix for grid views, or an R object whose children
+#'   and attributes can be explored in a tree view.
 #' @param title Optional title. Reusing a non-NULL title replaces its table
 #'   generation; NULL titles always create independent tables.
-#' @param mode One of `"auto"`, `"snapshot"`, or `"paged"`.
-#' @param collation String ordering policy, `"C"` or `"locale"`. When omitted,
-#'   `getOption("jdv.collation", "C")` supplies the default; an explicit
-#'   argument takes precedence.
+#' @param mode Grid view mode: `"auto"`, `"snapshot"`, or `"paged"`.
+#' @param collation Grid string ordering policy, `"C"` or `"locale"`. When
+#'   omitted, `getOption("jdv.collation", "C")` supplies the default; an
+#'   explicit argument takes precedence.
 #' @details
 #' Re-registering a title that is still active reuses its view ID and increments
 #' its generation. Closing that view removes the title association, so a later
@@ -487,13 +560,16 @@ jdv_register <- function(
   collation = c("C", "locale")
 ) {
   .jdv_assert_active()
-  source <- jdv_source(x)
-  x <- source$data
   mode <- match.arg(mode)
   if (missing(collation)) {
     collation <- getOption("jdv.collation", "C")
   }
   collation <- match.arg(collation, c("C", "locale"))
+  source <- jdv_source(x)
+  x <- source$data
+  if (identical(source$kind, "tree")) {
+    return(.jdv_tree_register(x, title = title))
+  }
   if (!is.null(title)) {
     title <- query_string(title, 4096L)
   }
@@ -652,15 +728,24 @@ jdv_register <- function(
   active <- length(ls(.jdv_state$entries, all.names = TRUE))
   while (active > max_tables || (is.null(old) && active >= max_tables)) {
     candidates <- lapply(
-      setdiff(ls(.jdv_state$entries, all.names = TRUE), id),
+      setdiff(
+        ls(.jdv_state$entries, all.names = TRUE),
+        c(id, .jdv_state$eviction_pins)
+      ),
       function(key) get(key, envir = .jdv_state$entries, inherits = FALSE)
     )
+    if (!length(candidates)) {
+      query_error(
+        "limit_exceeded",
+        "No unpinned view can be evicted for this child."
+      )
+    }
     oldest <- candidates[[
       which.min(vapply(candidates, `[[`, numeric(1L), "sequence"))
     ]]
     .jdv_close_internal(oldest$id, notify = TRUE)
     .jdv_assert_active()
-    active <- active - 1L
+    active <- length(ls(.jdv_state$entries, all.names = TRUE))
   }
   .jdv_assert_active()
   entry <- .jdv_install(content, title, id, generation)
@@ -688,6 +773,7 @@ jdv_register <- function(
   }
   .jdv_assert_active()
   if (!is.null(old)) {
+    .jdv_close_children(old, notify = TRUE)
     .jdv_close_entry(old)
   }
   notifications <- if (length(.jdv_state$outbox)) {
@@ -834,6 +920,86 @@ jdv_register <- function(
     )
   }
   params <- request$params
+  if (method %in% c("object/children", "object/open")) {
+    .jdv_fields(
+      params,
+      c("view", "generation", "path", "offset", "limit"),
+      c("view", "generation", "path")
+    )
+    entry <- .jdv_rpc_entry(params$view, params$generation)
+    on.exit(.jdv_release_entry(entry), add = TRUE)
+    if (!identical(entry$mode, "tree")) {
+      query_error("unsupported", "Object navigation requires a tree view.")
+    }
+    path <- .jdv_tree_path(params$path)
+    ancestry <- .jdv_tree_ancestry(entry)
+    resolved <- .jdv_tree_resolve(entry$tree_value, path, ancestry)
+    if (!identical(resolved$status, "value")) {
+      query_error(
+        "unavailable",
+        paste0("Tree path is no longer available: ", resolved$status, ".")
+      )
+    }
+    if (method == "object/children") {
+      if (length(path) >= .jdv_tree_path_limit) {
+        query_error("limit_exceeded", "Tree path reached the maximum depth.")
+      }
+      offset <- if (is.null(params$offset)) {
+        0
+      } else {
+        query_integer(params$offset, "offset")
+      }
+      limit <- if (is.null(params$limit)) {
+        200
+      } else {
+        query_integer(params$limit, "limit", 1)
+      }
+      if (limit > .jdv_tree_page_limit) {
+        query_error("invalid_request", "limit exceeds the tree page cap.")
+      }
+      listing <- .jdv_tree_list_children(
+        resolved$value,
+        path,
+        offset,
+        limit,
+        c(ancestry, resolved$seen)
+      )
+      return(list(
+        view = entry$id,
+        generation = entry$generation,
+        path = jdv_json_array(lapply(path, jdv_json_object)),
+        offset = as.double(offset),
+        children = listing$children,
+        total_children = as.double(listing$total_children)
+      ))
+    }
+    if (!length(path)) {
+      query_error("invalid_request", "object/open requires a non-empty path.")
+    }
+    parent <- entry
+    if (!.jdv_tree_entry_is_current(parent)) {
+      query_error("view_not_found", "Parent view is no longer active.")
+    }
+    registered <- .jdv_tree_register_child(resolved$value, parent)
+    committed <- FALSE
+    on.exit(
+      if (!committed) {
+        .jdv_close_internal(registered$id, notify = FALSE)
+      },
+      add = TRUE
+    )
+    descriptor <- registered$descriptor
+    if (is.null(descriptor)) {
+      descriptor <- .jdv_json_parse(
+        registered$open,
+        limit = max(1024, .jdv_max_message_bytes())
+      )
+    }
+    result <- descriptor$params
+    attr(result, "jdv_child_id") <- registered$id
+    committed <- TRUE
+    return(result)
+  }
   if (method %in% c("table/rows", "view/schema", "view/close")) {
     .jdv_fields(
       params,
@@ -856,6 +1022,7 @@ jdv_register <- function(
           "The table generation is no longer current."
         )
       }
+      .jdv_close_children(entry, notify = TRUE)
       .jdv_close_internal(entry$id, expected = entry)
       return(list(
         view = entry$id,
@@ -1040,8 +1207,10 @@ jdv_rpc <- function(request = NULL) {
     return(NULL)
   }
   work_budget <- if (is.list(result)) attr(result, "jdv_work_budget") else NULL
+  child_id <- if (is.list(result)) attr(result, "jdv_child_id") else NULL
   if (is.list(result)) {
     attr(result, "jdv_work_budget") <- NULL
+    attr(result, "jdv_child_id") <- NULL
   }
   response <- if (inherits(result, "error")) {
     if (!inherits(result, "jdv_query_error")) {
@@ -1146,5 +1315,8 @@ jdv_rpc <- function(request = NULL) {
       class = c("jdv_rpc_error", "error", "condition")
     )
   )
+  if (!is.null(child_id)) {
+    .jdv_close_internal(child_id, notify = FALSE)
+  }
   .jdv_json_encode_error(fallback)
 }

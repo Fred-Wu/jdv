@@ -23,5 +23,5 @@ jdv_source.matrix <- function(x, ...) .jdv_grid_source(x)
 
 #' @exportS3Method jdv_source default
 jdv_source.default <- function(x, ...) {
-  query_error("unsupported", "Expected a data frame or matrix source.")
+  structure(list(kind = "tree", data = x), class = "jdv_tree_source")
 }

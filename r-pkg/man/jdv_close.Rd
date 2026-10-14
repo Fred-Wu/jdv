@@ -2,19 +2,19 @@
 % Please edit documentation in R/transport.R
 \name{jdv_close}
 \alias{jdv_close}
-\title{Close one or all tables in the local jdv viewer}
+\title{Close one or all views in the local jdv viewer}
 \usage{
 jdv_close(id = NULL)
 }
 \arguments{
 \item{id}{Optional view id returned by \code{jdv_view()}. When omitted, all active
-tables are closed.}
+views are closed.}
 }
 \value{
 The ids that were closed, invisibly.
 }
 \description{
-Close one or all tables in the local jdv viewer
+Close one or all views in the local jdv viewer
 }
 \details{
 Closing the last table stops the transport event source and closes the local

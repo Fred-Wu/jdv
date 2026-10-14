@@ -2,7 +2,7 @@
 % Please edit documentation in R/rpc.R
 \name{jdv_register}
 \alias{jdv_register}
-\title{Register a table for a transport-independent viewer}
+\title{Register an object for a transport-independent viewer}
 \usage{
 jdv_register(
   x,
@@ -12,16 +12,17 @@ jdv_register(
 )
 }
 \arguments{
-\item{x}{A data frame or matrix.}
+\item{x}{A data frame or matrix for grid views, or an R object whose children
+and attributes can be explored in a tree view.}
 
 \item{title}{Optional title. Reusing a non-NULL title replaces its table
 generation; NULL titles always create independent tables.}
 
-\item{mode}{One of \code{"auto"}, \code{"snapshot"}, or \code{"paged"}.}
+\item{mode}{Grid view mode: \code{"auto"}, \code{"snapshot"}, or \code{"paged"}.}
 
-\item{collation}{String ordering policy, \code{"C"} or \code{"locale"}. When omitted,
-\code{getOption("jdv.collation", "C")} supplies the default; an explicit
-argument takes precedence.}
+\item{collation}{Grid string ordering policy, \code{"C"} or \code{"locale"}. When
+omitted, \code{getOption("jdv.collation", "C")} supplies the default; an
+explicit argument takes precedence.}
 }
 \value{
 A list containing a view \code{id}, its \code{open} JSON message, and any pending
@@ -29,7 +30,7 @@ transport notifications as JSON strings in \code{notifications} (for example, a
 \code{view/closed} message emitted when the registry evicts an older view).
 }
 \description{
-Register a table for a transport-independent viewer
+Register an object for a transport-independent viewer
 }
 \details{
 Re-registering a title that is still active reuses its view ID and increments

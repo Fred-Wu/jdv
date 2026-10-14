@@ -111,6 +111,12 @@ SEXP C_jdv_transport_status(void);
 SEXP C_jdv_transport_can_unload(void);
 SEXP C_jdv_transport_housekeeping(void);
 SEXP C_jdv_transport_cleanup(void);
+SEXP C_jdv_tree_info(SEXP x);
+SEXP C_jdv_tree_child(SEXP x, SEXP kind, SEXP index, SEXP name);
+SEXP C_jdv_tree_same(SEXP x, SEXP y);
+SEXP C_jdv_tree_scalar_text(SEXP x);
+SEXP C_jdv_tree_names(SEXP x);
+SEXP C_jdv_tree_vector_names(SEXP x, SEXP start, SEXP count);
 void R_unload_jdv(DllInfo *dll);
 
 JDV_WRAP_1(jdv_entry_int64_is_na, C_jdv_int64_is_na)
@@ -130,6 +136,12 @@ JDV_WRAP_0(jdv_entry_transport_can_unload, C_jdv_transport_can_unload)
 JDV_WRAP_0(jdv_entry_transport_housekeeping,
            C_jdv_transport_housekeeping)
 JDV_WRAP_0(jdv_entry_transport_cleanup, C_jdv_transport_cleanup)
+JDV_WRAP_1(jdv_entry_tree_info, C_jdv_tree_info)
+JDV_WRAP_4(jdv_entry_tree_child, C_jdv_tree_child)
+JDV_WRAP_2(jdv_entry_tree_same, C_jdv_tree_same)
+JDV_WRAP_1(jdv_entry_tree_scalar_text, C_jdv_tree_scalar_text)
+JDV_WRAP_1(jdv_entry_tree_names, C_jdv_tree_names)
+JDV_WRAP_3(jdv_entry_tree_vector_names, C_jdv_tree_vector_names)
 
 static const R_CallMethodDef CallEntries[] = {
     {"C_jdv_int64_is_na", (DL_FUNC)&jdv_entry_int64_is_na, 1},
@@ -148,6 +160,12 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_jdv_transport_can_unload", (DL_FUNC)&jdv_entry_transport_can_unload, 0},
     {"C_jdv_transport_housekeeping", (DL_FUNC)&jdv_entry_transport_housekeeping, 0},
     {"C_jdv_transport_cleanup", (DL_FUNC)&jdv_entry_transport_cleanup, 0},
+    {"C_jdv_tree_info", (DL_FUNC)&jdv_entry_tree_info, 1},
+    {"C_jdv_tree_child", (DL_FUNC)&jdv_entry_tree_child, 4},
+    {"C_jdv_tree_same", (DL_FUNC)&jdv_entry_tree_same, 2},
+    {"C_jdv_tree_scalar_text", (DL_FUNC)&jdv_entry_tree_scalar_text, 1},
+    {"C_jdv_tree_names", (DL_FUNC)&jdv_entry_tree_names, 1},
+    {"C_jdv_tree_vector_names", (DL_FUNC)&jdv_entry_tree_vector_names, 3},
     {NULL, NULL, 0}
 };
 

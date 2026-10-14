@@ -33,7 +33,7 @@ test_that("internal grid source dispatch preserves matrix recognition", {
   expect_false(inherits(matrix, "matrix"))
   expect_identical(source(matrix)$kind, "grid")
   expect_identical(source(matrix)$data, matrix)
-  expect_query_code(source(list(value = 1:2)), "unsupported")
+  expect_identical(source(list(value = 1:2))$kind, "tree")
 
   registered <- jdv_register(matrix, mode = "snapshot")
   on.exit(.jdv_close_internal(registered$id), add = TRUE)

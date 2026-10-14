@@ -360,13 +360,14 @@
   invisible(NULL)
 }
 
-#' Open a table in the local jdv viewer
+#' Open an object in the local jdv viewer
 #'
-#' @param x A data frame or matrix.
+#' @param x A data frame or matrix for grid views, or an R object whose children
+#'   and attributes can be explored in a tree view.
 #' @param title Display title. When omitted, the expression passed as `x` is
 #'   used; explicitly passing `NULL` creates an independent table slot.
-#' @param mode One of `"auto"`, `"snapshot"`, or `"paged"`.
-#' @param collation String ordering policy, `"C"` or `"locale"`.
+#' @param mode Grid view mode: `"auto"`, `"snapshot"`, or `"paged"`.
+#' @param collation Grid string ordering policy, `"C"` or `"locale"`.
 #' @return The view id, invisibly.
 #' @details
 #' The viewer connection is opened on the first call. An address can be set in
@@ -474,10 +475,10 @@ jdv_view <- function(
   invisible(registered$id)
 }
 
-#' Close one or all tables in the local jdv viewer
+#' Close one or all views in the local jdv viewer
 #'
 #' @param id Optional view id returned by `jdv_view()`. When omitted, all active
-#'   tables are closed.
+#'   views are closed.
 #' @return The ids that were closed, invisibly.
 #' @details
 #' Closing the last table stops the transport event source and closes the local

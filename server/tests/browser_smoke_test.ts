@@ -101,6 +101,26 @@ Deno.test({
         capabilities: gridCapabilities(),
       },
     });
+    await writeFrame(rConnection, {
+      method: "view/open",
+      params: {
+        view: "tree-root",
+        generation: 1,
+        kind: "tree",
+        access: "random",
+        encoding: "r-json",
+        title: "Object smoke",
+        class: ["list"],
+        capabilities: {
+          seek: true,
+          sort: false,
+          filter: false,
+          known_total: true,
+          next: false,
+          children: true,
+        },
+      },
+    });
     const requests: Array<Record<string, unknown>> = [];
     const responder = respondToR(rConnection, columns, requests);
     let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -130,7 +150,55 @@ Deno.test({
         204,
       );
       await page.waitForSelector('#status[data-state="connected"]');
-      await page.getByRole("button", { name: "Open view" }).click();
+      await page.locator("#tables article").nth(1).getByRole("button", {
+        name: "Open object",
+      }).click();
+      await page.waitForSelector("#tree-viewer:not([hidden])");
+      await page.waitForSelector('#tree-child-list li[data-child-index="1"]');
+      assert(
+        (await page.locator("#tree-child-list").textContent())?.includes(
+          "nested <img src=x onerror=alert(1)>list · 1 item",
+        ),
+        "Tree labels, classes, and summaries should render as text.",
+      );
+      assertEquals(await page.locator("#tree-child-list img").count(), 0);
+      await page.locator('#tree-child-list [data-action="open-child"]').nth(1)
+        .click();
+      await page.waitForFunction(() => {
+        const document = (globalThis as unknown as {
+          document: BrowserDocument;
+        }).document;
+        return document.querySelector("#tree-title")?.textContent ===
+          "Nested object";
+      });
+      await page.locator("#tree-parent-return").click();
+      await page.waitForFunction(() => {
+        const document = (globalThis as unknown as {
+          document: BrowserDocument;
+        }).document;
+        return document.querySelector("#tree-title")?.textContent ===
+          "Object smoke";
+      });
+      await page.locator('#tree-child-list [data-action="open-child"]').first()
+        .click();
+      await page.waitForSelector("#viewer:not([hidden])");
+      await page.locator('[data-action="close-view"]').last().click();
+      await page.waitForFunction(() => {
+        const document = (globalThis as unknown as {
+          document: BrowserDocument;
+        }).document;
+        return document.querySelectorAll(
+              '#tables button[data-action="close-view"]',
+            ).length === 1 &&
+          document.querySelector("#tree-viewer")?.hidden === true;
+      });
+      await page.locator("#tables article").nth(1).getByRole("button", {
+        name: "Open object",
+      }).click();
+      await page.waitForSelector("#tree-viewer:not([hidden])");
+      await page.locator("#tables article").first().getByRole("button", {
+        name: "Open view",
+      }).click();
       await page.waitForSelector("#viewer .tabulator-row");
       await page.selectOption("#filter-column", "299");
       assertEquals(
@@ -1157,6 +1225,125 @@ async function respondToR(
   for await (const line of readFrames(connection)) {
     const request = JSON.parse(line) as Record<string, unknown>;
     if (typeof request.id !== "string") continue;
+    const params = request.params as Record<string, unknown>;
+    if (request.method === "object/children") {
+      const path = params.path as Array<Record<string, unknown>>;
+      const children = path.length === 0
+        ? [{
+          index: 1,
+          label: "nested <img src=x onerror=alert(1)>",
+          class: ["list"],
+          summary: "1 item",
+          has_children: true,
+          viewable: false,
+          path: [{ type: "index", index: 1 }],
+        }, {
+          index: 2,
+          label: "data",
+          class: ["data.frame"],
+          summary: "1 × 1",
+          has_children: false,
+          viewable: true,
+          path: [{ type: "index", index: 2 }],
+        }, {
+          index: 3,
+          label: "nested object",
+          class: ["list"],
+          summary: "1 element",
+          has_children: true,
+          viewable: true,
+          path: [{ type: "index", index: 3 }],
+        }]
+        : [{
+          index: 1,
+          label: "leaf",
+          class: ["character"],
+          summary: "text",
+          has_children: false,
+          viewable: false,
+          path: [...path, { type: "index", index: 1 }],
+        }];
+      await writeFrame(connection, {
+        id: request.id,
+        result: {
+          view: params.view,
+          generation: params.generation,
+          path,
+          offset: params.offset,
+          children,
+          total_children: children.length,
+        },
+        warnings: [],
+      });
+      continue;
+    }
+    if (request.method === "object/open") {
+      const path = params.path as Array<Record<string, unknown>>;
+      if (path[0]?.index === 3) {
+        await writeFrame(connection, {
+          id: request.id,
+          result: {
+            view: "nested-tree",
+            generation: 1,
+            kind: "tree",
+            access: "random",
+            encoding: "r-json",
+            title: "Nested object",
+            class: ["list"],
+            path: [],
+            parent: "tree-root",
+            capabilities: {
+              seek: true,
+              sort: false,
+              filter: false,
+              known_total: true,
+              next: false,
+              children: true,
+            },
+          },
+          warnings: [],
+        });
+        continue;
+      }
+      await writeFrame(connection, {
+        id: request.id,
+        result: {
+          view: "tree-child-grid",
+          generation: 1,
+          kind: "grid",
+          access: "snapshot",
+          encoding: "r-json",
+          mode: "snapshot",
+          title: "Child table",
+          parent: "tree-root",
+          nrow: 1,
+          ncol: 1,
+          columns: [{
+            position: 0,
+            name: "value",
+            type: "integer",
+            sortable: true,
+            filterable: true,
+          }],
+          capabilities: gridCapabilities(),
+          data: { columns: ["value"], rows: [[1]] },
+        },
+        warnings: [],
+      });
+      continue;
+    }
+    if (request.method === "view/close") {
+      await writeFrame(connection, {
+        id: request.id,
+        result: {
+          view: params.view,
+          generation: params.generation,
+          closed: true,
+        },
+        warnings: [],
+      });
+      continue;
+    }
     if (request.method !== "table/rows") {
       await writeFrame(connection, {
         id: request.id,
@@ -1166,7 +1353,6 @@ async function respondToR(
       continue;
     }
 
-    const params = request.params as Record<string, unknown>;
     requests.push(params);
     const generation = Number(params.generation);
     const rowBase = generation === 2 ? 1000 : 0;

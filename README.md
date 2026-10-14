@@ -1,6 +1,6 @@
 # jdv: JSON Data Viewer
 
-jdv is an R table engine and data viewer under development. The R package
+jdv is an R data viewer and query engine under development. The R package
 bundles cJSON and has no runtime R package dependencies. Public viewer APIs are
 available through `jdv_view()` and `jdv_close()`.
 
@@ -20,8 +20,10 @@ deno run -A --no-config https://raw.githubusercontent.com/eitsupi/jdv/main/serve
 ```
 
 Open the URL from the server's single JSON ready line, then call
-`jdv::jdv_view(x)` in R. See [server/README.md](server/README.md) for the
-browser protocol, connection limits, and platform details.
+`jdv::jdv_view(x)` in R. Data frames and matrices open as tables; other R
+objects open in a browsable tree by default. See
+[server/README.md](server/README.md) for the browser protocol, connection
+limits, and platform details.
 
 ## Local development
 

@@ -118,6 +118,29 @@ function openTable(connection: MemoryConnection, generation = 1): void {
   }));
 }
 
+function openTree(
+  connection: MemoryConnection,
+  view = "tree-1",
+  generation = 1,
+) {
+  connection.inject(notification("view/open", {
+    view,
+    generation,
+    kind: "tree",
+    access: "random",
+    encoding: "r-json",
+    title: "Tree fixture",
+    capabilities: {
+      seek: true,
+      sort: false,
+      filter: false,
+      known_total: true,
+      next: false,
+      children: true,
+    },
+  }));
+}
+
 async function waitFor(
   predicate: () => boolean,
   timeoutMs = 1_000,
@@ -234,7 +257,7 @@ Deno.test("R request ids are remapped and table close updates the Snapshot cache
     method: "view/close",
     params: { view: "table-1", generation: 1 },
   });
-  const closeRequest = await connection.nextWrite(1);
+  const closeRequest = await connection.nextWrite();
   connection.inject({
     id: closeRequest.id,
     result: { view: "table-1", generation: 1, closed: true },
@@ -253,6 +276,340 @@ Deno.test("R request ids are remapped and table close updates the Snapshot cache
     (lateBrowser.messages[0].sessions as JsonRecord[])[0].views,
     [],
   );
+  hub.close();
+});
+
+Deno.test("tree child requests route typed paths and distinguish stale views", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-81-1", limits: { ...DEFAULT_LIMITS } },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTree(connection);
+  await browser.nextMessage((message) => message.type === "view/open");
+
+  const path = [
+    { type: "binding", name: "outer" },
+    { type: "index", index: 2 },
+    { type: "slot", name: "state" },
+    { type: "attr", name: "names" },
+  ];
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "children-page",
+    session: "r-81-1",
+    method: "object/children",
+    params: { view: "tree-1", generation: 1, path, offset: 20, limit: 100 },
+  });
+  const request = await connection.nextWrite(0);
+  assertEquals(request.method, "object/children");
+  assertEquals(request.params, {
+    view: "tree-1",
+    generation: 1,
+    path,
+    offset: 20,
+    limit: 100,
+  });
+  connection.inject({
+    id: request.id,
+    result: {
+      view: "tree-1",
+      generation: 1,
+      path,
+      offset: 20,
+      children: [],
+      total_children: 20,
+    },
+  });
+  const response = await browser.nextMessage((message) =>
+    message.type === "response" && message.id === "children-page"
+  );
+  assertEquals((response.result as JsonRecord).path, path);
+
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "children-defaults",
+    session: "r-81-1",
+    method: "object/children",
+    params: { view: "tree-1", generation: 1, path: [] },
+  });
+  const defaultRequest = await connection.nextWrite(1);
+  assertEquals(defaultRequest.method, "object/children");
+  assertEquals(defaultRequest.params, {
+    view: "tree-1",
+    generation: 1,
+    path: [],
+  });
+  connection.inject({
+    id: defaultRequest.id,
+    result: {
+      view: "tree-1",
+      generation: 1,
+      path: [],
+      offset: 0,
+      children: [],
+      total_children: 0,
+    },
+  });
+  await browser.nextMessage((message) =>
+    message.type === "response" && message.id === "children-defaults"
+  );
+
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "open-root",
+    session: "r-81-1",
+    method: "object/open",
+    params: { view: "tree-1", generation: 1, path: [] },
+  });
+  assertEquals(
+    (await browser.nextMessage((message) => message.id === "open-root")).code,
+    "invalid_request",
+  );
+
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "bad-path",
+    session: "r-81-1",
+    method: "object/children",
+    params: {
+      view: "tree-1",
+      generation: 1,
+      path: [{ type: "binding", name: "x" }, {
+        type: "expression",
+        value: "x",
+      }],
+      offset: 0,
+      limit: 20,
+    },
+  });
+  assertEquals(
+    (await browser.nextMessage((message) => message.id === "bad-path")).code,
+    "invalid_request",
+  );
+
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "stale-generation",
+    session: "r-81-1",
+    method: "object/children",
+    params: { view: "tree-1", generation: 0, path: [], offset: 0, limit: 20 },
+  });
+  assertEquals(
+    (await browser.nextMessage((message) => message.id === "stale-generation"))
+      .code,
+    "stale_generation",
+  );
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "missing-view",
+    session: "r-81-1",
+    method: "object/children",
+    params: { view: "missing", generation: 1, path: [], offset: 0, limit: 20 },
+  });
+  assertEquals(
+    (await browser.nextMessage((message) => message.id === "missing-view"))
+      .code,
+    "view_not_found",
+  );
+  hub.close();
+});
+
+Deno.test("object/open caches and broadcasts a child even after browser detach", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-82-1", limits: { ...DEFAULT_LIMITS } },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTree(connection, "tree-root");
+  await browser.nextMessage((message) => message.type === "view/open");
+
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "open-child",
+    session: "r-82-1",
+    method: "object/open",
+    params: {
+      view: "tree-root",
+      generation: 1,
+      path: [{ type: "index", index: 2 }],
+    },
+  });
+  const request = await connection.nextWrite(0);
+  assertEquals(request.method, "object/open");
+  hub.detach(browser);
+  connection.inject({
+    id: request.id,
+    result: {
+      view: "child-grid",
+      generation: 1,
+      kind: "grid",
+      access: "snapshot",
+      encoding: "r-json",
+      mode: "snapshot",
+      title: "Child table",
+      parent: "tree-root",
+      nrow: 1,
+      ncol: 1,
+      columns: [{ position: 0, name: "x", type: "integer" }],
+      capabilities: {
+        seek: true,
+        sort: true,
+        filter: true,
+        known_total: true,
+        next: false,
+        children: false,
+      },
+      data: { columns: ["x"], rows: [[5]] },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const lateBrowser = new MemoryBrowser();
+  hub.attach(lateBrowser);
+  const session = (lateBrowser.messages[0].sessions as JsonRecord[])[0];
+  const views = session.views as JsonRecord[];
+  assertEquals(views.map((item) => (item.params as JsonRecord).view), [
+    "tree-root",
+    "child-grid",
+  ]);
+  assertEquals(
+    browser.messages.some((message) => message.type === "response"),
+    false,
+  );
+
+  connection.inject(notification("view/closed", {
+    view: "tree-root",
+    generation: 1,
+  }));
+  const childClosed = await lateBrowser.nextMessage((message) => {
+    const params = isRecord(message.message) &&
+        isRecord(message.message.params)
+      ? message.message.params
+      : null;
+    return message.type === "view/closed" && params?.view === "child-grid";
+  });
+  assertEquals(
+    ((childClosed.message as JsonRecord).params as JsonRecord).reason,
+    "parent_closed",
+  );
+  hub.close();
+});
+
+Deno.test("view lineage rejects self-parent and cycles before cascade close", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-83-1", limits: { ...DEFAULT_LIMITS } },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTree(connection, "tree-a");
+  await browser.nextMessage((message) =>
+    message.type === "view/open" &&
+    (message.message as JsonRecord).params !== undefined
+  );
+  connection.inject(notification("view/open", {
+    view: "tree-b",
+    generation: 1,
+    kind: "tree",
+    access: "random",
+    encoding: "r-json",
+    parent: "tree-a",
+    path: [],
+    capabilities: {
+      seek: true,
+      sort: false,
+      filter: false,
+      known_total: true,
+      next: false,
+      children: true,
+    },
+  }));
+  await browser.nextMessage((message) => {
+    const params = isRecord(message.message) &&
+        isRecord(message.message.params)
+      ? message.message.params
+      : null;
+    return message.type === "view/open" && params?.view === "tree-b";
+  });
+
+  // Neither a direct self-parent nor a cycle may replace a valid cached view.
+  connection.inject(notification("view/open", {
+    view: "tree-a",
+    generation: 2,
+    kind: "tree",
+    access: "random",
+    encoding: "r-json",
+    parent: "tree-b",
+    path: [],
+    capabilities: {
+      seek: true,
+      sort: false,
+      filter: false,
+      known_total: true,
+      next: false,
+      children: true,
+    },
+  }));
+  connection.inject(notification("view/open", {
+    view: "tree-self",
+    generation: 1,
+    kind: "tree",
+    access: "random",
+    encoding: "r-json",
+    parent: "tree-self",
+    path: [],
+    capabilities: {
+      seek: true,
+      sort: false,
+      filter: false,
+      known_total: true,
+      next: false,
+      children: true,
+    },
+  }));
+  connection.inject(notification("view/closed", {
+    view: "tree-a",
+    generation: 1,
+  }));
+  const childClosed = await browser.nextMessage((message) => {
+    const params = isRecord(message.message) &&
+        isRecord(message.message.params)
+      ? message.message.params
+      : null;
+    return message.type === "view/closed" && params?.view === "tree-b";
+  });
+  assertEquals(
+    ((childClosed.message as JsonRecord).params as JsonRecord).reason,
+    "parent_closed",
+  );
+  await browser.nextMessage((message) => {
+    const params = isRecord(message.message) &&
+        isRecord(message.message.params)
+      ? message.message.params
+      : null;
+    return message.type === "view/closed" && params?.view === "tree-a";
+  });
+
+  const lateBrowser = new MemoryBrowser();
+  hub.attach(lateBrowser);
+  await lateBrowser.nextMessage((message) => message.type === "welcome");
+  const session = (lateBrowser.messages[0].sessions as JsonRecord[])[0];
+  const views = session.views as JsonRecord[];
+  assertEquals(views, []);
   hub.close();
 });
 
@@ -628,6 +985,98 @@ Deno.test("a cancelled table close still clears its current Snapshot cache", asy
     (lateBrowser.messages[0].sessions as JsonRecord[])[0].views,
     [],
   );
+  hub.close();
+});
+
+Deno.test("closing a child clears only that view and cancels its pending work", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-83-1", limits: { ...DEFAULT_LIMITS } },
+  });
+  const reader = new MemoryBrowser();
+  const closer = new MemoryBrowser();
+  hub.attach(reader);
+  hub.attach(closer);
+  openTree(connection, "tree-root");
+  await closer.nextMessage((message) => message.type === "view/open");
+  connection.inject(notification("view/open", {
+    view: "child-grid",
+    generation: 1,
+    kind: "grid",
+    access: "snapshot",
+    encoding: "r-json",
+    mode: "snapshot",
+    title: "Child",
+    parent: "tree-root",
+    nrow: 1,
+    ncol: 0,
+    columns: [],
+    capabilities: {
+      seek: true,
+      sort: true,
+      filter: true,
+      known_total: true,
+      next: false,
+      children: false,
+    },
+    data: { columns: [], rows: [[]] },
+  }));
+  await reader.nextMessage((message) => {
+    const params = isRecord(message.message) &&
+        isRecord(message.message.params)
+      ? message.message.params
+      : null;
+    return message.type === "view/open" && params?.view === "child-grid";
+  });
+
+  hub.handleBrowser(reader, {
+    type: "request",
+    id: "child-schema",
+    session: "r-83-1",
+    method: "view/schema",
+    params: { view: "child-grid", generation: 1 },
+  });
+  const schemaRequest = await connection.nextWrite(0);
+  hub.handleBrowser(closer, {
+    type: "request",
+    id: "close-child",
+    session: "r-83-1",
+    method: "view/close",
+    params: { view: "child-grid", generation: 1 },
+  });
+  const closeRequest = await connection.nextWrite(1);
+  connection.inject({
+    id: closeRequest.id,
+    result: { view: "child-grid", generation: 1, closed: true },
+  });
+  const stale = await reader.nextMessage((message) =>
+    message.type === "error" && message.id === "child-schema"
+  );
+  assertEquals(stale.code, "stale_generation");
+  const closed = await closer.nextMessage((message) => {
+    const params = isRecord(message.message) &&
+        isRecord(message.message.params)
+      ? message.message.params
+      : null;
+    return message.type === "view/closed" && params?.view === "child-grid";
+  });
+  assertEquals(
+    ((closed.message as JsonRecord).params as JsonRecord).reason,
+    undefined,
+  );
+  const cancel = await connection.nextWrite(2);
+  assertEquals(cancel.method, "cancel");
+  const late = new MemoryBrowser();
+  hub.attach(late);
+  const views =
+    ((late.messages[0].sessions as JsonRecord[])[0].views as JsonRecord[])
+      .map((view) => (view.params as JsonRecord).view);
+  assertEquals(views, ["tree-root"]);
+  assertEquals(schemaRequest.method, "view/schema");
   hub.close();
 });
 

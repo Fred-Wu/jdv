@@ -10,6 +10,7 @@ const status = $("#status");
 const sessionsElement = $("#sessions");
 const tablesElement = $("#tables");
 const viewer = $("#viewer");
+const treeViewer = $("#tree-viewer");
 const titleElement = $("#table-title");
 const metaElement = $("#table-meta");
 const sortList = $("#sort-list");
@@ -27,7 +28,17 @@ const spacer = $("#column-spacer");
 const windowElement = $("#column-window");
 const paginationElement = $("#table-pagination");
 const warningsElement = $("#warnings");
+const treeTitleElement = $("#tree-title");
+const treeMetaElement = $("#tree-meta");
+const treeBreadcrumb = $("#tree-breadcrumb");
+const treeChildList = $("#tree-child-list");
+const treePageLabel = $("#tree-page-label");
+const treePrevious = $("#tree-previous");
+const treeNext = $("#tree-next");
+const treeReturn = $("#tree-return");
+const treeParentReturn = $("#tree-parent-return");
 const PAGE_SIZE = 200;
+const TREE_PAGE_SIZE = 200;
 const COLUMN_WIDTH = 180;
 const ROW_WIDTH = 86;
 const knownSessions = new Map();
@@ -113,6 +124,14 @@ socket.addEventListener("message", (event) => {
         selected.descriptor.view === descriptor.view &&
         selected.descriptor.generation === descriptor.generation
       ) closeSelectedTable();
+      if (
+        selected?.returnTree?.session === message.session &&
+        selected.returnTree.descriptor.view === descriptor.view &&
+        selected.returnTree.descriptor.generation === descriptor.generation
+      ) {
+        selected.returnTree = null;
+        treeReturn.hidden = true;
+      }
     }
     renderLists();
   } else if (message.type === "notification") {
@@ -127,6 +146,24 @@ $("#filter-clear").addEventListener("click", clearFilter);
 filterOperator.addEventListener("change", updateFilterInputs);
 filterColumn.addEventListener("change", updateFilterOperators);
 viewport.addEventListener("scroll", scheduleColumnWindow);
+treePrevious.addEventListener("click", () => {
+  if (selected?.kind === "tree") {
+    loadTreeChildren(selected, Math.max(0, selected.offset - TREE_PAGE_SIZE));
+  }
+});
+treeNext.addEventListener("click", () => {
+  if (selected?.kind === "tree") {
+    loadTreeChildren(
+      selected,
+      Math.min(
+        Math.max(0, selected.totalChildren - 1),
+        selected.offset + TREE_PAGE_SIZE,
+      ),
+    );
+  }
+});
+treeReturn.addEventListener("click", returnToTree);
+treeParentReturn.addEventListener("click", returnToTree);
 globalThis.addEventListener("resize", updateColumnScrollExtent);
 new ResizeObserver(scheduleColumnWindow).observe(viewport);
 
@@ -158,7 +195,7 @@ function addTable(session, message) {
   if (replaceSelected) closeSelectedTable();
   knownTables.set(key, { session, descriptor });
   renderLists();
-  if (replaceSelected) openTable(session, descriptor);
+  if (replaceSelected) openView(session, descriptor);
 }
 
 function viewSupport(descriptor) {
@@ -171,14 +208,22 @@ function viewSupport(descriptor) {
     "next",
     "children",
   ];
-  return descriptor?.kind === "grid" &&
-    descriptor.encoding === "r-json" &&
+  if (
+    descriptor?.encoding !== "r-json" ||
+    capabilities === null || typeof capabilities !== "object" ||
+    !capabilityNames.every((name) => typeof capabilities[name] === "boolean")
+  ) return false;
+  if (descriptor.kind === "tree") {
+    return descriptor.access === "random" &&
+      capabilities.seek === true && capabilities.sort === false &&
+      capabilities.filter === false && capabilities.known_total === true &&
+      capabilities.next === false && capabilities.children === true;
+  }
+  return descriptor.kind === "grid" &&
     (descriptor.access === "snapshot" || descriptor.access === "random") &&
     descriptor.mode ===
       (descriptor.access === "snapshot" ? "snapshot" : "paged") &&
-    Array.isArray(descriptor.columns) &&
-    capabilities !== null && typeof capabilities === "object" &&
-    capabilityNames.every((name) => typeof capabilities[name] === "boolean");
+    Array.isArray(descriptor.columns);
 }
 
 function countLabel(value, noun) {
@@ -222,33 +267,63 @@ function renderLists() {
   for (const { session, descriptor } of knownTables.values()) {
     const item = document.createElement("article");
     const heading = document.createElement("h3");
-    heading.textContent = descriptor.title ?? "Untitled table";
+    heading.textContent = descriptor.title ??
+      (descriptor.kind === "tree" ? "Untitled object" : "Untitled table");
     const detail = document.createElement("p");
     detail.className = "muted";
-    detail.textContent = `${countLabel(descriptor.nrow, "row")} · ${
-      countLabel(descriptor.ncol, "column")
-    } · ${descriptor.mode ?? "unknown"} · ${session}`;
+    detail.textContent = descriptor.kind === "tree"
+      ? `Object tree · ${
+        descriptor.class?.join(", ") ?? "unknown class"
+      } · ${session}`
+      : `${countLabel(descriptor.nrow, "row")} · ${
+        countLabel(descriptor.ncol, "column")
+      } · ${descriptor.mode ?? "unknown"} · ${session}`;
     const button = document.createElement("button");
     button.type = "button";
     const support = viewSupport(descriptor);
-    button.textContent = support ? "Open view" : "Unsupported view";
+    button.textContent = support
+      ? descriptor.kind === "tree" ? "Open object" : "Open view"
+      : "Unsupported view";
     button.disabled = !support;
     if (support) {
-      button.addEventListener("click", () => openTable(session, descriptor));
+      button.addEventListener("click", () => openView(session, descriptor));
     }
     item.append(heading, detail, button);
+    if (typeof descriptor.parent === "string") {
+      const close = document.createElement("button");
+      close.type = "button";
+      close.textContent = "Close view";
+      close.dataset.action = "close-view";
+      close.addEventListener("click", () => {
+        close.disabled = true;
+        const promise = transport.request(session, "view/close", {
+          view: descriptor.view,
+          generation: descriptor.generation,
+        });
+        promise.catch((error) => {
+          close.disabled = false;
+          setStatus(error?.message ?? "Could not close the view.", "error");
+        });
+      });
+      item.append(close);
+    }
     tablesElement.append(item);
   }
 }
 
-function openTable(session, descriptor) {
+function openView(session, descriptor, returnTree = null) {
   if (!viewSupport(descriptor)) {
     setStatus("This view format is not supported by this viewer.", "error");
+    return;
+  }
+  if (descriptor.kind === "tree") {
+    openTree(session, descriptor);
     return;
   }
   closeSelectedTable();
   const columns = Array.isArray(descriptor.columns) ? descriptor.columns : [];
   selected = {
+    kind: "grid",
     session,
     descriptor,
     columns,
@@ -257,10 +332,14 @@ function openTable(session, descriptor) {
     epoch: 0,
     page: 1,
     activeRequestIds: new Set(),
+    returnTree,
     table: null,
     window: { start: 0, end: 0, columns: [], offsetPx: 0, totalWidth: 0 },
   };
   viewer.hidden = false;
+  treeViewer.hidden = true;
+  treeParentReturn.hidden = true;
+  treeReturn.hidden = returnTree === null;
   titleElement.textContent = descriptor.title ?? "Untitled table";
   metaElement.textContent = `${countLabel(descriptor.nrow, "row")} · ${
     countLabel(descriptor.ncol, "column")
@@ -320,6 +399,240 @@ function closeSelectedTable() {
   paginationElement.replaceChildren();
   selected = null;
   viewer.hidden = true;
+  treeViewer.hidden = true;
+  treeReturn.hidden = true;
+  treeParentReturn.hidden = true;
+}
+
+function openTree(session, descriptor, returnTree = null) {
+  closeSelectedTable();
+  selected = {
+    kind: "tree",
+    session,
+    descriptor,
+    path: [],
+    breadcrumbs: [{ path: [], label: descriptor.title ?? "Object" }],
+    offset: 0,
+    totalChildren: 0,
+    activeRequestIds: new Set(),
+    epoch: 0,
+    children: [],
+    returnTree,
+  };
+  viewer.hidden = true;
+  treeViewer.hidden = false;
+  treeParentReturn.hidden = returnTree === null;
+  treeTitleElement.textContent = descriptor.title ?? "Untitled object";
+  treeMetaElement.textContent =
+    (descriptor.class?.join(", ") ?? "unknown class") +
+    " · " + session;
+  treeChildList.replaceChildren();
+  renderTreeBreadcrumbs(selected);
+  loadTreeChildren(selected, 0);
+}
+
+function cancelTreeRequests(state) {
+  for (const id of state.activeRequestIds) {
+    transport.cancel(id, "The object path changed.");
+  }
+  state.activeRequestIds.clear();
+}
+
+function loadTreeChildren(state, offset) {
+  if (selected !== state || state.kind !== "tree") return;
+  state.epoch++;
+  const epoch = state.epoch;
+  cancelTreeRequests(state);
+  state.offset = Math.max(0, offset);
+  setStatus("Loading object children…", "loading");
+  treePrevious.disabled = state.offset === 0;
+  treeNext.disabled = true;
+  const promise = transport.request(
+    state.session,
+    "object/children",
+    {
+      view: state.descriptor.view,
+      generation: state.descriptor.generation,
+      path: state.path,
+      offset: state.offset,
+      limit: TREE_PAGE_SIZE,
+    },
+    60_000,
+  );
+  const id = promise.id;
+  if (id) state.activeRequestIds.add(id);
+  promise.then((response) => {
+    if (selected !== state || state.epoch !== epoch) return;
+    const result = response?.result;
+    if (
+      !result || result.view !== state.descriptor.view ||
+      result.generation !== state.descriptor.generation ||
+      !Array.isArray(result.path) ||
+      JSON.stringify(result.path) !== JSON.stringify(state.path) ||
+      result.offset !== state.offset || !Array.isArray(result.children) ||
+      !Number.isSafeInteger(result.total_children) ||
+      result.total_children < 0 || result.children.length > TREE_PAGE_SIZE
+    ) throw new Error("R returned an invalid object children page.");
+    state.totalChildren = result.total_children;
+    state.children = result.children;
+    renderTreePage(state);
+    setStatus("Connected.", "connected");
+  }).catch((error) => {
+    if (selected !== state || state.epoch !== epoch) return;
+    if (error?.name === "AbortError") return;
+    treeChildList.replaceChildren();
+    treeMetaElement.textContent = error?.code
+      ? error.code + ": " + error.message
+      : error?.message ?? String(error);
+    setStatus("The object request failed.", "error");
+  }).finally(() => {
+    if (id) state.activeRequestIds.delete(id);
+  });
+}
+
+function renderTreeBreadcrumbs(state) {
+  treeBreadcrumb.replaceChildren();
+  state.breadcrumbs.forEach((crumb, depth) => {
+    const item = document.createElement("li");
+    if (depth === state.breadcrumbs.length - 1) {
+      item.textContent = crumb.label;
+    } else {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.treeDepth = String(depth);
+      button.textContent = crumb.label;
+      button.addEventListener("click", () => {
+        state.breadcrumbs = state.breadcrumbs.slice(0, depth + 1);
+        state.path = crumb.path;
+        renderTreeBreadcrumbs(state);
+        loadTreeChildren(state, 0);
+      });
+      item.append(button);
+    }
+    treeBreadcrumb.append(item);
+  });
+}
+
+function renderTreePage(state) {
+  treeChildList.replaceChildren();
+  for (const [position, child] of state.children.entries()) {
+    if (!child || typeof child !== "object") continue;
+    const item = document.createElement("li");
+    item.dataset.childIndex = String(
+      child.index ?? state.offset + position + 1,
+    );
+    const label = typeof child.label === "string" ? child.label : "(unnamed)";
+    if (child.has_children === true) {
+      const expand = document.createElement("button");
+      expand.type = "button";
+      expand.dataset.action = "expand-child";
+      expand.textContent = label;
+      expand.addEventListener("click", () => {
+        if (!Array.isArray(child.path)) return;
+        state.path = child.path;
+        state.breadcrumbs.push({ path: child.path, label });
+        renderTreeBreadcrumbs(state);
+        loadTreeChildren(state, 0);
+      });
+      item.append(expand);
+    } else {
+      const text = document.createElement("span");
+      text.textContent = label;
+      item.append(text);
+    }
+    const classes = Array.isArray(child.class)
+      ? child.class.filter((value) => typeof value === "string").join(", ")
+      : "";
+    const summary = document.createElement("span");
+    summary.className = "muted tree-summary";
+    summary.textContent = [classes, child.summary]
+      .filter((value) => typeof value === "string" && value.length > 0)
+      .join(" · ");
+    item.append(summary);
+    if (typeof child.unavailable === "string") {
+      const unavailable = document.createElement("span");
+      unavailable.className = "tree-unavailable";
+      unavailable.textContent = "Unavailable: " + child.unavailable;
+      item.append(unavailable);
+    } else if (child.viewable === true && Array.isArray(child.path)) {
+      const open = document.createElement("button");
+      open.type = "button";
+      open.dataset.action = "open-child";
+      open.textContent = "Open view";
+      open.addEventListener("click", () => openTreeChild(state, child));
+      item.append(open);
+    }
+    treeChildList.append(item);
+  }
+  const start = state.totalChildren === 0 ? 0 : state.offset + 1;
+  const end = Math.min(
+    state.totalChildren,
+    state.offset + state.children.length,
+  );
+  treePageLabel.textContent = start + "–" + end + " of " +
+    state.totalChildren + " children";
+  treePrevious.disabled = state.offset === 0;
+  treeNext.disabled = end >= state.totalChildren;
+}
+
+async function openTreeChild(state, child) {
+  if (selected !== state || state.kind !== "tree") return;
+  const epoch = state.epoch;
+  const promise = transport.request(
+    state.session,
+    "object/open",
+    {
+      view: state.descriptor.view,
+      generation: state.descriptor.generation,
+      path: child.path,
+    },
+    60_000,
+  );
+  const id = promise.id;
+  if (id) state.activeRequestIds.add(id);
+  try {
+    const response = await promise;
+    if (selected !== state || state.epoch !== epoch) return;
+    const descriptor = response?.result;
+    if (!viewSupport(descriptor)) {
+      throw new Error("R returned an invalid child view descriptor.");
+    }
+    addTable(state.session, { method: "view/open", params: descriptor });
+    if (descriptor.kind === "tree") {
+      openTree(state.session, descriptor, state);
+    } else {
+      openView(state.session, descriptor, state);
+    }
+  } catch (error) {
+    if (selected !== state || state.epoch !== epoch) return;
+    if (error?.name !== "AbortError") {
+      treeMetaElement.textContent = error?.code
+        ? error.code + ": " + error.message
+        : error?.message ?? String(error);
+    }
+  } finally {
+    if (id) state.activeRequestIds.delete(id);
+  }
+}
+
+function returnToTree() {
+  const state = selected?.returnTree;
+  if (!state || !viewSupport(state.descriptor)) return;
+  closeSelectedTable();
+  selected = state;
+  if (state.kind === "tree") {
+    viewer.hidden = true;
+    treeViewer.hidden = false;
+    treeParentReturn.hidden = state.returnTree === null;
+    treeTitleElement.textContent = state.descriptor.title ?? "Untitled object";
+    treeMetaElement.textContent =
+      (state.descriptor.class?.join(", ") ?? "unknown class") +
+      " · " + state.session;
+    renderTreeBreadcrumbs(state);
+    loadTreeChildren(state, state.offset);
+  } else {
+    openView(state.session, state.descriptor, state.returnTree);
+  }
 }
 
 function populateColumnChoices() {
@@ -605,13 +918,13 @@ function columnScrollExtent(totalWidth) {
 }
 
 function updateColumnScrollExtent() {
-  if (!selected) return;
+  if (selected?.kind !== "grid" || !selected.window) return;
   spacer.style.width = `${columnScrollExtent(selected.window.totalWidth)}px`;
   scheduleColumnWindow();
 }
 
 function scheduleColumnWindow() {
-  if (!selected) return;
+  if (selected?.kind !== "grid" || !selected.window) return;
   if (nextWindowFrame === 0) {
     nextWindowFrame = requestAnimationFrame(() => {
       nextWindowFrame = 0;
@@ -642,7 +955,9 @@ function updateRowColumnCompensation() {
 }
 
 function updateColumnWindow() {
-  if (!selected?.table) return;
+  if (selected?.kind !== "grid" || !selected.table || !selected.window) {
+    return;
+  }
   const next = calculateColumnWindow();
   if (
     next.start === selected.window.start && next.end === selected.window.end
@@ -672,9 +987,8 @@ function updateColumnWindow() {
 
 function requestColumnWindowPage() {
   nextWindowTimer = undefined;
-  if (selected) {
-    spacer.style.width = `${columnScrollExtent(selected.window.totalWidth)}px`;
-  }
+  if (selected?.kind !== "grid" || !selected.window) return;
+  spacer.style.width = `${columnScrollExtent(selected.window.totalWidth)}px`;
   const maximumScroll = Math.max(
     0,
     viewport.scrollWidth - viewport.clientWidth,
@@ -687,7 +1001,7 @@ function requestColumnWindowPage() {
     viewport.scrollLeft = alignedScrollLeft;
     return;
   }
-  if (!pendingColumnQuery || !selected?.table) return;
+  if (!pendingColumnQuery || !selected.table) return;
   pendingColumnQuery = false;
   selected.table.setPage(selected.page).catch((error) => showTableError(error));
 }

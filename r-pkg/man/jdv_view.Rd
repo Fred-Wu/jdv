@@ -2,7 +2,7 @@
 % Please edit documentation in R/transport.R
 \name{jdv_view}
 \alias{jdv_view}
-\title{Open a table in the local jdv viewer}
+\title{Open an object in the local jdv viewer}
 \usage{
 jdv_view(
   x,
@@ -12,20 +12,21 @@ jdv_view(
 )
 }
 \arguments{
-\item{x}{A data frame or matrix.}
+\item{x}{A data frame or matrix for grid views, or an R object whose children
+and attributes can be explored in a tree view.}
 
 \item{title}{Display title. When omitted, the expression passed as \code{x} is
 used; explicitly passing \code{NULL} creates an independent table slot.}
 
-\item{mode}{One of \code{"auto"}, \code{"snapshot"}, or \code{"paged"}.}
+\item{mode}{Grid view mode: \code{"auto"}, \code{"snapshot"}, or \code{"paged"}.}
 
-\item{collation}{String ordering policy, \code{"C"} or \code{"locale"}.}
+\item{collation}{Grid string ordering policy, \code{"C"} or \code{"locale"}.}
 }
 \value{
 The view id, invisibly.
 }
 \description{
-Open a table in the local jdv viewer
+Open an object in the local jdv viewer
 }
 \details{
 The viewer connection is opened on the first call. An address can be set in

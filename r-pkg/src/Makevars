@@ -1,2 +1,2 @@
 PKG_CPPFLAGS = -Icjson
-OBJECTS = init.o int64.o json.o transport.o loop.o cjson/cJSON.o
+OBJECTS = init.o int64.o json.o transport.o loop.o tree.o cjson/cJSON.o

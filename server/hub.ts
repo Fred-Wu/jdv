@@ -31,9 +31,10 @@ export interface BrowserClient {
   close(): void;
 }
 
-interface TableRecord {
+interface ViewRecord {
   generation: number;
   descriptor: JsonObject;
+  parentView?: string;
 }
 
 interface PendingRequest {
@@ -41,7 +42,7 @@ interface PendingRequest {
   client: BrowserClient | null;
   browserId: string;
   method: string;
-  table: string;
+  view: string;
   generation: number;
   deadline: number;
   state: "queued" | "live" | "cancelled" | "expired";
@@ -74,7 +75,7 @@ interface RSession {
   hello: JsonObject;
   limits: RLimits;
   peer: RPeer;
-  tables: Map<string, TableRecord>;
+  views: Map<string, ViewRecord>;
   pending: Map<string, PendingRequest>;
   outbound: OutboundFrame[];
   frameTimes: number[];
@@ -132,7 +133,7 @@ export class Hub {
       protocol: 1,
       sessions: [...this.#sessions.values()].map((session) => ({
         hello: session.hello,
-        views: [...session.tables.values()].map((table) => table.descriptor),
+        views: [...session.views.values()].map((view) => view.descriptor),
       })),
     });
   }
@@ -214,7 +215,15 @@ export class Hub {
       });
       return;
     }
-    if (!["table/rows", "view/schema", "view/close"].includes(method)) {
+    if (
+      ![
+        "table/rows",
+        "view/schema",
+        "view/close",
+        "object/children",
+        "object/open",
+      ].includes(method)
+    ) {
       client.send({
         type: "error",
         id: browserId,
@@ -223,9 +232,9 @@ export class Hub {
       });
       return;
     }
-    const table = params.view;
+    const view = params.view;
     const generation = params.generation;
-    if (typeof table !== "string" || !Number.isSafeInteger(generation)) {
+    if (typeof view !== "string" || !Number.isSafeInteger(generation)) {
       client.send({
         type: "error",
         id: browserId,
@@ -234,13 +243,36 @@ export class Hub {
       });
       return;
     }
-    const current = session.tables.get(table);
-    if (!current || current.generation !== generation) {
+    const current = session.views.get(view);
+    if (!current) {
+      client.send({
+        type: "error",
+        id: browserId,
+        session: session.id,
+        code: "view_not_found",
+        message: "The view is no longer available.",
+      });
+      return;
+    }
+    if (current.generation !== generation) {
       client.send({
         type: "error",
         id: browserId,
         code: "stale_generation",
         message: "The view is no longer current.",
+      });
+      return;
+    }
+    if (
+      (method === "object/children" || method === "object/open") &&
+      !isTreeRequest(current.descriptor, method, params)
+    ) {
+      client.send({
+        type: "error",
+        id: browserId,
+        session: session.id,
+        code: "invalid_request",
+        message: "The request is not valid for this tree view.",
       });
       return;
     }
@@ -254,7 +286,7 @@ export class Hub {
       client,
       browserId,
       method,
-      table,
+      view,
       generation: Number(generation),
       deadline: Date.now() + timeout,
       state: "queued",
@@ -306,7 +338,7 @@ export class Hub {
     pending.queuedBytesAccounted = true;
     session.queuedRequestBytes += pending.requestBytes;
     session.pending.set(id, pending);
-    this.#coalesceQueuedPage(session, pending);
+    this.#coalesceQueuedQuery(session, pending);
     if (
       [...session.pending.values()].filter((item) => item.queuedBytesAccounted)
           .length > MAX_QUEUED_ORDINARY ||
@@ -378,7 +410,7 @@ export class Hub {
       hello: message,
       limits,
       peer,
-      tables: new Map(),
+      views: new Map(),
       pending: new Map(),
       outbound: [],
       frameTimes: [],
@@ -424,13 +456,18 @@ export class Hub {
       return;
     }
     this.#releaseRequestSlot(session, pending);
-    const table = session.tables.get(pending.table);
-    const deliver = !pending.localEnded && pending.state === "live" && table &&
-      table.generation === pending.generation && Date.now() < pending.deadline;
-    const closedCurrentTable = pending.method === "view/close" &&
-      table?.generation === pending.generation &&
+    const view = session.views.get(pending.view);
+    const currentGeneration = view?.generation === pending.generation;
+    const deliver = !pending.localEnded && pending.state === "live" &&
+      currentGeneration && Date.now() < pending.deadline;
+    if (
+      pending.method === "object/open" && isObject(message.result) &&
+      currentGeneration
+    ) this.#registerChildView(session, pending.view, message.result);
+    const closedCurrentView = pending.method === "view/close" &&
+      currentGeneration &&
       isObject(message.result) && message.result.closed === true &&
-      message.result.view === pending.table &&
+      message.result.view === pending.view &&
       message.result.generation === pending.generation;
     if (deliver) {
       pending.client?.send({
@@ -441,19 +478,136 @@ export class Hub {
       });
     }
     this.#finishPending(session, pending);
-    if (closedCurrentTable) {
-      this.#cancelTableGeneration(session, pending.table, pending.generation);
-      session.tables.delete(pending.table);
+    if (closedCurrentView) {
+      this.#closeCachedView(session, pending.view, pending.generation);
+    }
+    this.#scheduleDrain(session);
+  }
+
+  #registerChildView(
+    session: RSession,
+    parentView: string,
+    descriptor: JsonObject,
+  ): void {
+    const parent = session.views.get(parentView);
+    if (
+      !parent || !isObject(descriptor) ||
+      (descriptor.kind !== "grid" && descriptor.kind !== "tree") ||
+      descriptor.view === parentView
+    ) return;
+    if (descriptor.parent !== undefined && descriptor.parent !== parentView) {
+      return;
+    }
+    const notification: JsonObject = {
+      method: "view/open",
+      params: descriptor,
+    };
+    this.#registerView(session, notification, parentView);
+  }
+
+  #registerView(
+    session: RSession,
+    message: JsonObject,
+    parentView?: string,
+  ): void {
+    const params = message.params;
+    if (
+      !isObject(params) || typeof params.view !== "string" ||
+      !Number.isSafeInteger(params.generation)
+    ) return;
+    const viewId = params.view;
+    const generation = Number(params.generation);
+    if (parentView === undefined && params.parent !== undefined) {
+      if (typeof params.parent !== "string") return;
+      parentView = params.parent;
+    }
+    if (
+      parentView !== undefined &&
+      !this.#hasValidParent(session, viewId, parentView)
+    ) return;
+    const previous = session.views.get(viewId);
+    if (previous && generation <= previous.generation) return;
+    if (previous) {
+      this.#closeDescendants(session, viewId);
+      this.#cancelViewGeneration(session, viewId, previous.generation);
+    }
+    session.views.set(viewId, {
+      generation,
+      descriptor: message,
+      parentView,
+    });
+    this.#broadcast({ type: "view/open", session: session.id, message });
+  }
+
+  #closeCachedView(
+    session: RSession,
+    viewId: string,
+    generation: number,
+    message?: JsonObject,
+  ): void {
+    const view = session.views.get(viewId);
+    if (!view || view.generation !== generation) return;
+    this.#closeDescendants(session, viewId);
+    this.#cancelViewGeneration(session, viewId, generation);
+    session.views.delete(viewId);
+    this.#broadcast({
+      type: "view/closed",
+      session: session.id,
+      message: message ?? {
+        method: "view/closed",
+        params: { view: viewId, generation },
+      },
+    });
+  }
+
+  #closeDescendants(session: RSession, parentView: string): void {
+    this.#closeDescendantsVisited(session, parentView, new Set([parentView]));
+  }
+
+  #closeDescendantsVisited(
+    session: RSession,
+    parentView: string,
+    visited: Set<string>,
+  ): void {
+    const descendants = [...session.views.entries()].filter(([, view]) =>
+      view.parentView === parentView
+    );
+    for (const [viewId, view] of descendants) {
+      if (visited.has(viewId)) continue;
+      visited.add(viewId);
+      this.#closeDescendantsVisited(session, viewId, visited);
+      this.#cancelViewGeneration(session, viewId, view.generation);
+      session.views.delete(viewId);
       this.#broadcast({
         type: "view/closed",
         session: session.id,
         message: {
           method: "view/closed",
-          params: { view: pending.table, generation: pending.generation },
+          params: {
+            view: viewId,
+            generation: view.generation,
+            reason: "parent_closed",
+          },
         },
       });
     }
-    this.#scheduleDrain(session);
+  }
+
+  #hasValidParent(
+    session: RSession,
+    viewId: string,
+    parentView: string,
+  ): boolean {
+    const seen = new Set<string>();
+    let current: string | undefined = parentView;
+    while (current !== undefined) {
+      if (current === viewId || seen.has(current)) return false;
+      seen.add(current);
+      const parent = session.views.get(current);
+      if (!parent) return false;
+      current = parent.parentView;
+    }
+    return true;
   }
 
   #handleNotification(session: RSession, message: JsonObject): void {
@@ -463,16 +617,7 @@ export class Hub {
       typeof params.view === "string" &&
       Number.isSafeInteger(params.generation)
     ) {
-      const tableId = params.view;
-      const generation = Number(params.generation);
-      const previous = session.tables.get(tableId);
-      if (previous && generation <= previous.generation) return;
-      if (previous) {
-        this.#cancelTableGeneration(session, tableId, previous.generation);
-      }
-      const table: TableRecord = { generation, descriptor: message };
-      session.tables.set(tableId, table);
-      this.#broadcast({ type: "view/open", session: session.id, message });
+      this.#registerView(session, message);
       return;
     }
     if (
@@ -480,12 +625,12 @@ export class Hub {
       typeof params.view === "string" &&
       Number.isSafeInteger(params.generation)
     ) {
-      const table = session.tables.get(params.view);
-      if (table && table.generation === params.generation) {
-        this.#cancelTableGeneration(session, params.view, table.generation);
-        session.tables.delete(params.view);
-        this.#broadcast({ type: "view/closed", session: session.id, message });
-      }
+      this.#closeCachedView(
+        session,
+        params.view,
+        Number(params.generation),
+        message,
+      );
       return;
     }
     this.#broadcast({ type: "notification", session: session.id, message });
@@ -503,19 +648,19 @@ export class Hub {
     }
   }
 
-  #cancelTableGeneration(
+  #cancelViewGeneration(
     session: RSession,
-    table: string,
+    view: string,
     generation: number,
   ): void {
     for (const pending of session.pending.values()) {
-      if (pending.table === table && pending.generation === generation) {
+      if (pending.view === view && pending.generation === generation) {
         pending.client?.send({
           type: "error",
           id: pending.browserId,
           session: session.id,
           code: "stale_generation",
-          message: "The table generation changed.",
+          message: "The view generation changed.",
         });
         this.#cancelPending(session, pending, "stale_generation");
       }
@@ -638,14 +783,12 @@ export class Hub {
     }
   }
 
-  #coalesceQueuedPage(session: RSession, pending: PendingRequest): void {
-    if (pending.method !== "table/rows") return;
+  #coalesceQueuedQuery(session: RSession, pending: PendingRequest): void {
+    if (!isCoalescibleMethod(pending.method)) return;
     for (const old of [...session.pending.values()]) {
       if (
         old !== pending && old.state === "queued" &&
-        old.method === "table/rows" &&
-        old.client === pending.client && old.table === pending.table &&
-        old.generation === pending.generation
+        this.#sameQueryLane(old, pending)
       ) {
         old.state = "cancelled";
         old.localEnded = true;
@@ -661,6 +804,19 @@ export class Hub {
     session.outbound = session.outbound.filter((frame) =>
       !frame.pending || frame.pending.state === "queued"
     );
+  }
+
+  #sameQueryLane(left: PendingRequest, right: PendingRequest): boolean {
+    if (
+      left.client !== right.client || left.method !== right.method ||
+      left.view !== right.view || left.generation !== right.generation
+    ) return false;
+    if (left.method === "table/rows") return true;
+    if (left.method !== "object/children") return false;
+    const leftParams = left.requestFrame?.value.params;
+    const rightParams = right.requestFrame?.value.params;
+    return isObject(leftParams) && isObject(rightParams) &&
+      JSON.stringify(leftParams.path) === JSON.stringify(rightParams.path);
   }
 
   #enqueue(session: RSession, frame: OutboundFrame): boolean {
@@ -939,12 +1095,10 @@ export class Hub {
           Math.min(MAX_RETAINED_REQUEST_BYTES, session.limits.queueBytes)
       ) return false;
       if (
-        pending.method === "table/rows" &&
+        isCoalescibleMethod(pending.method) &&
         [...session.pending.values()].some((other) =>
           other !== pending && other.client === pending.client &&
-          other.method === "table/rows" &&
-          other.table === pending.table &&
-          other.generation === pending.generation &&
+          this.#sameQueryLane(other, pending) &&
           other.state === "live" && !other.localEnded
         )
       ) return false;
@@ -957,11 +1111,10 @@ export class Hub {
     if (frame.pending && frame.pending.state !== "queued") return false;
     const pending = frame.pending;
     if (
-      pending?.method === "table/rows" &&
+      pending && isCoalescibleMethod(pending.method) &&
       [...session.pending.values()].some((other) =>
         other !== pending && other.client === pending.client &&
-        other.method === "table/rows" && other.table === pending.table &&
-        other.generation === pending.generation && other.state === "live" &&
+        this.#sameQueryLane(other, pending) && other.state === "live" &&
         !other.localEnded
       )
     ) return false;
@@ -1028,6 +1181,48 @@ export class Hub {
 
 function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isCoalescibleMethod(method: string): boolean {
+  return method === "table/rows" || method === "object/children";
+}
+
+function isTreeRequest(
+  descriptor: JsonObject,
+  method: string,
+  params: JsonObject,
+): boolean {
+  const viewParams = descriptor.params;
+  const path = params.path;
+  if (
+    !isObject(viewParams) || viewParams.kind !== "tree" ||
+    !isObject(viewParams.capabilities) ||
+    viewParams.capabilities.children !== true || !isTypedPath(path)
+  ) return false;
+  if (method === "object/open") {
+    return Array.isArray(path) && path.length > 0;
+  }
+  const offset = params.offset == null ? 0 : params.offset;
+  const limit = params.limit == null ? 200 : params.limit;
+  return Number.isSafeInteger(offset) && Number(offset) >= 0 &&
+    Number.isSafeInteger(limit) && Number(limit) >= 1 &&
+    Number(limit) <= 500;
+}
+
+function isTypedPath(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > 32) return false;
+  return value.every((step) => {
+    if (!isObject(step)) return false;
+    if (step.type === "index") {
+      return Number.isSafeInteger(step.index) && Number(step.index) >= 1;
+    }
+    if (
+      step.type !== "binding" && step.type !== "slot" &&
+      step.type !== "attr"
+    ) return false;
+    return typeof step.name === "string" &&
+      Array.from(step.name).length <= 1_000;
+  });
 }
 
 function parseLimits(value: JsonObject): RLimits | null {
