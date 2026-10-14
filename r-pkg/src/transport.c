@@ -1547,6 +1547,31 @@ static void service_state(jdv_transport_state *state, int allow_gate,
                             release_service, &call);
 }
 
+typedef struct {
+    jdv_transport_state *state;
+    int owns_housekeeping;
+} jdv_preflight_call;
+
+static SEXP preflight_state_body(void *data)
+{
+    jdv_preflight_call *call = (jdv_preflight_call *)data;
+    jdv_transport_state *state = call->state;
+    housekeeping_depth++;
+    call->owns_housekeeping = 1;
+    service_state(state, 0, state->max_receive_bytes, 0);
+    housekeeping_depth--;
+    call->owns_housekeeping = 0;
+    return R_NilValue;
+}
+
+static void release_preflight_state(void *data)
+{
+    jdv_preflight_call *call = (jdv_preflight_call *)data;
+    if (call->owns_housekeeping && housekeeping_depth > 0)
+        housekeeping_depth--;
+    call->owns_housekeeping = 0;
+}
+
 void jdv_transport_on_readable(void)
 {
     jdv_transport_state *state = active_state;
@@ -1785,15 +1810,15 @@ static SEXP send_messages_body(void *data)
         remaining = deadline - monotonic_seconds();
         if (remaining <= 0) {
             stop_connection(state, 1);
-            Rf_error("Timed out while sending a jdv message.");
+            Rf_error("Timed out while sending a jdv message. The viewer connection was closed; call jdv_view() again to reconnect.");
         }
         if (!send_bytes_until(state, text, length, deadline) ||
             !send_bytes_until(state, "\n", 1, deadline)) {
             stop_connection(state, 1);
-            Rf_error("Failed to send a jdv message.");
+            Rf_error("Failed to send a jdv message. The viewer connection was closed; call jdv_view() again to reconnect.");
         }
         if (state != active_state || !state->connected)
-            Rf_error("The jdv transport disconnected while sending.");
+            Rf_error("The jdv transport disconnected while sending. The viewer connection was closed; call jdv_view() again to reconnect.");
     }
     return Rf_ScalarLogical(1);
 }
@@ -1873,8 +1898,24 @@ SEXP C_jdv_transport_status(void)
 
 SEXP C_jdv_transport_housekeeping(void)
 {
-    jdv_transport_state *state = retiring_state;
+    jdv_transport_state *state;
     int complete = 1;
+    if (jdv_module_depth() != 1 || dispatch_depth || gate_depth || drain_depth ||
+        housekeeping_depth || construction_depth || reclamation_depth)
+        return Rf_ScalarLogical(1);
+
+    state = active_state;
+    if (state && state->connected && !state->closing && !state->busy &&
+        !state->sending && !state->holds) {
+        jdv_preflight_call call;
+        call.state = state;
+        call.owns_housekeeping = 0;
+        (void)R_ExecWithCleanup(preflight_state_body, &call,
+                                release_preflight_state, &call);
+    }
+
+    /* service_state releases its hold before EOF cleanup can run. */
+    state = retiring_state;
     if (state && state->pending_disconnect) {
         complete = run_disconnect_callback(state);
     }

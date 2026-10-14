@@ -103,6 +103,7 @@ def main():
     parser.add_argument("--request-bytes", type=int, default=1024 * 1024)
     parser.add_argument("--queue-messages", type=int, default=256)
     parser.add_argument("--queue-bytes", type=int, default=16 * 1024 * 1024)
+    parser.add_argument("--control", default="")
     args = parser.parse_args()
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -128,6 +129,44 @@ def main():
             params = opened["params"]
             if args.scenario == "disconnect":
                 write_result(args.result, {"hello": hello, "open": opened, "responses": []})
+                return
+            if args.scenario == "close-on-command":
+                write_result(args.result, {"hello": hello, "open": opened})
+                deadline = time.monotonic() + 10
+                while not os.path.exists(args.control) and time.monotonic() < deadline:
+                    time.sleep(0.001)
+                if not os.path.exists(args.control):
+                    raise RuntimeError("close command was not received")
+                connection.shutdown(socket.SHUT_RDWR)
+                connection.close()
+                write_result(args.result + ".closed", True)
+                return
+            if args.scenario == "preflight-frame":
+                request = {
+                    "id": "preflight-schema-1",
+                    "method": "table/schema",
+                    "params": {
+                        "table": params["table"],
+                        "generation": params["generation"],
+                    },
+                }
+                write_message(connection, request)
+                write_result(args.result + ".sent", True)
+                response = None
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    message = stream.read_response(timeout=0.1)
+                    if message is False:
+                        response = False
+                        break
+                    if message is not None and "id" in message:
+                        response = message
+                        break
+                write_result(args.result, {
+                    "hello": hello,
+                    "open": opened,
+                    "response": response,
+                })
                 return
             request = {
                 "id": "mock-rows-1",

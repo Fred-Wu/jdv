@@ -43,7 +43,8 @@ run_mock_host <- function(
   scenario,
   request_bytes,
   queue_messages = 256L,
-  queue_bytes = 16 * 1024^2
+  queue_bytes = 16 * 1024^2,
+  control_path = ""
 ) {
   python <- Sys.which("python3")
   script <- test_path("fixtures", "transport-host.py")
@@ -57,7 +58,8 @@ run_mock_host <- function(
       scenario,
       request_bytes,
       queue_messages,
-      queue_bytes
+      queue_bytes,
+      control_path
     ) {
       output <- system2(
         python,
@@ -76,7 +78,9 @@ run_mock_host <- function(
           "--queue-messages",
           as.character(queue_messages),
           "--queue-bytes",
-          as.character(queue_bytes)
+          as.character(queue_bytes),
+          "--control",
+          shQuote(control_path)
         ),
         stdout = TRUE,
         stderr = TRUE
@@ -94,7 +98,8 @@ run_mock_host <- function(
       scenario = scenario,
       request_bytes = request_bytes,
       queue_messages = queue_messages,
-      queue_bytes = queue_bytes
+      queue_bytes = queue_bytes,
+      control_path = control_path
     ),
     supervise = TRUE
   )
@@ -104,6 +109,14 @@ wait_for_file <- function(path, timeout = 10) {
   deadline <- Sys.time() + timeout
   while (!file.exists(path) && Sys.time() < deadline) {
     Sys.sleep(0.01)
+  }
+  file.exists(path)
+}
+
+wait_for_file_without_events <- function(path, timeout = 10) {
+  deadline <- Sys.time() + timeout
+  while (!file.exists(path) && Sys.time() < deadline) {
+    invisible(NULL)
   }
   file.exists(path)
 }
@@ -488,6 +501,127 @@ test_that("host EOF closes every registry entry", {
   with_mock_transport("disconnect", data.frame(value = 11:13))
 })
 
+test_that("a new viewer API call detects EOF and reconnects without waiting", {
+  skip_on_os("windows")
+  skip_if_not_installed("callr")
+  python <- Sys.which("python3")
+  skip_if(!nzchar(python), "python3 is required for the local mock host")
+
+  old_socket <- tempfile("jdv-reconnect-old-")
+  old_ready <- tempfile("jdv-reconnect-old-ready-")
+  old_result <- tempfile("jdv-reconnect-old-result-")
+  close_command <- tempfile("jdv-reconnect-close-command-")
+  new_socket <- tempfile("jdv-reconnect-new-")
+  new_ready <- tempfile("jdv-reconnect-new-ready-")
+  new_result <- tempfile("jdv-reconnect-new-result-")
+  old_host <- run_mock_host(
+    old_socket,
+    old_ready,
+    old_result,
+    "close-on-command",
+    1024^2,
+    control_path = close_command
+  )
+  new_host <- NULL
+  old_options <- options(c(
+    "jdv.address",
+    "jdv.transport.queue_messages",
+    "jdv.transport.queue_bytes"
+  ))
+  on.exit(
+    {
+      try(jdv_close(), silent = TRUE)
+      options(old_options)
+      for (host in list(old_host, new_host)) {
+        if (!is.null(host)) {
+          if (host$is_alive()) {
+            host$kill()
+          }
+          try(host$wait(), silent = TRUE)
+        }
+      }
+      unlink(c(
+        old_socket,
+        old_ready,
+        old_result,
+        paste0(old_result, ".closed"),
+        close_command,
+        new_socket,
+        new_ready,
+        new_result,
+        paste0(new_result, ".sent")
+      ))
+    },
+    add = TRUE
+  )
+
+  options(jdv.address = old_socket)
+  expect_true(wait_for_file(old_ready))
+  counter_before <- .jdv_state$session_counter
+  shared_id <- jdv_register(
+    data.frame(value = 99),
+    title = "registered-only",
+    mode = "paged"
+  )$id
+  old_id <- jdv_view(
+    data.frame(value = 11:13),
+    title = "reconnect",
+    mode = "paged"
+  )
+  expect_true(wait_for_file(old_result))
+  old_record <- jsonlite::fromJSON(old_result, simplifyVector = FALSE)
+  expect_identical(old_record$open$params$generation, 1L)
+
+  new_host <- run_mock_host(
+    new_socket,
+    new_ready,
+    new_result,
+    "preflight-frame",
+    1024^2
+  )
+  expect_true(wait_for_file(new_ready))
+  observed <- local({
+    file.create(close_command)
+    expect_true(wait_for_file_without_events(paste0(old_result, ".closed")))
+    options(jdv.address = new_socket)
+    new_id <- jdv_view(
+      data.frame(value = 21:23),
+      title = "reconnect",
+      mode = "paged"
+    )
+    expect_false(identical(new_id, old_id))
+    entries <- ls(.jdv_state$entries, all.names = TRUE)
+    expect_false(old_id %in% entries)
+    expect_false(shared_id %in% entries)
+    expect_identical(entries, new_id)
+    expect_gt(sys.nframe(), 0L)
+    expect_true(wait_for_file_without_events(paste0(new_result, ".sent")))
+    third_id <- jdv_view(
+      data.frame(value = 31:33),
+      title = "preflight",
+      mode = "paged"
+    )
+    queued <- .jdv_transport_status()
+    expect_false(file.exists(new_result))
+    jdv_rpc(NULL)
+    list(third_id = third_id, queued = queued)
+  })
+  expect_identical(observed$queued$queued_messages, 1)
+  expect_type(observed$third_id, "character")
+  expect_identical(.jdv_state$session_counter, counter_before + 2L)
+  expect_false(exists(old_id, envir = .jdv_state$entries, inherits = FALSE))
+
+  expect_true(wait_for_file(new_result))
+  new_record <- jsonlite::fromJSON(new_result, simplifyVector = FALSE)
+  expect_identical(
+    new_record$hello$params$session,
+    paste0("r-", Sys.getpid(), "-", counter_before + 2L)
+  )
+  expect_identical(new_record$open$params$generation, 1L)
+  expect_identical(new_record$response$id, "preflight-schema-1")
+  expect_false("error" %in% names(new_record$response))
+})
+
 test_that("a finalizer cannot unload an active transport callback", {
   skip_on_os("windows")
   skip_if_not_installed("callr")
@@ -617,9 +751,9 @@ test_that("a finalizer cannot unload an active transport callback", {
           get("jdv_unload_reload_error", envir = .GlobalEnv),
           "error"
         ),
-        task_callback_present = any(grepl(
-          "^jdv_transport_",
-          getTaskCallbackNames()
+        task_callback_present = any(startsWith(
+          getTaskCallbackNames(),
+          "jdv_transport_"
         )),
         registry_entries = length(ls(old_namespace$.jdv_state$entries))
       )
