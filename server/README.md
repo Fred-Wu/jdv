@@ -130,3 +130,28 @@ include `Z` or a numeric timezone offset in both modes. The R request contract
 can interpret offset-free datetimes using the session timezone, but the viewer
 applies the same explicit input rule to Snapshot and Paged tables because it
 cannot infer that timezone from a cached Snapshot.
+
+## Real R end-to-end tests
+
+The real-session viewer regressions use `arf` to control a headless R process.
+They run the installed `jdv` package against the real Deno server and route R
+traffic through a test-only TCP relay that records compact JSON frame metadata.
+The relay is outside the production server and lets tests check request counts,
+Snapshot descriptors, and Paged responses without changing server behavior.
+
+Build or install `jdv` into a scratch library with `devtools`, then run the
+focused E2E file with that library selected:
+
+```sh
+JDV_TEST_R_LIB=/path/to/scratch-library deno test -A --no-config server/tests/e2e_test.ts
+```
+
+The `arf` executable must be on `PATH`. The test process prepends the selected
+scratch library to `.libPaths()`, loads `jdv` from that exact library, and logs
+the package and DLL paths once. These tests cover Snapshot queries without R
+requests, Paged queries without serializing the full table at registration,
+request handling while R is in a top-level wait, immediate same-process
+reconnection after host disconnect, and agreement between the two query modes.
+The reconnect case also checks that the old table and shared registry entries
+are released before the new Paged request succeeds. The tests do not use the
+`jdv_rpc(NULL)` polling loop from the unit integration fixture.
