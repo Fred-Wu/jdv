@@ -13,10 +13,47 @@ import {
   listenerClosed,
   pathWithin,
   probeListenerSocket,
+  type ProbeTimers,
   ProcessLines,
   removeCacheDirectory,
   stopRChild,
 } from "./integration_cleanup.ts";
+
+function createFakeTimers(): ProbeTimers & {
+  advance(delayMs: number): Promise<void>;
+} {
+  type Timer = ReturnType<typeof setTimeout>;
+  const tasks = new Map<Timer, { at: number; callback: () => void }>();
+  let now = 0;
+  let nextId = 0;
+  return {
+    setTimeout(callback, delayMs) {
+      const id = ++nextId as unknown as Timer;
+      tasks.set(id, { at: now + delayMs, callback });
+      return id;
+    },
+    clearTimeout(timer) {
+      tasks.delete(timer);
+    },
+    async advance(delayMs) {
+      const end = now + delayMs;
+      while (true) {
+        const next = [...tasks.entries()]
+          .filter(([, task]) => task.at <= end)
+          .sort(([leftId, left], [rightId, right]) =>
+            left.at - right.at || Number(leftId) - Number(rightId)
+          )[0];
+        if (!next) break;
+        const [id, task] = next;
+        tasks.delete(id);
+        now = task.at;
+        task.callback();
+        await Promise.resolve();
+      }
+      now = end;
+    },
+  };
+}
 
 Deno.test("cache cleanup retries only transient Windows sharing violations", async () => {
   const sharing = new Error("The process cannot access the file (os error 32)");
@@ -486,72 +523,77 @@ Deno.test("browser cleanup uses owned server force shutdown and retains the orig
 });
 
 Deno.test("listener refusal survives delayed close without connection timer overwriting it", async () => {
+  const timers = createFakeTimers();
   const socket = new EventEmitter() as EventEmitter & { destroy(): void };
   socket.destroy = () => {
-    setTimeout(() => socket.emit("close"), 10);
+    timers.setTimeout(() => socket.emit("close"), 10);
   };
-  const probing = probeListenerSocket(socket, "fake:refused", 2, 50);
+  const probing = probeListenerSocket(socket, "fake:refused", 2, 50, timers);
   socket.emit(
     "error",
     Object.assign(new Error("refused"), { code: "ECONNREFUSED" }),
   );
+  await timers.advance(10);
   assertEquals(await probing, true);
 });
 
 Deno.test("listener probes distinguish active, unexpected error, and unclosed socket", async () => {
   for (const active of [true, false]) {
+    const timers = createFakeTimers();
     const socket = new EventEmitter() as EventEmitter & { destroy(): void };
     socket.destroy = () => {
-      queueMicrotask(() => socket.emit("close"));
+      timers.setTimeout(() => socket.emit("close"), 0);
     };
     const unexpected = Object.assign(new Error("permission denied"), {
       code: "EACCES",
     });
-    const probing = probeListenerSocket(socket, "fake:outcome", 20, 20);
+    const probing = probeListenerSocket(socket, "fake:outcome", 20, 20, timers);
     let caught: unknown;
     if (active) {
       socket.emit("connect");
+      await timers.advance(0);
       assertEquals(await probing, false);
     } else {
       socket.emit("error", unexpected);
+      const observed = probing.catch((error) => caught = error);
+      await timers.advance(0);
       try {
-        await probing;
-      } catch (error) {
-        caught = error;
+        await observed;
+      } catch {
+        // The rejection was collected above.
       }
       assertEquals(caught === unexpected, true);
     }
   }
+  const timers = createFakeTimers();
   const socket = new EventEmitter() as EventEmitter & { destroy(): void };
   socket.destroy = () => {};
-  const probing = probeListenerSocket(socket, "fake:unclosed", 2, 2);
+  const probing = probeListenerSocket(socket, "fake:unclosed", 2, 2, timers);
   socket.emit(
     "error",
     Object.assign(new Error("refused"), { code: "ECONNREFUSED" }),
   );
   let caught: unknown;
-  try {
-    await probing;
-  } catch (error) {
-    caught = error;
-  }
+  const observed = probing.catch((error) => caught = error);
+  await timers.advance(2);
+  await observed;
   assertEquals(String(caught).includes("socket did not close"), true);
   socket.removeAllListeners();
 });
 
 Deno.test("listener connect timeout retains its phase and closes the probe socket", async () => {
+  const timers = createFakeTimers();
   const socket = new EventEmitter() as EventEmitter & { destroy(): void };
   let destroyed = false;
   socket.destroy = () => {
     destroyed = true;
-    queueMicrotask(() => socket.emit("close"));
+    socket.emit("close");
   };
   let caught: unknown;
-  try {
-    await probeListenerSocket(socket, "fake:pending", 2, 20);
-  } catch (error) {
-    caught = error;
-  }
+  const probing = probeListenerSocket(socket, "fake:pending", 2, 20, timers);
+  const observed = probing.catch((error) => caught = error);
+  await timers.advance(2);
+  await observed;
   assertEquals(destroyed, true);
   assertEquals(String(caught).includes("during connect"), true);
   assertEquals(String(caught).includes("events="), true);
@@ -571,18 +613,33 @@ Deno.test("listener probe confirms a real TCP listener is active then refused af
 
 Deno.test("listener probes preserve late refusal and live results through separately bounded close", async () => {
   for (const active of [false, true]) {
+    const timers = createFakeTimers();
     const socket = new EventEmitter() as EventEmitter & { destroy(): void };
     socket.destroy = () => {
-      setTimeout(() => socket.emit("close"), 10);
+      timers.setTimeout(() => socket.emit("close"), 10);
     };
-    const probing = probeListenerSocket(socket, "fake:late-outcome", 15, 15);
-    setTimeout(() => {
+    const probing = probeListenerSocket(
+      socket,
+      "fake:late-outcome",
+      15,
+      15,
+      timers,
+    );
+    timers.setTimeout(() => {
       if (active) socket.emit("connect");
-      else {socket.emit(
+      else {
+        socket.emit(
           "error",
           Object.assign(new Error("refused"), { code: "ECONNREFUSED" }),
-        );}
-    }, 10);
+        );
+      }
+    }, 14);
+    await timers.advance(14);
+    let settled = false;
+    void probing.then(() => settled = true, () => settled = true);
+    await Promise.resolve();
+    assertEquals(settled, false);
+    await timers.advance(10);
     assertEquals(await probing, !active);
   }
 });

@@ -66,6 +66,14 @@ export function listenerClosed(address: string): Promise<boolean> {
   return probeListenerSocket(connect(options), address);
 }
 
+export interface ProbeTimers {
+  setTimeout(
+    callback: () => void,
+    delayMs: number,
+  ): ReturnType<typeof setTimeout>;
+  clearTimeout(timer: ReturnType<typeof setTimeout>): void;
+}
+
 export function probeListenerSocket(
   socket: {
     once(event: "connect" | "close", listener: () => void): unknown;
@@ -78,6 +86,7 @@ export function probeListenerSocket(
   address: string,
   connectTimeoutMs = 5_000,
   closeTimeoutMs = 5_000,
+  timers: ProbeTimers = { setTimeout, clearTimeout },
 ): Promise<boolean> {
   return new Promise((resolve, reject) => {
     let result: boolean | Error | undefined;
@@ -87,8 +96,8 @@ export function probeListenerSocket(
     const beginClose = () => {
       if (closing) return;
       closing = true;
-      clearTimeout(connectTimer);
-      closeTimer = setTimeout(() => {
+      timers.clearTimeout(connectTimer);
+      closeTimer = timers.setTimeout(() => {
         const error = new Error(
           `Listener probe socket did not close: ${address}; events=${
             events.join(",")
@@ -106,7 +115,7 @@ export function probeListenerSocket(
       }, closeTimeoutMs);
       socket.destroy();
     };
-    const connectTimer = setTimeout(() => {
+    const connectTimer = timers.setTimeout(() => {
       result = new Error(
         `Timed out probing the stopped R listener during connect: ${address}; events=${
           events.join(",")
@@ -132,8 +141,8 @@ export function probeListenerSocket(
       },
     );
     socket.once("close", () => {
-      clearTimeout(connectTimer);
-      if (closeTimer !== undefined) clearTimeout(closeTimer);
+      timers.clearTimeout(connectTimer);
+      if (closeTimer !== undefined) timers.clearTimeout(closeTimer);
       if (result instanceof Error) reject(result);
       else if (result === undefined) {
         reject(new Error(`Listener probe closed without a result: ${address}`));
