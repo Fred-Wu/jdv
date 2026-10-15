@@ -1,5 +1,5 @@
 import { assert } from "./assert.ts";
-import { ArfSession } from "./helpers/arf_session.ts";
+import { type ArfEvalResult, ArfSession } from "./helpers/arf_session.ts";
 import { removeCacheDirectory } from "./integration_cleanup.ts";
 
 const encoder = new TextEncoder();
@@ -47,9 +47,15 @@ class BrowserMessages {
     time: number;
   }> = [];
   #waiters: Array<() => void> = [];
+  #readError: Error | undefined;
 
   add(value: Record<string, unknown>): void {
     this.messages.push({ value, time: performance.now() });
+    for (const wake of this.#waiters.splice(0)) wake();
+  }
+
+  fail(error: Error): void {
+    this.#readError = error;
     for (const wake of this.#waiters.splice(0)) wake();
   }
 
@@ -60,6 +66,9 @@ class BrowserMessages {
   ): Promise<{ value: Record<string, unknown>; time: number }> {
     const deadline = performance.now() + timeoutMs;
     for (;;) {
+      if (this.#readError) {
+        throw new Error(`WebSocket reader stopped: ${this.#readError.message}`);
+      }
       const found = this.messages.find((message) => predicate(message.value));
       if (found) return found;
       const remaining = deadline - performance.now();
@@ -78,6 +87,7 @@ class RawWebSocket {
   readonly #connection: Deno.Conn;
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>;
   #buffer: Uint8Array<ArrayBufferLike> = new Uint8Array();
+  #closed = false;
 
   private constructor(connection: Deno.Conn) {
     this.#connection = connection;
@@ -112,21 +122,38 @@ class RawWebSocket {
   }
 
   async read(): Promise<Record<string, unknown>> {
-    const header = await this.#readExact(2);
-    let length = header[1] & 0x7f;
-    if (length === 126) {
-      const extended = await this.#readExact(2);
-      length = (extended[0] << 8) | extended[1];
-    } else if (length === 127) {
-      const extended = await this.#readExact(8);
-      const size = new DataView(extended.buffer).getBigUint64(0, false);
-      if (size > BigInt(Number.MAX_SAFE_INTEGER)) {
-        throw new Error("WebSocket message is too large for this test.");
+    const fragments: Uint8Array[] = [];
+    let fragmented = false;
+    for (;;) {
+      const frame = await this.#readFrame();
+      if (frame.opcode === 0x9) {
+        await this.#sendFrame(0xa, frame.payload);
+        continue;
       }
-      length = Number(size);
+      if (frame.opcode === 0xa) continue;
+      if (frame.opcode === 0x8) {
+        throw new Error("The server closed the WebSocket connection.");
+      }
+      if (frame.opcode === 0x1) {
+        if (fragmented) {
+          throw new Error("A text frame interrupted a fragmented message.");
+        }
+        if (frame.final) {
+          return JSON.parse(decoder.decode(frame.payload));
+        }
+        fragments.push(frame.payload);
+        fragmented = true;
+        continue;
+      }
+      if (frame.opcode === 0x0 && fragmented) {
+        fragments.push(frame.payload);
+        if (frame.final) {
+          return JSON.parse(decoder.decode(concat(...fragments)));
+        }
+        continue;
+      }
+      throw new Error(`Unexpected WebSocket opcode ${frame.opcode}.`);
     }
-    assert((header[0] & 0x0f) === 1, "Expected a WebSocket text frame.");
-    return JSON.parse(decoder.decode(await this.#readExact(length)));
   }
 
   async send(value: Record<string, unknown>): Promise<void> {
@@ -150,11 +177,73 @@ class RawWebSocket {
   }
 
   close(): void {
+    this.#closed = true;
     try {
       this.#connection.close();
     } catch {
       // Closing test sockets is idempotent.
     }
+  }
+
+  get closed(): boolean {
+    return this.#closed;
+  }
+
+  async #sendFrame(opcode: number, payload: Uint8Array): Promise<void> {
+    if (opcode >= 0x8 && payload.length > 125) {
+      throw new Error("WebSocket control payload exceeds 125 bytes.");
+    }
+    let header: Uint8Array;
+    if (payload.length < 126) {
+      header = new Uint8Array([0x80 | opcode, 0x80 | payload.length]);
+    } else if (payload.length <= 0xffff) {
+      header = new Uint8Array([
+        0x80 | opcode,
+        0xfe,
+        (payload.length >>> 8) & 0xff,
+        payload.length & 0xff,
+      ]);
+    } else {
+      throw new Error("WebSocket frame is too large for this test.");
+    }
+    const mask = crypto.getRandomValues(new Uint8Array(4));
+    const masked = payload.map((byte, index) => byte ^ mask[index % 4]);
+    await writeAll(this.#connection, concat(header, mask, masked));
+  }
+
+  async #readFrame(): Promise<{
+    final: boolean;
+    opcode: number;
+    payload: Uint8Array;
+  }> {
+    const header = await this.#readExact(2);
+    const final = (header[0] & 0x80) !== 0;
+    const opcode = header[0] & 0x0f;
+    if ((header[0] & 0x70) !== 0) {
+      throw new Error("Unexpected WebSocket reserved bits.");
+    }
+    if ((header[1] & 0x80) !== 0) {
+      throw new Error("Server WebSocket frames must not be masked.");
+    }
+    let length = header[1] & 0x7f;
+    if (length === 126) {
+      const extended = await this.#readExact(2);
+      length = (extended[0] << 8) | extended[1];
+    } else if (length === 127) {
+      const extended = await this.#readExact(8);
+      const size = new DataView(extended.buffer, extended.byteOffset)
+        .getBigUint64(0, false);
+      if (size > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error("WebSocket message is too large for this test.");
+      }
+      length = Number(size);
+    }
+    if (opcode >= 0x8 && (!final || length > 125)) {
+      throw new Error(
+        "Invalid fragmented or oversized WebSocket control frame.",
+      );
+    }
+    return { final, opcode, payload: await this.#readExact(length) };
   }
 
   async #readHeaders(): Promise<string> {
@@ -177,6 +266,54 @@ class RawWebSocket {
         throw new Error("WebSocket connection closed unexpectedly.");
       }
       this.#buffer = concat(this.#buffer, next.value);
+    }
+    const result = this.#buffer.slice(0, length);
+    this.#buffer = this.#buffer.slice(length);
+    return result;
+  }
+}
+
+class SocketFrameReader {
+  #buffer: Uint8Array<ArrayBufferLike> = new Uint8Array();
+
+  constructor(private readonly connection: Deno.Conn) {}
+
+  async readHeaders(): Promise<string> {
+    const bytes: number[] = [];
+    while (bytes.length < 16 * 1024) {
+      bytes.push((await this.#readExact(1))[0]);
+      const length = bytes.length;
+      if (
+        length >= 4 && bytes[length - 4] === 13 && bytes[length - 3] === 10 &&
+        bytes[length - 2] === 13 && bytes[length - 1] === 10
+      ) return decoder.decode(new Uint8Array(bytes));
+    }
+    throw new Error("Test WebSocket handshake exceeded 16 KiB.");
+  }
+
+  async readFrame(): Promise<{ opcode: number; payload: Uint8Array }> {
+    const header = await this.#readExact(2);
+    const opcode = header[0] & 0x0f;
+    const length = header[1] & 0x7f;
+    assert((header[1] & 0x80) !== 0, "Client WebSocket frame was not masked.");
+    assert(
+      length < 126,
+      "Test client frame unexpectedly used an extended length.",
+    );
+    const mask = await this.#readExact(4);
+    const payload = await this.#readExact(length);
+    return {
+      opcode,
+      payload: payload.map((byte, index) => byte ^ mask[index % 4]),
+    };
+  }
+
+  async #readExact(length: number): Promise<Uint8Array> {
+    while (this.#buffer.length < length) {
+      const chunk = new Uint8Array(4 * 1024);
+      const count = await this.connection.read(chunk);
+      if (count === null) throw new Error("Test WebSocket socket closed.");
+      this.#buffer = concat(this.#buffer, chunk.subarray(0, count));
     }
     const result = this.#buffer.slice(0, length);
     this.#buffer = this.#buffer.slice(length);
@@ -210,6 +347,7 @@ Deno.test({
       controller: AbortController;
       observation: Promise<MarkerObservation>;
     }> = [];
+    let fallbackSleepReleasePath: string | undefined;
 
     try {
       const { startServer } = await import("../main.ts");
@@ -253,8 +391,12 @@ Deno.test({
       void (async () => {
         try {
           for (;;) browserMessages.add(await browser!.read());
-        } catch {
-          // The test closes the browser socket during cleanup.
+        } catch (error) {
+          if (!browser!.closed) {
+            browserMessages.fail(
+              error instanceof Error ? error : new Error(String(error)),
+            );
+          }
         }
       })();
       await browserMessages.waitFor(
@@ -266,6 +408,9 @@ Deno.test({
       const env = Deno.env.toObject();
       env.XDG_CACHE_HOME = cacheRoot;
       env.JDV_ADDRESS = `tcp://127.0.0.1:${proxyPort}`;
+      // The Windows console EOF diagnostic is emitted at the sys module's
+      // debug level. Keep that evidence enabled for this test session.
+      env.RUST_LOG = "arf_libr::sys=debug";
       if (testLibrary) env.R_LIBS_USER = testLibrary;
       arf = new ArfSession();
       await arf.start({ env });
@@ -418,6 +563,7 @@ Deno.test({
       markerDirs.push(browserMarkers.directory);
       const browserStartedPath = `${browserMarkers.directory}/started`;
       const browserDonePath = `${browserMarkers.directory}/done`;
+      const browserFrameProbePath = `${browserMarkers.directory}/frame-depth`;
       const browserObserverController = new AbortController();
       const browserCompletionMarkerObserved = observeMarker(
         arf,
@@ -429,8 +575,9 @@ Deno.test({
         controller: browserObserverController,
         observation: browserCompletionMarkerObserved,
       });
+      const browserLogBefore = await arf.readLog();
       const browserEvaluation = arf.send(
-        `local({ writeLines("BROWSER_STARTED", ${
+        `local({ writeLines(paste0("BROWSER_STARTED:", sys.nframe()), ${
           rQuote(browserStartedPath)
         }); browser(); writeLines("BROWSER_DONE", ${
           rQuote(browserDonePath)
@@ -438,26 +585,185 @@ Deno.test({
         { timeoutMs: 60_000 },
       );
       await arf.waitForFile(browserStartedPath);
+      const browserStartedMarker = await Deno.readTextFile(browserStartedPath);
+      const browserStartFrameDepth = Number(
+        browserStartedMarker.replace(/^BROWSER_STARTED:/, "").trim(),
+      );
+      assert(
+        Number.isSafeInteger(browserStartFrameDepth) &&
+          browserStartFrameDepth > 0,
+        `The BROWSER_STARTED marker did not prove a function frame: ${
+          JSON.stringify(browserStartedMarker)
+        }.`,
+      );
       const browserStartedAt = performance.now();
-
       const browserRowsId = "interactive-browser-rows";
-      await sendRows(browserRowsId, 1);
-      await frameLog.waitFor(
-        rRequest(1),
-        5_000,
-        "browser page request on the R TCP stream",
+      const browserEvaluationOutcome = browserEvaluation.result.then(
+        (result) => ({ state: "success" as const, result }),
+        (error: unknown) => ({ state: "error" as const, error }),
       );
-      await delay(1_000);
-      assert(
-        !browserMessages.messages.some((message) =>
-          response(browserRowsId)(message.value)
-        ),
-        "The browser-frame request unexpectedly ran inside the function frame.",
+      const earlyBrowserOutcome = await settleWithin(
+        browserEvaluationOutcome,
+        3_000,
       );
-      assert(
-        !(await fileExists(browserDonePath, "BROWSER_DONE")),
-        "The browser() frame returned before console continuation input.",
-      );
+
+      let heldRowsId = browserRowsId;
+      let heldRowOffset = 1;
+      let heldDonePath = browserDonePath;
+      let heldCompletionMarkerObserved = browserCompletionMarkerObserved;
+      let heldEvaluation = browserEvaluation;
+      let heldStartedAt = browserStartedAt;
+      let browserConsoleFrameDepth: number | null = null;
+      let heldKind: "browser" | "sleep-frame";
+
+      if (earlyBrowserOutcome.settled) {
+        assert(
+          earlyBrowserOutcome.value.state === "success" &&
+            earlyBrowserOutcome.value.result.error === null,
+          `The browser evaluation ended before continuation without success: ${
+            JSON.stringify(earlyBrowserOutcome.value)
+          }.`,
+        );
+        await arf.waitForFile(browserDonePath, 2_000);
+        const browserDone = await fileExists(
+          browserDonePath,
+          "BROWSER_DONE",
+        );
+        const eofLog = await waitForNewLogMessage(
+          arf,
+          browserLogBefore,
+          "no callback set, returning 0",
+          2_000,
+        );
+        const browserEofEvidence = {
+          os: Deno.build.os,
+          browserStartedMarker,
+          browserStartFrameDepth,
+          browserDone,
+          browserEvaluationError: earlyBrowserOutcome.value.result.error,
+          eofLogWasNew: eofLog.found,
+        };
+        assert(
+          isConfirmedWindowsBrowserEof(browserEofEvidence),
+          `The browser evaluation returned before console continuation, but the Windows arf EOF evidence was incomplete: ${
+            JSON.stringify({
+              ...browserEofEvidence,
+              browserLog: eofLog.contents,
+            })
+          }.`,
+        );
+        heldKind = "sleep-frame";
+        const sleepHoldMarkers = await markerPath();
+        markerDirs.push(sleepHoldMarkers.directory);
+        const sleepHoldStartedPath = `${sleepHoldMarkers.directory}/started`;
+        heldDonePath = `${sleepHoldMarkers.directory}/done`;
+        fallbackSleepReleasePath = `${sleepHoldMarkers.directory}/release`;
+        const sleepHoldController = new AbortController();
+        heldCompletionMarkerObserved = observeMarker(
+          arf,
+          heldDonePath,
+          70_000,
+          sleepHoldController.signal,
+        );
+        markerObservers.push({
+          controller: sleepHoldController,
+          observation: heldCompletionMarkerObserved,
+        });
+        const sleepFrameCode = [
+          `writeLines(paste0("SLEEP_FRAME_STARTED:", sys.nframe()), ${
+            rQuote(sleepHoldStartedPath)
+          })`,
+          "deadline <- Sys.time() + 60",
+          `while (!file.exists(${
+            rQuote(fallbackSleepReleasePath)
+          }) && Sys.time() < deadline) Sys.sleep(0.01)`,
+          `if (!file.exists(${
+            rQuote(fallbackSleepReleasePath)
+          })) stop("The test did not release the function-scoped sleep frame.")`,
+          `writeLines("SLEEP_FRAME_DONE", ${rQuote(heldDonePath)})`,
+        ].join("; ");
+        heldEvaluation = arf.send(
+          `local({ ${sleepFrameCode} })`,
+          { timeoutMs: 65_000 },
+        );
+        await arf.waitForFile(sleepHoldStartedPath, 5_000);
+        const sleepStartedMarker = await Deno.readTextFile(
+          sleepHoldStartedPath,
+        );
+        const sleepStartFrameDepth = Number(
+          sleepStartedMarker.replace(/^SLEEP_FRAME_STARTED:/, "").trim(),
+        );
+        assert(
+          Number.isSafeInteger(sleepStartFrameDepth) &&
+            sleepStartFrameDepth > 0,
+          `The SLEEP_FRAME_STARTED marker did not prove a function frame: ${
+            JSON.stringify(sleepStartedMarker)
+          }.`,
+        );
+        heldStartedAt = performance.now();
+        heldRowsId = "interactive-sleep-frame-rows";
+        heldRowOffset = 2;
+        console.log(
+          `interactive regression: Windows arf browser EOF confirmed by a new log entry; browser hold is not treated as validated; function-scoped Sys.sleep frame depth ${sleepStartFrameDepth} is used for the transport hold`,
+        );
+      } else {
+        assert(
+          !await fileExists(browserDonePath, "BROWSER_DONE"),
+          "BROWSER_DONE appeared although the browser evaluation did not finish.",
+        );
+        heldKind = "browser";
+        const preProbe = await browserProbeSnapshot(
+          arf,
+          browserDonePath,
+          browserEvaluationOutcome,
+          browserLogBefore,
+        );
+        if (preProbe.done || preProbe.evaluation.settled) {
+          throw new Error(
+            "The browser evaluation completed before the console frame probe. Pre-probe evidence: " +
+              JSON.stringify(preProbe),
+          );
+        }
+        try {
+          await arf.sendConsoleInput(
+            `writeLines(as.character(sys.nframe()), ${
+              rQuote(browserFrameProbePath)
+            })`,
+          );
+          await arf.waitForFile(browserFrameProbePath, 2_000);
+        } catch (error) {
+          const postProbe = await browserProbeSnapshot(
+            arf,
+            browserDonePath,
+            browserEvaluationOutcome,
+            browserLogBefore,
+          );
+          throw new Error(
+            `The browser console frame probe failed: ${String(error)}. ` +
+              `Pre-probe evidence: ${JSON.stringify(preProbe)}. ` +
+              `Post-probe evidence: ${JSON.stringify(postProbe)}`,
+          );
+        }
+        browserConsoleFrameDepth = Number(
+          (await Deno.readTextFile(browserFrameProbePath)).trim(),
+        );
+        const doneAfterFrameProbe = await fileExists(
+          browserDonePath,
+          "BROWSER_DONE",
+        );
+        assert(
+          !doneAfterFrameProbe && browserConsoleFrameDepth > 0,
+          `The browser() frame was not active during the console frame probe. Diagnostics: ${
+            JSON.stringify({
+              browserStartedMarker,
+              browserStartFrameDepth,
+              preProbe,
+              browserConsoleFrameDepth,
+              doneAfterFrameProbe,
+            })
+          }.`,
+        );
+      }
 
       const cycles = 50;
       const cancelWireIds: string[] = [];
@@ -499,11 +805,7 @@ Deno.test({
         );
       }
 
-      await delay(6_000);
-      assert(
-        performance.now() - browserStartedAt >= 5_000,
-        "The function-scoped browser frame was not held for at least five seconds.",
-      );
+      if (heldKind === "browser") await delay(6_000);
       const acks = frameLog.frames
         .filter((frame) =>
           frame.direction === "from-r" && frame.value.method === "ack"
@@ -524,33 +826,120 @@ Deno.test({
         }.`,
       );
 
-      await arf.sendConsoleInput("c");
-      const browserResult = await browserEvaluation.wait(10_000);
+      await sendRows(heldRowsId, heldRowOffset);
+      await frameLog.waitFor(
+        rRequest(heldRowOffset),
+        5_000,
+        heldKind + "-frame page request on the R TCP stream",
+      );
+      await delay(250);
+      const doneAfterHeldRequest = await fileExists(
+        heldDonePath,
+        heldKind === "browser" ? "BROWSER_DONE" : "SLEEP_FRAME_DONE",
+      );
+      const responseWhileHeld = browserMessages.messages.find(
+        (message) => response(heldRowsId)(message.value),
+      );
       assert(
-        browserResult.error === null,
-        `R browser evaluation failed: ${browserResult.error}`,
+        !doneAfterHeldRequest && !responseWhileHeld,
+        "The request was not held while R remained in the " + heldKind +
+          " function frame. Diagnostics: " +
+          JSON.stringify({
+            done: doneAfterHeldRequest,
+            response: responseWhileHeld?.value ?? null,
+          }),
       );
-      const browserCompletionMarkerAt = await markerTime(
-        browserCompletionMarkerObserved,
+
+      const heldDoneLine = heldKind === "browser"
+        ? "BROWSER_DONE"
+        : "SLEEP_FRAME_DONE";
+      const heldDoneBeforeRelease = await fileExists(
+        heldDonePath,
+        heldDoneLine,
+      );
+      const heldResponseBeforeRelease = browserMessages.messages.find(
+        (message) => response(heldRowsId)(message.value),
       );
       assert(
-        await fileExists(browserDonePath, "BROWSER_DONE"),
-        "The browser() frame did not return after console continuation input.",
+        !heldDoneBeforeRelease && !heldResponseBeforeRelease,
+        "The " + heldKind +
+          " hold ended before explicit release. Diagnostics: " +
+          JSON.stringify({
+            done: heldDoneBeforeRelease,
+            response: heldResponseBeforeRelease?.value ?? null,
+          }),
       );
-      const browserRowsResponse = await browserMessages.waitFor(
-        response(browserRowsId),
+
+      if (heldKind === "browser") {
+        await arf.sendConsoleInput("c");
+      } else {
+        assert(
+          fallbackSleepReleasePath !== undefined,
+          "The fallback sleep frame has no release marker.",
+        );
+        await Deno.writeTextFile(fallbackSleepReleasePath, "release");
+      }
+      const heldResult = await heldEvaluation.wait(10_000);
+      assert(
+        heldResult.error === null,
+        "R " + heldKind + " hold evaluation failed: " + heldResult.error,
+      );
+      const heldCompletionMarkerAt = await markerTime(
+        heldCompletionMarkerObserved,
+      );
+      assert(
+        await fileExists(heldDonePath, heldDoneLine),
+        "The " + heldKind +
+          " hold did not write its completion marker after release.",
+      );
+      const heldResponse = await browserMessages.waitFor(
+        response(heldRowsId),
         1_000,
-        "automatic response after the BROWSER_DONE marker",
-      );
-      const browserDelay = browserRowsResponse.time -
-        browserCompletionMarkerAt;
-      const browserFrameUntilCompletionMarkerMs = browserCompletionMarkerAt -
-        browserStartedAt;
+        "automatic response after the " + heldKind + " completion marker",
+      ).catch((error: unknown) => {
+        const request = frameLog.frames.find(rRequest(heldRowOffset));
+        const wireId = request ? String(request.value.id) : null;
+        throw new Error(
+          String(error) + ". Held response diagnostics: " +
+            JSON.stringify({
+              heldKind,
+              heldRowsId,
+              heldRowOffset,
+              heldDoneLine,
+              request: request?.value ?? null,
+              terminals: wireId === null
+                ? []
+                : frameLog.frames.filter(terminal(wireId)).map((frame) =>
+                  frame.value
+                ),
+              browserMessages: browserMessages.messages.slice(-12).map((item) =>
+                item.value
+              ),
+            }),
+        );
+      });
+      const heldResponseDelay = heldResponse.time - heldCompletionMarkerAt;
+      const heldFrameDurationMs = heldCompletionMarkerAt - heldStartedAt;
+      const heldWireRequest = frameLog.frames.find(rRequest(heldRowOffset));
+      const heldWireId = heldWireRequest
+        ? String(heldWireRequest.value.id)
+        : null;
+      const heldTerminalFrames = heldWireId === null
+        ? []
+        : frameLog.frames.filter(terminal(heldWireId));
       assert(
-        browserDelay <= 1_000,
-        `Browser-frame response arrived ${
-          browserDelay.toFixed(0)
-        } ms after the BROWSER_DONE marker was observed.`,
+        heldResponseDelay <= 1_000,
+        heldKind + " hold response arrived " +
+          heldResponseDelay.toFixed(0) +
+          " ms after its completion marker was observed.",
+      );
+      assert(
+        heldTerminalFrames.length === 1 &&
+          "result" in heldTerminalFrames[0].value &&
+          !("error" in heldTerminalFrames[0].value),
+        "Expected exactly one successful R terminal for held request " +
+          String(heldWireId) + ". Diagnostics: " +
+          JSON.stringify(heldTerminalFrames.map((frame) => frame.value)),
       );
 
       for (const wireId of cancelWireIds) {
@@ -594,15 +983,23 @@ Deno.test({
       );
 
       console.log(
-        `interactive regression: response after BROWSER_DONE marker in ${
-          browserDelay.toFixed(0)
-        } ms; function frame lasted ${
-          browserFrameUntilCompletionMarkerMs.toFixed(0)
-        } ms from BROWSER_STARTED to BROWSER_DONE observation; ${cycles}/${cycles} R cancellation terminals exactly once; ACK reached ${
-          acks.at(-1)
-        } frames; fresh response in ${freshDelay.toFixed(0)} ms`,
+        "interactive regression: " + heldKind + " hold response in " +
+          heldResponseDelay.toFixed(0) +
+          " ms after completion marker; browser() entry frame depth " +
+          browserStartFrameDepth +
+          (browserConsoleFrameDepth === null
+            ? ""
+            : ", console probe depth " + browserConsoleFrameDepth) +
+          "; held frame lasted " + heldFrameDurationMs.toFixed(0) +
+          " ms; " + cycles + "/" + cycles +
+          " R cancellation terminals exactly once; ACK reached " +
+          acks.at(-1) + " frames; fresh response in " +
+          freshDelay.toFixed(0) + " ms",
       );
     } finally {
+      if (fallbackSleepReleasePath !== undefined) {
+        await Deno.writeTextFile(fallbackSleepReleasePath, "release");
+      }
       for (const observer of markerObservers) observer.controller.abort();
       await Promise.all(
         markerObservers.map((observer) => observer.observation),
@@ -648,6 +1045,113 @@ Deno.test("ArfSession marker observer cancellation closes its watcher", async ()
     controller.abort();
     await removeCacheDirectory(directory);
   }
+});
+
+Deno.test("RawWebSocket answers ping frames and keeps reading text messages", async () => {
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const address = listener.addr as Deno.NetAddr;
+  let serverConnection: Deno.Conn | undefined;
+  let client: RawWebSocket | undefined;
+  const serverTask = (async () => {
+    serverConnection = await listener.accept();
+    const reader = new SocketFrameReader(serverConnection);
+    const request = await reader.readHeaders();
+    const key = request.match(/\r\nSec-WebSocket-Key:\s*(.+)\r\n/i)?.[1];
+    assert(
+      key !== undefined,
+      "The WebSocket client omitted its handshake key.",
+    );
+    const digest = await crypto.subtle.digest(
+      "SHA-1",
+      encoder.encode(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`),
+    );
+    const accept = btoa(String.fromCharCode(...new Uint8Array(digest)));
+    await writeAll(
+      serverConnection,
+      encoder.encode(
+        "HTTP/1.1 101 Switching Protocols\r\n" +
+          "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
+          `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+      ),
+    );
+    await writeAll(
+      serverConnection,
+      new Uint8Array([0x89, 0x03, 0x6a, 0x64, 0x76]),
+    );
+    const pong = await reader.readFrame();
+    assert(
+      pong.opcode === 0xa && decoder.decode(pong.payload) === "jdv",
+      `Expected a pong carrying the ping payload, got opcode ${pong.opcode}.`,
+    );
+    const message = encoder.encode(JSON.stringify({ type: "probe-ok" }));
+    const split = Math.floor(message.length / 2);
+    await writeAll(
+      serverConnection,
+      concat(new Uint8Array([0x01, split]), message.subarray(0, split)),
+    );
+    await writeAll(
+      serverConnection,
+      concat(
+        new Uint8Array([0x80, message.length - split]),
+        message.subarray(split),
+      ),
+    );
+  })();
+
+  try {
+    client = await RawWebSocket.connect(
+      `http://127.0.0.1:${address.port}/`,
+    );
+    const message = await client.read();
+    assert(
+      message.type === "probe-ok",
+      `Expected the post-ping text frame, got ${JSON.stringify(message)}.`,
+    );
+    await serverTask;
+  } finally {
+    client?.close();
+    listener.close();
+    serverConnection?.close();
+    await serverTask.catch(() => undefined);
+  }
+});
+
+Deno.test("Windows arf browser EOF requires the full observed evidence", () => {
+  const evidence: BrowserEofEvidence = {
+    os: "windows",
+    browserStartedMarker: "BROWSER_STARTED:2",
+    browserStartFrameDepth: 2,
+    browserDone: true,
+    browserEvaluationError: null,
+    eofLogWasNew: true,
+  };
+  assert(
+    isConfirmedWindowsBrowserEof(evidence),
+    "The complete Windows browser EOF evidence was rejected.",
+  );
+  assert(
+    !isConfirmedWindowsBrowserEof({ ...evidence, os: "linux" }),
+    "The Windows EOF fixture was incorrectly enabled on Linux.",
+  );
+  assert(
+    !isConfirmedWindowsBrowserEof({ ...evidence, browserDone: false }),
+    "The Windows EOF fixture accepted a missing completion marker.",
+  );
+  assert(
+    !isConfirmedWindowsBrowserEof({ ...evidence, browserStartFrameDepth: 0 }),
+    "The Windows EOF fixture accepted a missing function frame.",
+  );
+  assert(
+    !isConfirmedWindowsBrowserEof({
+      ...evidence,
+      browserEvaluationError: "R evaluation failed",
+    }),
+    "The Windows EOF fixture accepted a failed R evaluation.",
+  );
+  assert(
+    !isConfirmedWindowsBrowserEof({ ...evidence, eofLogWasNew: false }),
+    "The Windows EOF fixture accepted an old or absent EOF log entry.",
+  );
 });
 
 async function forward(
@@ -733,6 +1237,130 @@ function delay(milliseconds: number): Promise<void> {
 }
 
 type MarkerObservation = { time: number } | { error: unknown };
+
+interface BrowserEofEvidence {
+  os: string;
+  browserStartedMarker: string;
+  browserStartFrameDepth: number;
+  browserDone: boolean;
+  browserEvaluationError: string | null;
+  eofLogWasNew: boolean;
+}
+
+function isConfirmedWindowsBrowserEof(evidence: BrowserEofEvidence): boolean {
+  return evidence.os === "windows" &&
+    evidence.browserStartedMarker.startsWith("BROWSER_STARTED:") &&
+    Number.isSafeInteger(evidence.browserStartFrameDepth) &&
+    evidence.browserStartFrameDepth > 0 && evidence.browserDone &&
+    evidence.browserEvaluationError === null && evidence.eofLogWasNew;
+}
+
+async function settleWithin<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<{ settled: true; value: T } | { settled: false }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<{ settled: false }>((resolve) => {
+    timer = setTimeout(() => resolve({ settled: false }), timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ settled: true as const, value })),
+      timeout,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function browserProbeSnapshot(
+  session: ArfSession,
+  donePath: string,
+  evaluation: Promise<
+    | { state: "success"; result: ArfEvalResult }
+    | { state: "error"; error: unknown }
+  >,
+  baselineLog: string,
+): Promise<{
+  done: boolean;
+  evaluation:
+    | { settled: false }
+    | { settled: true; state: "success"; error: string | null }
+    | { settled: true; state: "error"; error: string };
+  eofLogEntriesSinceStart: number;
+  logTail: string;
+}> {
+  const [done, evaluationState, log] = await Promise.all([
+    fileExists(donePath, "BROWSER_DONE"),
+    settleWithin(evaluation, 0),
+    session.readLog(),
+  ]);
+  let summarizedEvaluation:
+    | { settled: false }
+    | { settled: true; state: "success"; error: string | null }
+    | { settled: true; state: "error"; error: string };
+  if (!evaluationState.settled) {
+    summarizedEvaluation = { settled: false };
+  } else if (evaluationState.value.state === "success") {
+    summarizedEvaluation = {
+      settled: true,
+      state: "success",
+      error: evaluationState.value.result.error,
+    };
+  } else {
+    summarizedEvaluation = {
+      settled: true,
+      state: "error",
+      error: String(evaluationState.value.error),
+    };
+  }
+  const eofMessage = "no callback set, returning 0";
+  return {
+    done,
+    evaluation: summarizedEvaluation,
+    eofLogEntriesSinceStart: Math.max(
+      0,
+      countOccurrences(log, eofMessage) -
+        countOccurrences(baselineLog, eofMessage),
+    ),
+    logTail: log.slice(-1_200),
+  };
+}
+
+async function waitForNewLogMessage(
+  session: ArfSession,
+  baseline: string,
+  message: string,
+  timeoutMs: number,
+): Promise<{ found: boolean; contents: string }> {
+  const baselineCount = countOccurrences(baseline, message);
+  const deadline = performance.now() + timeoutMs;
+  let contents = baseline;
+  while (performance.now() < deadline) {
+    contents = await session.readLog();
+    if (countOccurrences(contents, message) > baselineCount) {
+      return { found: true, contents };
+    }
+    await delay(Math.min(25, Math.max(1, deadline - performance.now())));
+  }
+  contents = await session.readLog();
+  return {
+    found: countOccurrences(contents, message) > baselineCount,
+    contents,
+  };
+}
+
+function countOccurrences(text: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let offset = 0;
+  for (;;) {
+    const found = text.indexOf(needle, offset);
+    if (found < 0) return count;
+    count++;
+    offset = found + needle.length;
+  }
+}
 
 function observeMarker(
   session: ArfSession,

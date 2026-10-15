@@ -77,6 +77,18 @@ export class ArfSession {
     }
   }
 
+  /** Read the current test-session log without closing the live process. */
+  async readLog(): Promise<string> {
+    const path = this.#logFile;
+    if (!path) throw new Error("ArfSession has not started.");
+    try {
+      return await Deno.readTextFile(path);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return "";
+      throw error;
+    }
+  }
+
   async start(options: ArfSessionOptions = {}): Promise<void> {
     if (this.#process || this.#closePromise) {
       throw new Error("ArfSession is already started or has been closed.");

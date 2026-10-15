@@ -214,9 +214,18 @@ and query fixtures, installed-package integration, interactive transport, Arrow
 round-trips, browser tests, and arf-controlled regressions belong to `test:e2e`.
 In particular, the Arrow capability probe is never loaded by the unit task. The
 interactive transport regression uses an arf headless R session against a real
-TCP server. It keeps console input open to continue a framed `browser()` wait
-and checks request progress after sleep and browser waits without manual
-polling.
+TCP server. Where the headless console remains in a framed `browser()` wait, the
+test keeps console input open to continue the frame. It also checks request
+progress while an R function is sleeping, without manual RPC polling.
+
+On Windows, arf 0.6.0's headless console can return EOF from `browser()` because
+that mode has no registered console input callback. The regression switches to a
+separate, release-controlled function-scoped `Sys.sleep()` hold only after it
+confirms that the browser evaluation started at positive R frame depth, wrote
+its completion marker successfully, and added an arf log entry stating that no
+callback was set and EOF was returned. This verifies queued-request behavior
+while a Windows R function is sleeping; it does not validate holding or
+continuing a Windows `browser()` prompt.
 
 For the integration task, install `jdv` into a scratch library and install the
 optional R packages `arrow`, `nanoarrow`, `jsonlite`, `bit64`, and `polars`. Set
