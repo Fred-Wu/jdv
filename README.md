@@ -66,18 +66,20 @@ mise exec -- deno task test:unit
 
 `mise.toml` pins Deno 2.9.7 and arf 0.6.0. The unit task does not require R,
 arf, or a browser. For the R and browser integration suite, install `jdv` into a
-scratch library, select it with `JDV_TEST_R_LIB`, and set `JDV_TEST_BROWSER` to
-a Chromium executable before running `mise exec -- deno task test:e2e`. See
-[the server test instructions](server/README.md#development) for optional R
+scratch library and select it with `JDV_TEST_R_LIB`. Run
+`mise exec -- deno task browser:install` to install the Chromium build matched
+by the pinned Playwright 1.56.1, then set `JDV_TEST_BROWSER` to
+`chromium.executablePath()` before running `mise exec -- deno task test:e2e`.
+See [the server test instructions](server/README.md#development) for optional R
 packages and the browser setup.
 
 The manual `Test server` workflow runs formatting, linting, type checks, and
 Deno unit tests. The separate manual `E2E test` workflow installs R, jdv,
-optional Arrow producers, arf, and Chrome on Ubuntu, Windows, and macOS. It
-includes the arf-controlled regressions and the explicit TCP transport check;
-the default R connection uses a named pipe on Windows. These workflows run only
-when manually dispatched, and their configuration alone does not establish a
-passing platform result.
+optional Arrow producers, arf, and the same Playwright-matched Chromium on
+Ubuntu, Windows, and macOS. It includes the arf-controlled regressions and the
+explicit TCP transport check; the default R connection uses a named pipe on
+Windows. These workflows run only when manually dispatched, and their
+configuration alone does not establish a passing platform result.
 
 Use usethis for R package development and devtools for documentation, tests,
 builds, and checks. Format R files and DESCRIPTION with the installed arity CLI.

@@ -10,6 +10,7 @@
     "fmt": "deno fmt --check server",
     "lint": "deno lint server",
     "check": "deno check --no-lock server/main.ts",
+    "browser:install": "deno run -A --no-lock npm:playwright@1.56.1 install --no-shell chromium",
     "test": "deno task test:unit",
     "test:unit": "deno test --no-lock -A server/tests/arrow_page_cache_test.ts server/tests/arrow_tree_test.ts server/tests/hub_test.ts server/tests/integration_cleanup_test.ts server/tests/platform_test.ts server/tests/r_listener_test.ts server/tests/sequential_test.ts server/tests/stream_cache_test.ts server/tests/viewer_test.ts",
     "test:e2e": "deno test --no-lock -A server/tests/browser_smoke_test.ts server/tests/cell_e2e_test.ts server/tests/e2e_test.ts server/tests/integration_test.ts server/tests/interactive_transport_test.ts server/tests/numeric_test.ts server/tests/query_test.ts server/tests/sequential_browser_test.ts server/tests/sequential_roundtrip_test.ts server/tests/tree_e2e_test.ts"

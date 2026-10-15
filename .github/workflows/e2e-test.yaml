@@ -61,15 +61,16 @@ jobs:
           Rscript --vanilla -e 'dir.create(Sys.getenv("JDV_TEST_R_LIB"), recursive = TRUE, showWarnings = FALSE)'
           R CMD INSTALL --library="$JDV_TEST_R_LIB" r-pkg
 
-      - uses: browser-actions/setup-chrome@v2
-        id: chrome
-        with:
-          chrome-version: stable
-          install-dependencies: ${{ runner.os == 'Linux' }}
+      - name: Install Playwright-matched Chromium
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            deno task browser:install --with-deps
+          else
+            deno task browser:install
+          fi
+          deno eval --no-lock 'import { chromium } from "npm:playwright@1.56.1"; const executable = chromium.executablePath(); if (!(await Deno.stat(executable)).isFile) throw new Error("Playwright Chromium executable is missing."); const envFile = Deno.env.get("GITHUB_ENV"); if (!envFile) throw new Error("GITHUB_ENV is missing."); await Deno.writeTextFile(envFile, `JDV_TEST_BROWSER=${executable}\n`, { append: true }); console.log(`Playwright 1.56.1 Chromium: ${executable}`);'
 
       - name: Verify E2E prerequisites and run all integration tests
-        env:
-          JDV_TEST_BROWSER: ${{ steps.chrome.outputs.chrome-path }}
         run: |
           arf --version
           deno eval --no-lock 'const path = Deno.env.get("JDV_TEST_BROWSER"); if (!path || !(await Deno.stat(path)).isFile) throw new Error("A Chromium executable is required for E2E tests.");'
