@@ -14,7 +14,6 @@ import tempfile
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-UPSTREAM = ROOT / "refs/arrow-nanoarrow"
 REVISION = "ea215b000788ec2e94fc88bad5249290c94b01cd"
 NAMESPACE = "JdvNanoarrow_"
 SELECTOR_PREFIX = "JDV_FLATCC_INCLUDE_"
@@ -28,8 +27,10 @@ def selector(path: str) -> str:
     return SELECTOR_PREFIX + re.sub(r"[^A-Za-z0-9]", "_", path)
 
 
-def resolve_flatcc_include(include: str, current: pathlib.PurePosixPath) -> str | None:
-    include_root = UPSTREAM / "thirdparty/flatcc/include"
+def resolve_flatcc_include(
+    include: str, current: pathlib.PurePosixPath, upstream: pathlib.Path
+) -> str | None:
+    include_root = upstream / "thirdparty/flatcc/include"
     candidates = [
         posixpath.normpath(include),
         posixpath.normpath(posixpath.join(current.parent.as_posix(), include)),
@@ -41,11 +42,13 @@ def resolve_flatcc_include(include: str, current: pathlib.PurePosixPath) -> str 
     return None
 
 
-def rewrite_includes(content: str, current: pathlib.PurePosixPath) -> str:
+def rewrite_includes(
+    content: str, current: pathlib.PurePosixPath, upstream: pathlib.Path
+) -> str:
     pattern = re.compile(r'^(\s*#\s*include\s*)"([^"]+)"', re.MULTILINE)
 
     def replace(match: re.Match[str]) -> str:
-        name = resolve_flatcc_include(match.group(2), current)
+        name = resolve_flatcc_include(match.group(2), current, upstream)
         if name is None:
             return match.group(0)
         macro = selector(name)
@@ -58,18 +61,18 @@ def rewrite_includes(content: str, current: pathlib.PurePosixPath) -> str:
     return pattern.sub(replace, content)
 
 
-def bundle(output: pathlib.Path) -> None:
-    if not (UPSTREAM / "ci/scripts/bundle.py").is_file():
-        raise SystemExit(f"Pinned checkout is missing: {UPSTREAM}")
+def bundle(output: pathlib.Path, upstream: pathlib.Path) -> None:
+    if not (upstream / "ci/scripts/bundle.py").is_file():
+        raise SystemExit(f"Pinned checkout is missing: {upstream}")
 
-    git_dir = UPSTREAM / ".git"
+    git_dir = upstream / ".git"
     if git_dir.is_file():
         git_dir_text = git_dir.read_text(encoding="utf-8").strip()
         if not git_dir_text.startswith("gitdir:"):
             raise SystemExit("Reference checkout has an invalid .git file")
         git_dir = pathlib.Path(git_dir_text.partition(":")[2].strip())
         if not git_dir.is_absolute():
-            git_dir = UPSTREAM / git_dir
+            git_dir = upstream / git_dir
     head = (git_dir / "HEAD").read_text(encoding="ascii").strip()
     if head.startswith("ref: "):
         ref = head[5:]
@@ -99,7 +102,7 @@ def bundle(output: pathlib.Path) -> None:
         subprocess.run(
             [
                 "python3",
-                str(UPSTREAM / "ci/scripts/bundle.py"),
+                str(upstream / "ci/scripts/bundle.py"),
                 "--output-dir",
                 str(raw),
                 "--with-ipc",
@@ -107,7 +110,7 @@ def bundle(output: pathlib.Path) -> None:
                 "--symbol-namespace",
                 NAMESPACE,
             ],
-            cwd=UPSTREAM,
+            cwd=upstream,
             check=True,
         )
         raw_bundle_files = sorted(path for path in raw.rglob("*") if path.is_file())
@@ -127,7 +130,7 @@ def bundle(output: pathlib.Path) -> None:
         for relative in header_paths:
             input_path = flatcc_root / relative
             body = input_path.read_text(encoding="utf-8")
-            body = rewrite_includes(body, relative)
+            body = rewrite_includes(body, relative, upstream)
             if relative.as_posix() == "flatcc/portable/pdiagnostic.h":
                 # Match upstream r/bootstrap.R without changing pragma semantics.
                 body = re.sub(r"^#pragma", "/**/#pragma", body, flags=re.MULTILINE)
@@ -150,7 +153,9 @@ def bundle(output: pathlib.Path) -> None:
         for source in (raw / "src").glob("*.c"):
             content = source.read_text(encoding="utf-8")
             source.write_text(
-                rewrite_includes(content, pathlib.PurePosixPath(source.name)),
+                rewrite_includes(
+                    content, pathlib.PurePosixPath(source.name), upstream
+                ),
                 encoding="utf-8",
             )
 
@@ -158,10 +163,10 @@ def bundle(output: pathlib.Path) -> None:
             shutil.rmtree(output)
         shutil.copytree(raw, output)
 
-    shutil.copyfile(UPSTREAM / "LICENSE.txt", output / "LICENSE.txt")
-    shutil.copyfile(UPSTREAM / "NOTICE.txt", output / "NOTICE.txt")
+    shutil.copyfile(upstream / "LICENSE.txt", output / "LICENSE.txt")
+    shutil.copyfile(upstream / "NOTICE.txt", output / "NOTICE.txt")
     shutil.copyfile(
-        UPSTREAM / "thirdparty/flatcc/LICENSE", output / "flatcc-LICENSE.txt"
+        upstream / "thirdparty/flatcc/LICENSE", output / "flatcc-LICENSE.txt"
     )
 
     generated_files = sorted(
@@ -196,24 +201,23 @@ def bundle(output: pathlib.Path) -> None:
         "thirdparty/flatcc/src/runtime/refmap.c",
     ]
     input_paths.extend(
-        path.relative_to(UPSTREAM).as_posix()
-        for path in sorted((UPSTREAM / "thirdparty/flatcc/include").glob("flatcc/**/*.h"))
+        path.relative_to(upstream).as_posix()
+        for path in sorted((upstream / "thirdparty/flatcc/include").glob("flatcc/**/*.h"))
     )
-    input_files = [UPSTREAM / path for path in sorted(set(input_paths))]
+    input_files = [upstream / path for path in sorted(set(input_paths))]
 
     provenance = [
         "# nanoarrow C bundle provenance",
         "",
-        f"Source: Apache Arrow nanoarrow revision `{REVISION}` in `refs/arrow-nanoarrow`.",
+        f"Source: Apache Arrow nanoarrow revision `{REVISION}` from the supplied upstream checkout.",
         f"Namespace: `{NAMESPACE}` (the trailing underscore is intentional).",
         "",
         "Generation command (run from the repository root):",
         "",
         "```sh",
-        "python3 refs/arrow-nanoarrow/ci/scripts/bundle.py \\",
-        "  --output-dir RAW --with-ipc --with-flatcc \\",
-        f"  --symbol-namespace {NAMESPACE}",
-        "python3 r-pkg/dev/vendor-nanoarrow.py --output-dir r-pkg/src/nanoarrow",
+        "python3 r-pkg/dev/vendor-nanoarrow.py \\",
+        "  --upstream-dir /path/to/nanoarrow \\",
+        "  --output-dir r-pkg/src/nanoarrow",
         "```",
         "",
         "The output is generated by the official `bundle.py` command at the pinned revision. Its raw output is hashed before mechanical transformation. The two C++ `.hpp` wrappers are omitted because the R package builds C only. The 35 flatcc runtime `.h` files in the raw bundle are mechanically placed in `include/nanoarrow/flatcc.h`: each original header body remains within a selector block, and every local quoted flatcc include is replaced at its original location by a selector dispatch. Original include guards, conditional includes, intentional repeated prologue/epilogue includes, and platform branches remain in control. No C definitions or symbol names are edited. The three concatenated C sources use the same mechanical include dispatch for flatcc references. As in upstream `r/bootstrap.R`, lines beginning with `#pragma` in `flatcc/portable/pdiagnostic.h` are mechanically prefixed with `/**/` so R CMD check does not flag diagnostic pragmas. This does not alter preprocessing semantics.",
@@ -224,7 +228,7 @@ def bundle(output: pathlib.Path) -> None:
     (output / "PROVENANCE.md").write_text("\n".join(provenance), encoding="utf-8")
     (output / "SOURCE-SHA256SUMS").write_text(
         "".join(
-            f"{sha256(path)}  {path.relative_to(UPSTREAM).as_posix()}\n"
+            f"{sha256(path)}  {path.relative_to(upstream).as_posix()}\n"
             for path in input_files
         ),
         encoding="utf-8",
@@ -251,12 +255,18 @@ def bundle(output: pathlib.Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--upstream-dir",
+        type=pathlib.Path,
+        required=True,
+        help="path to the pinned nanoarrow source checkout",
+    )
+    parser.add_argument(
         "--output-dir",
         type=pathlib.Path,
         default=ROOT / "r-pkg/src/nanoarrow",
     )
     args = parser.parse_args()
-    bundle(args.output_dir.resolve())
+    bundle(args.output_dir.resolve(), args.upstream_dir.resolve())
 
 
 if __name__ == "__main__":
