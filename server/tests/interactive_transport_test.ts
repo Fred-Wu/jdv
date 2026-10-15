@@ -1,6 +1,9 @@
 import { assert } from "./assert.ts";
 import { type ArfEvalResult, ArfSession } from "./helpers/arf_session.ts";
-import { removeCacheDirectory } from "./integration_cleanup.ts";
+import {
+  finishIntegrationCleanup,
+  removeCacheDirectory,
+} from "./integration_cleanup.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -348,6 +351,7 @@ Deno.test({
       observation: Promise<MarkerObservation>;
     }> = [];
     let fallbackSleepReleasePath: string | undefined;
+    let primaryError: unknown;
 
     try {
       const { startServer } = await import("../main.ts");
@@ -410,7 +414,7 @@ Deno.test({
       env.JDV_ADDRESS = `tcp://127.0.0.1:${proxyPort}`;
       // The Windows console EOF diagnostic is emitted at the sys module's
       // debug level. Keep that evidence enabled for this test session.
-      env.RUST_LOG = "arf_libr::sys=debug";
+      env.RUST_LOG ??= "arf_libr::sys=debug";
       if (testLibrary) env.R_LIBS_USER = testLibrary;
       arf = new ArfSession();
       await arf.start({ env });
@@ -1000,26 +1004,38 @@ Deno.test({
           acks.at(-1) + " frames; fresh response in " +
           freshDelay.toFixed(0) + " ms",
       );
+    } catch (error) {
+      primaryError = error;
+      throw error;
     } finally {
-      if (fallbackSleepReleasePath !== undefined) {
-        await Deno.writeTextFile(fallbackSleepReleasePath, "release");
-      }
-      for (const observer of markerObservers) observer.controller.abort();
-      await Promise.all(
-        markerObservers.map((observer) => observer.observation),
-      );
-      browser?.close();
-      await arf?.close();
-      for (const connection of proxyConnections) {
-        closeQuietly(connection);
-      }
-      proxy?.close();
-      await proxyTask?.catch(() => undefined);
-      await server?.close();
-      for (const directory of markerDirs) {
-        await removeCacheDirectory(directory);
-      }
-      await removeCacheDirectory(cacheRoot);
+      await finishIntegrationCleanup([
+        ...(fallbackSleepReleasePath === undefined
+          ? []
+          : [() => Deno.writeTextFile(fallbackSleepReleasePath!, "release")]),
+        async () => {
+          for (const observer of markerObservers) observer.controller.abort();
+          await Promise.all(
+            markerObservers.map((observer) => observer.observation),
+          );
+        },
+        () => browser?.close(),
+        () => arf?.close(),
+        () => {
+          for (const connection of proxyConnections) {
+            closeQuietly(connection);
+          }
+        },
+        () => proxy?.close(),
+        async () => {
+          if (!proxyTask) return;
+          await proxyTask.catch((error: unknown) => {
+            if (!(error instanceof Deno.errors.BadResource)) throw error;
+          });
+        },
+        () => server?.close(),
+        ...markerDirs.map((directory) => () => removeCacheDirectory(directory)),
+        () => removeCacheDirectory(cacheRoot),
+      ], primaryError === undefined ? [] : [primaryError]);
     }
   },
 });
@@ -1047,6 +1063,53 @@ Deno.test("ArfSession marker observer cancellation closes its watcher", async ()
     );
   } finally {
     controller.abort();
+    await removeCacheDirectory(directory);
+  }
+});
+
+Deno.test("ArfSession preserves R errors and captures marker diagnostics", async () => {
+  const directory = await Deno.makeTempDir({
+    prefix: "jdv-marker-diagnostic-",
+  });
+  const session = new ArfSession();
+  try {
+    const env = Deno.env.toObject();
+    env.RUST_LOG ??= "arf_libr::sys=debug";
+    await session.start({ env });
+    const code = 'stop("marker-diagnostic-sentinel")';
+    const evaluation = session.send(code, { timeoutMs: 5_000 });
+    const evaluationResult = await evaluation.wait(8_000);
+    assert(
+      evaluationResult.error?.includes("marker-diagnostic-sentinel"),
+      `Expected the original R evaluation error, got ${
+        JSON.stringify(evaluationResult)
+      }.`,
+    );
+
+    const markerError = await session.waitForFile(
+      `${directory}/never-created`,
+      100,
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    assert(
+      markerError instanceof Error,
+      "Expected the missing marker to fail.",
+    );
+    assert(
+      markerError.message.includes("stop(") &&
+        markerError.message.includes("marker-diagnostic-sentinel"),
+      `Marker diagnostics lost the completed evaluation: ${markerError.message}`,
+    );
+    assert(
+      markerError.message.includes("arfLogTail") &&
+        markerError.message.includes("target") &&
+        markerError.message.includes("realParent"),
+      `Marker diagnostics omitted filesystem or R log evidence: ${markerError.message}`,
+    );
+  } finally {
+    await session.close();
     await removeCacheDirectory(directory);
   }
 });

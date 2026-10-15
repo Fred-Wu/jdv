@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "./assert.ts";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { ArfSession } from "./helpers/arf_session.ts";
 import { type TestBrowser, TestServer } from "./helpers/test_server.ts";
 import { bodyDeadline, phase } from "./bounded_browser.ts";
@@ -191,46 +191,6 @@ async function request(
     (message) => message.type === "response" && message.id === id,
     `response ${id}`,
   );
-}
-
-async function waitForFile(path: string, timeoutMs = 10_000): Promise<void> {
-  if (
-    await phase(
-      "R E2E marker wait",
-      () => Deno.stat(path).then(() => true, () => false),
-      timeoutMs,
-    )
-  ) return;
-  const watcher = Deno.watchFs(dirname(path));
-  try {
-    if (await Deno.stat(path).then(() => true, () => false)) return;
-    const wait = async () => {
-      for await (const event of watcher) {
-        if (event.paths.some((item) => item === path)) return;
-      }
-    };
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await phase("R E2E marker creation", () =>
-        Promise.race([
-          wait(),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () => reject(new Error(`Timed out waiting for marker ${path}.`)),
-              timeoutMs,
-            );
-          }),
-        ]), timeoutMs + 500);
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
-    assert(
-      await Deno.stat(path).then(() => true, () => false),
-      `Marker was not created: ${path}`,
-    );
-  } finally {
-    watcher.close();
-  }
 }
 
 async function markerPath(): Promise<{ directory: string; path: string }> {
@@ -436,7 +396,7 @@ Deno.test({
           }, useBytes = TRUE); Sys.sleep(5)`,
           { timeoutMs: 10_000 },
         );
-        await waitForFile(sleepMarker.path);
+        await arf.waitForFile(sleepMarker.path, 10_000);
         const localResult = querySnapshot(snapshotEnvelope, {
           sort: [
             { col: 0, desc: true },
@@ -477,7 +437,7 @@ Deno.test({
           })) jdv_e2e_spin <- jdv_e2e_spin + 1L`,
           { timeoutMs: 30_000 },
         );
-        await waitForFile(busyMarker.path);
+        await arf.waitForFile(busyMarker.path, 10_000);
         const wireBeforeBusyRequest = server.wire.snapshot();
         browser.send({
           type: "request",

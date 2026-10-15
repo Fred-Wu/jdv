@@ -24,6 +24,31 @@ export interface ArfSessionOptions {
   timeoutMs?: number;
 }
 
+export type ArfEvaluationOutcome<T> =
+  | { state: "resolved"; value: T }
+  | { state: "rejected"; error: unknown };
+
+/** Observe a result immediately without changing its rejection for later callers. */
+export function observeArfEvaluation<T>(
+  result: Promise<T>,
+  observer: (outcome: ArfEvaluationOutcome<T>) => void,
+): Promise<T> {
+  const observation = result.then(
+    (value) => observer({ state: "resolved", value }),
+    (error: unknown) => observer({ state: "rejected", error }),
+  );
+  void observation.catch(() => undefined);
+  return result;
+}
+
+export function combineArfCleanupError(
+  primary: unknown,
+  cleanup: unknown,
+  message: string,
+): AggregateError {
+  return new AggregateError([primary, cleanup], message, { cause: primary });
+}
+
 const decoder = new TextDecoder();
 
 export class ArfSession {
@@ -33,11 +58,18 @@ export class ArfSession {
   #ipcDirectory?: string;
   #ipcSocket?: string;
   #logFile?: string;
+  #lastLogTail = "";
   #stdoutReader?: ReadableStreamDefaultReader<Uint8Array>;
   #stdoutDrain?: Promise<void>;
   #environment?: Record<string, string>;
   #closePromise?: Promise<void>;
   #evalProcesses = new Set<Deno.ChildProcess>();
+  #lastEvaluation?: {
+    code: string;
+    state: "pending" | "resolved" | "rejected";
+    result?: ArfEvalResult;
+    error?: string;
+  };
 
   /** Wait for a marker created by an evaluation that is still running. */
   async waitForFile(
@@ -45,46 +77,36 @@ export class ArfSession {
     timeoutMs = 5_000,
     signal?: AbortSignal,
   ): Promise<void> {
-    const target = resolve(path);
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    if (await fileExists(target)) return;
-    const watcher = Deno.watchFs(dirname(target));
-    const onAbort = () => watcher.close();
-    signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-      if (await fileExists(target)) return;
-      await withTimeout(
-        (async () => {
-          for await (const event of watcher) {
-            if (event.paths.some((entry) => resolve(entry) === target)) {
-              if (await fileExists(target)) return;
-            }
-          }
-          if (signal?.aborted) {
-            throw new DOMException("Aborted", "AbortError");
-          }
-          throw new Error(
-            "Filesystem watcher closed before the marker appeared.",
-          );
-        })(),
-        timeoutMs,
-        `R marker file did not appear within ${timeoutMs} ms.`,
+      return await waitForMarkerFile(path, timeoutMs, signal);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const evaluation = this.#lastEvaluation;
+      const log = await this.readLog().catch((logError) =>
+        `Unable to read arf log: ${String(logError)}`
       );
-    } finally {
-      signal?.removeEventListener("abort", onAbort);
-      watcher.close();
+      throw new Error(
+        `${String(error)}\nArf marker-wait diagnostics: ${
+          JSON.stringify({
+            evaluation: evaluation ?? null,
+            arfLogTail: log.split(/\r?\n/).slice(-40),
+          })
+        }`,
+        { cause: error },
+      );
     }
   }
 
   /** Read the current test-session log without closing the live process. */
   async readLog(): Promise<string> {
     const path = this.#logFile;
-    if (!path) throw new Error("ArfSession has not started.");
+    if (!path) return this.#lastLogTail;
     try {
-      return await Deno.readTextFile(path);
+      const text = await Deno.readTextFile(path);
+      this.#lastLogTail = text.split(/\r?\n/).slice(-40).join("\n");
+      return text;
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) return "";
+      if (error instanceof Deno.errors.NotFound) return this.#lastLogTail;
       throw error;
     }
   }
@@ -95,7 +117,10 @@ export class ArfSession {
     }
 
     const timeoutMs = options.timeoutMs ?? 30_000;
-    this.#environment = options.env;
+    this.#environment = options.env === undefined
+      ? Deno.env.toObject()
+      : { ...options.env };
+    this.#environment.RUST_LOG ??= "arf_libr::sys=debug";
     const ipcDirectory = await Deno.makeTempDir({
       prefix: "ja-",
       ...(Deno.build.os === "darwin" ? { dir: "/tmp" } : {}),
@@ -123,7 +148,7 @@ export class ArfSession {
           "--log-file",
           this.#logFile,
         ],
-        env: options.env,
+        env: this.#environment,
         stdin: "piped",
         stdout: "piped",
         stderr: "null",
@@ -171,7 +196,25 @@ export class ArfSession {
   send(code: string, options: { timeoutMs?: number } = {}): ArfEvalHandle {
     if (!this.#pid) throw new Error("ArfSession has not started.");
     const timeoutMs = options.timeoutMs ?? 30_000;
-    const result = this.#runEval(code, timeoutMs);
+    const evaluation = { code, state: "pending" as const };
+    this.#lastEvaluation = evaluation;
+    // A caller may wait for an independent marker before attaching to result.
+    // Record the outcome immediately while preserving the original promise for
+    // wait()/result consumers.
+    const result = observeArfEvaluation(
+      this.#runEval(code, timeoutMs),
+      (outcome) => {
+        if (this.#lastEvaluation === evaluation) {
+          this.#lastEvaluation = outcome.state === "resolved"
+            ? { ...evaluation, state: "resolved", result: outcome.value }
+            : {
+              ...evaluation,
+              state: "rejected",
+              error: String(outcome.error),
+            };
+        }
+      },
+    );
     return {
       result,
       wait: (waitTimeoutMs = timeoutMs + 2_000) =>
@@ -416,6 +459,9 @@ export class ArfSession {
       stderr: "piped",
     }).spawn();
     this.#evalProcesses.add(command);
+    let primaryError: unknown;
+    let failed = false;
+    let result: ArfEvalResult | undefined;
     try {
       const output = await withTimeout(
         command.output(),
@@ -430,26 +476,47 @@ export class ArfSession {
         },
       );
       if (!output.success) {
-        const error = new Error(
+        throw new Error(
           `arf ipc eval exited with ${output.code}: ${
             decoder.decode(output.stderr)
           }`,
         );
-        await this.close();
-        throw error;
       }
-      return JSON.parse(decoder.decode(output.stdout)) as ArfEvalResult;
+      result = JSON.parse(decoder.decode(output.stdout)) as ArfEvalResult;
     } catch (error) {
-      if (!this.#closePromise) await this.close();
-      throw error;
+      failed = true;
+      primaryError = error;
+      try {
+        await this.close();
+      } catch (cleanupError) {
+        primaryError = combineArfCleanupError(
+          error,
+          cleanupError,
+          "arf evaluation failed and session cleanup failed.",
+        );
+      }
     } finally {
       this.#evalProcesses.delete(command);
-      await withTimeout(
-        command.status,
-        5_000,
-        "arf eval helper did not exit after its result was read.",
-      );
+      try {
+        await withTimeout(
+          command.status,
+          5_000,
+          "arf eval helper did not exit after its result was read.",
+        );
+      } catch (statusError) {
+        primaryError = !failed ? statusError : combineArfCleanupError(
+          primaryError,
+          statusError,
+          "arf evaluation and helper shutdown failed.",
+        );
+        failed = true;
+      }
     }
+    if (failed) throw primaryError;
+    if (result === undefined) {
+      throw new Error("arf ipc eval completed without a result.");
+    }
+    return result;
   }
 
   async #readReady(
@@ -569,12 +636,76 @@ export class ArfSession {
 
   async #removePrivateFiles(): Promise<void> {
     const directory = this.#ipcDirectory;
+    if (this.#logFile) {
+      await this.readLog().catch(() => undefined);
+    }
     this.#ipcDirectory = undefined;
     this.#ipcSocket = undefined;
     this.#logFile = undefined;
     if (directory) {
       await removeCacheDirectory(directory);
     }
+  }
+}
+
+/** Wait for a marker without relying on platform-specific watcher path spelling. */
+export async function waitForMarkerFile(
+  path: string,
+  timeoutMs = 5_000,
+  signal?: AbortSignal,
+): Promise<void> {
+  const target = resolve(path);
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  if (await fileExists(target)) return;
+  const parent = dirname(target);
+  const realParent = await Deno.realPath(parent);
+  const watcher = Deno.watchFs(realParent);
+  const onAbort = () => watcher.close();
+  const eventPaths: string[] = [];
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    if (await fileExists(target)) return;
+    await withTimeout(
+      (async () => {
+        for await (const event of watcher) {
+          for (const entry of event.paths) {
+            if (eventPaths.length < 8) eventPaths.push(entry);
+          }
+          // macOS may report a canonical /private/... path while the caller
+          // holds the corresponding /var/... alias. Recheck the requested
+          // path after every event instead of comparing path strings.
+          if (await fileExists(target)) return;
+        }
+        if (signal?.aborted) {
+          throw new DOMException("Aborted", "AbortError");
+        }
+        throw new Error(
+          "Filesystem watcher closed before the marker appeared.",
+        );
+      })(),
+      timeoutMs,
+      `R marker file did not appear within ${timeoutMs} ms.`,
+    );
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    const resolvedParent = await Deno.realPath(parent).catch(() => null);
+    const markerExists = await fileExists(target).catch(() => false);
+    throw new Error(
+      `R marker wait failed: ${
+        JSON.stringify({
+          target,
+          parent,
+          realParent: resolvedParent,
+          markerExists,
+          eventPaths,
+        })
+      }`,
+      { cause: error },
+    );
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    watcher.close();
   }
 }
 
