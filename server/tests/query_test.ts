@@ -1,5 +1,6 @@
 import { assert, assertEquals } from "./assert.ts";
 import { asciiFold, decodeRows, querySnapshot } from "../web/jdv_query.js";
+import { fileURLToPath } from "node:url";
 
 const fixturePath = new URL("../../spec/query-fixtures.json", import.meta.url);
 const exporterPath = new URL("./fixtures/export-query.R", import.meta.url);
@@ -8,7 +9,12 @@ const temp = await Deno.makeTempDir({ prefix: "jdv-query-fixtures-" });
 const outputPath = `${temp}/snapshots.json`;
 const testLibrary = Deno.env.get("JDV_TEST_R_LIB");
 const child = new Deno.Command("Rscript", {
-  args: ["--vanilla", exporterPath.pathname, fixturePath.pathname, outputPath],
+  args: [
+    "--vanilla",
+    fileURLToPath(exporterPath),
+    fileURLToPath(fixturePath),
+    outputPath,
+  ],
   env: testLibrary ? { R_LIBS_USER: testLibrary } : {},
   stdout: "piped",
   stderr: "piped",

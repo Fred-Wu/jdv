@@ -35,12 +35,20 @@ Deno.test("Unix socket path validation counts UTF-8 bytes at platform boundaries
   }
 });
 
-Deno.test("empty XDG_CACHE_HOME uses the HOME cache fallback", () => {
+Deno.test("empty XDG_CACHE_HOME preserves the platform cache default", () => {
   const previous = Deno.env.get("XDG_CACHE_HOME");
   const home = Deno.env.get("HOME") || Deno.env.get("USERPROFILE") || ".";
+  const expected = Deno.build.os === "windows"
+    ? join(
+      Deno.env.get("LOCALAPPDATA") || join(home, "AppData", "Local"),
+      "jdv",
+    )
+    : Deno.build.os === "darwin"
+    ? join(home, "Library", "Caches", "jdv")
+    : join(home, ".cache", "jdv");
   try {
     Deno.env.set("XDG_CACHE_HOME", "");
-    assertEquals(cacheDirectory(), join(home, ".cache", "jdv"));
+    assertEquals(cacheDirectory(), expected);
   } finally {
     if (previous === undefined) Deno.env.delete("XDG_CACHE_HOME");
     else Deno.env.set("XDG_CACHE_HOME", previous);
@@ -48,7 +56,7 @@ Deno.test("empty XDG_CACHE_HOME uses the HOME cache fallback", () => {
 });
 
 Deno.test("Node pipe adapter accepts and closes one byte-stream connection", async () => {
-  const directory = await Deno.makeTempDir({ prefix: "jdv-node-listener-" });
+  const directory = await makeTestTempDir("jdv-node-listener-");
   const path = Deno.build.os === "windows"
     ? `\\\\.\\pipe\\jdv-test-${crypto.randomUUID()}`
     : `${directory}/listener.sock`;
@@ -85,3 +93,10 @@ Deno.test("Node pipe adapter accepts and closes one byte-stream connection", asy
     await Deno.remove(directory, { recursive: true });
   }
 });
+
+function makeTestTempDir(prefix: string): Promise<string> {
+  return Deno.makeTempDir({
+    prefix,
+    ...(Deno.build.os === "darwin" ? { dir: "/tmp" } : {}),
+  });
+}

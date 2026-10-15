@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -171,7 +172,7 @@ Deno.test({
   name: "HTTP origin checks, R relay, browser cache, and discovery cleanup",
   ignore: Deno.build.os === "windows",
   async fn() {
-    const cacheDir = await Deno.makeTempDir({ prefix: "jdv-server-cache-" });
+    const cacheDir = await makeSocketTempDir("jdv-server-cache-");
     let server: RunningServer | undefined;
     let rConnection: Deno.Conn | undefined;
     const clients: RawWebSocket[] = [];
@@ -438,7 +439,7 @@ Deno.test({
   name: "installed R package connects and services a browser schema request",
   async fn() {
     const testLibrary = Deno.env.get("JDV_TEST_R_LIB")?.trim();
-    const cacheRoot = await Deno.makeTempDir({ prefix: "jdv-r-integration-" });
+    const cacheRoot = await makeSocketTempDir("jdv-r-integration-");
     const cacheDir = join(cacheRoot, "jdv");
     const donePath = join(cacheDir, "finish-r-loop");
     const scriptPath = join(cacheDir, "mock-r.R");
@@ -598,10 +599,10 @@ Deno.test({
   name: "URL startup loads the complete module graph from HTTP in an empty cwd",
   ignore: Deno.build.os === "windows",
   async fn() {
-    const rootDir = new URL("../../", import.meta.url).pathname;
+    const rootDir = fileURLToPath(new URL("../../", import.meta.url));
     const emptyCwd = await Deno.makeTempDir({ prefix: "jdv-empty-cwd-" });
     const denoDir = await Deno.makeTempDir({ prefix: "jdv-deno-cache-" });
-    const cacheDir = await Deno.makeTempDir({ prefix: "jdv-url-cache-" });
+    const cacheDir = await makeSocketTempDir("jdv-url-cache-");
     const fixture = Deno.serve(
       { hostname: "127.0.0.1", port: 0 },
       async (req) => {
@@ -892,4 +893,11 @@ async function socketFiles(directory: string): Promise<string[]> {
     if (entry.name.endsWith(".sock")) names.push(entry.name);
   }
   return names.sort();
+}
+
+function makeSocketTempDir(prefix: string): Promise<string> {
+  return Deno.makeTempDir({
+    prefix,
+    ...(Deno.build.os === "darwin" ? { dir: "/tmp" } : {}),
+  });
 }
