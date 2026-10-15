@@ -2,7 +2,7 @@ import { assert, assertEquals } from "./assert.ts";
 import { dirname, join } from "node:path";
 import { ArfSession } from "./helpers/arf_session.ts";
 import { type TestBrowser, TestServer } from "./helpers/test_server.ts";
-import { phase } from "./bounded_browser.ts";
+import { bodyDeadline, phase } from "./bounded_browser.ts";
 import {
   finishIntegrationCleanup,
   removeCacheDirectory,
@@ -413,7 +413,7 @@ Deno.test({
     const extraBrowsers: TestBrowser[] = [];
     let primaryError: unknown;
     try {
-      await phase("R E2E overall body", async () => {
+      await bodyDeadline("R E2E overall body", async () => {
         runtime = await startRuntime();
         const { server, arf, browser } = runtime;
 

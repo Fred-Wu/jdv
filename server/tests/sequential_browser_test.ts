@@ -1,4 +1,4 @@
-import { launchOwnedBrowser, phase } from "./bounded_browser.ts";
+import { bodyDeadline, launchOwnedBrowser, phase } from "./bounded_browser.ts";
 import {
   assertServerReleased,
   cleanupDeadline,
@@ -332,7 +332,7 @@ async function sequentialBrowser(
         : {}),
     });
     const browser = owned.browser;
-    await phase("sequential browser test body", async () => {
+    await bodyDeadline("sequential browser test body", async () => {
       const first = await phase(
         "first sequential page",
         () => browser.newPage(),

@@ -26,6 +26,46 @@ export async function phase<T>(
   }
 }
 
+/**
+ * Record an overall body deadline without canceling the body. Wait for body
+ * settlement before returning the failure so its resources can be cleaned up.
+ * A runner's hard job timeout remains an independent outer bound.
+ */
+export async function bodyDeadline<T>(
+  name: string,
+  operation: () => Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  const body = Promise.resolve().then(operation).then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"elapsed">((resolve) => {
+    timer = setTimeout(() => resolve("elapsed"), timeoutMs);
+  });
+  const first = await Promise.race([body, deadline]);
+  if (first !== "elapsed") {
+    if (timer !== undefined) clearTimeout(timer);
+    if (first.ok) return first.value;
+    throw first.error;
+  }
+
+  const deadlineError = new Error(
+    `Test body deadline elapsed: ${name} exceeded ${timeoutMs} ms; ` +
+      "waiting for the body to settle before cleanup.",
+  );
+  console.error(`[browser body] ${name}: deadline elapsed; waiting to settle`);
+  const settled = await body;
+  if (timer !== undefined) clearTimeout(timer);
+  if (settled.ok) throw deadlineError;
+  throw new AggregateError(
+    [deadlineError, settled.error],
+    `Test body failed after its deadline: ${name}`,
+    { cause: deadlineError },
+  );
+}
+
 export async function closeBrowserProcess(
   close: () => Promise<unknown>,
   process: {

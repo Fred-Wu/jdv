@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { closeBrowserProcess } from "./bounded_browser.ts";
+import { bodyDeadline, closeBrowserProcess } from "./bounded_browser.ts";
 import {
   capabilitiesFromProbe,
   capabilityLines,
@@ -125,6 +125,69 @@ Deno.test("cleanup continues after a failure and preserves the original error", 
   }
   assertEquals(caught instanceof AggregateError, true);
   assertEquals(visited, ["cache"]);
+});
+
+Deno.test("body deadline waits for success before cleanup and still fails", async () => {
+  let release!: () => void;
+  const bodyGate = new Promise<void>((resolve) => release = resolve);
+  let bodySettled = false;
+  let cleanupRanBeforeBody = false;
+  let caught: unknown;
+  const execution = (async () => {
+    try {
+      await bodyDeadline("deferred success", async () => {
+        await bodyGate;
+        bodySettled = true;
+      }, 1);
+    } catch (error) {
+      caught = error;
+    } finally {
+      cleanupRanBeforeBody = !bodySettled;
+    }
+  })();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assertEquals(bodySettled, false);
+  release();
+  await execution;
+  assertEquals(cleanupRanBeforeBody, false);
+  assertEquals(String(caught).includes("deadline elapsed"), true);
+});
+
+Deno.test("body deadline retains timeout and body failure before cleanup", async () => {
+  let reject!: (error: Error) => void;
+  const bodyGate = new Promise<void>((_resolve, rejectBody) =>
+    reject = rejectBody
+  );
+  const bodyError = new Error("deferred body failure");
+  let bodySettled = false;
+  let cleanupRanBeforeBody = false;
+  let caught: unknown;
+  const execution = (async () => {
+    try {
+      await bodyDeadline("deferred failure", async () => {
+        try {
+          await bodyGate;
+        } finally {
+          bodySettled = true;
+        }
+      }, 1);
+    } catch (error) {
+      caught = error;
+    } finally {
+      cleanupRanBeforeBody = !bodySettled;
+    }
+  })();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assertEquals(bodySettled, false);
+  reject(bodyError);
+  await execution;
+  assertEquals(cleanupRanBeforeBody, false);
+  assertEquals(caught instanceof AggregateError, true);
+  if (caught instanceof AggregateError) {
+    assertEquals(caught.errors.length, 2);
+    assertEquals(String(caught.errors[0]).includes("deadline elapsed"), true);
+    assertEquals(caught.errors[1] === bodyError, true);
+  }
 });
 
 Deno.test("R cleanup escalates to SIGKILL and waits for confirmed exit", async () => {

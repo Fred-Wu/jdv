@@ -6,7 +6,7 @@ import {
   removeCacheDirectory,
 } from "./integration_cleanup.ts";
 import { type TestBrowser, TestServer } from "./helpers/test_server.ts";
-import { launchOwnedBrowser, phase } from "./bounded_browser.ts";
+import { bodyDeadline, launchOwnedBrowser, phase } from "./bounded_browser.ts";
 
 const testLibrary = Deno.env.get("JDV_TEST_R_LIB");
 const browserExecutable = Deno.env.get("JDV_TEST_BROWSER");
@@ -274,7 +274,7 @@ Deno.test({
     let primaryError: unknown;
     let closeChromium: (() => Promise<void>) | undefined;
     try {
-      await phase("Tree E2E overall body", async () => {
+      await bodyDeadline("Tree E2E overall body", async () => {
         const { server, arf, browser, session, root } = runtime;
         assertEquals(root.kind, "tree");
         assertEquals(root.access, "random");

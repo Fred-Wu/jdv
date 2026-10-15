@@ -6,7 +6,7 @@ import {
   removeCacheDirectory,
 } from "./integration_cleanup.ts";
 import { type TestBrowser, TestServer } from "./helpers/test_server.ts";
-import { launchOwnedBrowser, phase } from "./bounded_browser.ts";
+import { bodyDeadline, launchOwnedBrowser, phase } from "./bounded_browser.ts";
 
 const testLibrary = Deno.env.get("JDV_TEST_R_LIB");
 const browserExecutable = Deno.env.get("JDV_TEST_BROWSER");
@@ -277,7 +277,7 @@ Deno.test({
       wait(timeoutMs?: number): Promise<unknown>;
     } | undefined;
     try {
-      await phase("Cell E2E overall body", async () => {
+      await bodyDeadline("Cell E2E overall body", async () => {
         const { arf, browser, server } = runtime;
         await rEval(arf, cellFixtureCode());
         const snapshot = await openedView(browser, "Cell Snapshot");
