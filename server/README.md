@@ -3,7 +3,9 @@
 The Deno reference server connects to R over a local JSONL transport and serves
 the browser viewer from `web/`. Project files are distributed under
 [LICENSE.md](LICENSE.md). The viewer also vendors Tabulator 6.5.0 under its MIT
-license; see `web/vendor/TABULATOR-LICENSE.txt`.
+license; see `web/vendor/TABULATOR-LICENSE.txt`. Apache Arrow JS 21.2.0 is
+vendored under Apache-2.0 for planned binary decoding, with notices and
+provenance in `web/vendor/`; it is not yet loaded by the viewer.
 
 ## Start from a URL
 
@@ -117,14 +119,15 @@ when started by URL.
 
 ```sh
 deno fmt --check server
-deno lint --ignore=server/web/vendor/tabulator.min.js,server/web/vendor/tabulator.min.css server
+deno lint --ignore=server/web/vendor/tabulator.min.js,server/web/vendor/tabulator.min.css,server/web/vendor/arrow-21.2.0.min.js server
 deno check server/main.ts
 deno test -A server/tests
 ```
 
 The repository `deno.json` excludes the vendored Tabulator minified JavaScript
-and CSS from formatting. It contains no imports or dependencies; the URL startup
-command uses `--no-config` and remains self-contained.
+and CSS and Arrow JavaScript bundle from formatting. It contains no imports or
+dependencies; the URL startup command uses `--no-config` and remains
+self-contained.
 
 The Hub, platform, and R framing unit tests need only Deno. The full suite also
 includes R numeric fixtures and an interactive transport regression that runs an

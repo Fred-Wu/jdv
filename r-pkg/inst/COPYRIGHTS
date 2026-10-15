@@ -7,6 +7,14 @@ src/cjson/cJSON.h. Upstream source: https://github.com/DaveGamble/cJSON
 The bounded numeric output-size helper in src/json.c adapts cJSON's number
 formatting logic and is covered by the MIT notice above.
 
+The package bundles Apache Arrow nanoarrow C 0.10.0-SNAPSHOT from commit
+ea215b000788ec2e94fc88bad5249290c94b01cd in src/nanoarrow/. It is distributed
+under the Apache License 2.0; the upstream LICENSE.txt and NOTICE.txt are
+included in that directory. The bundled flatcc runtime is also under the Apache
+License 2.0; its upstream license and copyright notice are preserved in
+src/nanoarrow/flatcc-LICENSE.txt. See src/nanoarrow/PROVENANCE.md for the
+source revision, generation command, namespace, and file checksums.
+
 Local modifications are tracked in src/cjson/patches/. They cover R package
 checks and round-trip number output.
 

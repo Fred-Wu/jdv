@@ -24,8 +24,12 @@ from `/assets/vendor/TABULATOR-LICENSE.txt`. SHA-256 checksums are:
 - `TABULATOR-LICENSE.txt`:
   `191a2ee554684e1064c897b432f0e1bc6dfa714ca045d3f6ea2cf692cbd398b7`
 
-The minified Tabulator JavaScript and CSS should stay excluded from formatting
-and lint checks with Deno CLI `--ignore` arguments.
+The minified Tabulator JavaScript and CSS and the vendored Arrow JavaScript
+bundle should stay excluded from formatting and lint checks with Deno CLI
+`--ignore` arguments. Arrow JS 21.2.0 is present for the planned binary viewer;
+this vendoring change does not load or integrate it into the UI. Its upstream
+license, notice, source, and checksums are recorded in
+`vendor/ARROW-JS-PROVENANCE.md`.
 
 The viewer keeps each table's complete schema and renders a fixed-width column
 window around the horizontal viewport. It requests only the visible window plus

@@ -20,6 +20,17 @@ Authors@R:
         "cJSON contributors",
         role = "cph",
         comment = "cJSON library in src/cjson/"
+      ),
+      person(
+        "Apache Software Foundation",
+        role = "cph",
+        comment = "nanoarrow C library in src/nanoarrow/"
+      ),
+      person(
+        "Mikkel F.",
+        "Jørgensen",
+        role = "cph",
+        comment = "flatcc in src/nanoarrow/"
       )
     )
 Description: A dependency-free table engine and data viewer foundation for R
