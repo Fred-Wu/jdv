@@ -1,8 +1,13 @@
 import {
   createSequentialCache,
   decodeArrowPage,
+  formatUnavailableRowRanges,
+  mergeSequentialCacheInfo,
   recordSequentialProgress,
+  SEQUENTIAL_CACHE_PAGES,
+  SEQUENTIAL_TOTAL_CACHE_BYTES,
   sequentialPageRows,
+  trimSequentialCaches,
 } from "/assets/sequential.js";
 import { decodeRows, querySnapshot } from "/assets/jdv_query.js";
 import {
@@ -47,6 +52,7 @@ const viewBreadcrumb = $("#view-breadcrumb");
 const childOpenStatus = $("#child-open-status");
 const sequentialControls = $("#sequential-controls");
 const sequentialNext = $("#sequential-next");
+const sequentialEarlier = $("#sequential-earlier");
 const sequentialProgress = $("#sequential-progress");
 const sequentialNotice = $("#sequential-notice");
 const PAGE_SIZE = 200;
@@ -59,6 +65,8 @@ let selected = null;
 let nextWindowFrame = 0;
 let nextWindowTimer;
 let pendingColumnQuery = false;
+let streamCacheCapability = null;
+let cacheUseClock = 0;
 
 const scheme = location.protocol === "https:" ? "wss:" : "ws:";
 const socketUrl = new URL(`${scheme}//${location.host}/ws`);
@@ -113,6 +121,9 @@ socket.addEventListener("message", (event) => {
   }
   transport.handleMessage(message);
   if (message.type === "welcome") {
+    streamCacheCapability = validStreamCacheCapability(
+      message.capabilities?.stream_cache,
+    );
     for (const entry of message.sessions ?? []) {
       addSession(entry.hello?.params?.session, entry.hello);
       for (const view of entry.views ?? []) {
@@ -124,7 +135,10 @@ socket.addEventListener("message", (event) => {
   } else if (message.type === "session/closed") {
     knownSessions.delete(message.session);
     for (const [key, entry] of knownTables) {
-      if (entry.session === message.session) knownTables.delete(key);
+      if (entry.session === message.session) {
+        entry.cache?.clear();
+        knownTables.delete(key);
+      }
     }
     transport.cancelSession(message.session);
     if (selected?.session === message.session) closeSelectedTable();
@@ -137,6 +151,7 @@ socket.addEventListener("message", (event) => {
       const key = `${message.session}\0${descriptor.view}`;
       const current = knownTables.get(key);
       if (current?.descriptor.generation === descriptor.generation) {
+        current.cache?.clear();
         knownTables.delete(key);
       }
       transport.cancelTable(
@@ -167,6 +182,9 @@ socket.addEventListener("message", (event) => {
 
 sequentialNext.addEventListener("click", () => {
   if (selected?.kind === "sequential") loadSequentialPage(selected);
+});
+sequentialEarlier.addEventListener("click", () => {
+  if (selected?.kind === "sequential") loadEarlierCachedPages(selected);
 });
 
 $("#sort-add").addEventListener("click", addSortTerm);
@@ -207,6 +225,15 @@ function addSession(id, hello) {
   renderLists();
 }
 
+function validStreamCacheCapability(value) {
+  return value && typeof value === "object" && value.version === 1 &&
+      Number.isSafeInteger(value.max_total_bytes) &&
+      value.max_total_bytes > 0 && Number.isSafeInteger(value.max_view_bytes) &&
+      value.max_view_bytes > 0
+    ? value
+    : null;
+}
+
 function addTable(session, message) {
   const descriptor = message?.params;
   if (
@@ -218,11 +245,21 @@ function addTable(session, message) {
   if (
     previous && descriptor.generation <= previous.descriptor.generation
   ) return;
+  previous?.cache?.clear();
   const replaceSelected = selected?.session === session &&
     selected.descriptor.view === descriptor.view &&
     selected.descriptor.generation < descriptor.generation;
   if (replaceSelected) closeSelectedTable();
-  knownTables.set(key, { session, descriptor });
+  knownTables.set(key, {
+    session,
+    descriptor,
+    progress: { watermark: 0, received: 0, done: false, gap: null },
+    cache: descriptor.access === "sequential" ? createSequentialCache() : null,
+    cachePages: new Map(),
+    cacheInfo: null,
+    cacheCatalogCursor: null,
+    cacheUse: ++cacheUseClock,
+  });
   renderLists();
   if (replaceSelected) openView(session, descriptor);
 }
@@ -456,15 +493,6 @@ function closeSelectedTable() {
     "The selected table was closed.",
   );
   selected.table?.destroy();
-  if (selected.kind === "sequential" && isKnownView(selected)) {
-    const progress = sequentialRecord(selected);
-    progress.evictedThrough = Math.max(
-      progress.evictedThrough ?? 0,
-      selected.cache.rows().at(-1)?.row_index ?? 0,
-      selected.cache.evictedThrough,
-    );
-  }
-  selected.cache?.clear();
   sequentialControls.hidden = true;
   paginationElement.replaceChildren();
   selected = null;
@@ -1373,8 +1401,8 @@ function sequentialRecord(state) {
   if (!record || record.descriptor.generation !== state.descriptor.generation) {
     throw abortError("The stream generation was closed.");
   }
-  record.progress ??= { watermark: 0, received: 0, done: false, gap: null };
-  return record.progress;
+  record.cacheUse = ++cacheUseClock;
+  return record;
 }
 
 function openSequential(session, descriptor, returnTree) {
@@ -1389,11 +1417,11 @@ function openSequential(session, descriptor, returnTree) {
     queryRequestIds: new Set(),
     returnTree,
     table: null,
-    cache: createSequentialCache(),
+    cache: sequentialRecord({ session, descriptor }).cache,
     loading: false,
+    cacheEnabled: streamCacheCapability !== null,
   };
   selected = state;
-  state.cache.discard(sequentialRecord(state).evictedThrough ?? 0);
   renderViewBreadcrumbs();
   viewer.hidden = false;
   treeViewer.hidden = true;
@@ -1413,66 +1441,396 @@ function openSequential(session, descriptor, returnTree) {
     height: "460px",
     layout: "fitData",
     index: "row_index",
-    data: [],
+    data: state.cache.rows(),
     columnDefaults: { width: COLUMN_WIDTH, resizable: false },
     columns: buildTableColumns(state.columns.map((_, i) => i)),
-    placeholder:
-      "Load the next rows. Previously consumed rows cannot be fetched again.",
+    placeholder: state.cacheEnabled
+      ? "Load cached rows or continue the stream."
+      : "Load the next rows. Previously consumed rows cannot be fetched again.",
   });
   updateSequentialProgress(state);
   setStatus(
-    "Forward-only stream ready. Load the next rows to continue.",
+    "Sequential stream ready. Load pages to continue.",
     "connected",
   );
+  if (state.cacheEnabled) {
+    refreshHostCache(state, true).catch((error) => {
+      if (selected === state && error?.name !== "AbortError") {
+        sequentialNotice.textContent =
+          `Could not restore host-cached pages: ${error.message}`;
+      }
+    });
+  }
 }
 
 function updateSequentialProgress(state) {
-  const progress = sequentialRecord(state);
-  metaElement.textContent =
-    `${progress.received} rows received · total unknown · sequential · ${state.session}`;
-  sequentialProgress.textContent =
-    `${progress.received} rows received; ${progress.watermark} rows advanced${
-      progress.done ? "; end of stream" : "; total unknown"
-    }.`;
-  sequentialNext.disabled = state.loading || progress.done;
+  const record = sequentialRecord(state);
+  const progress = record.progress;
+  metaElement.textContent = `${
+    progress.rows_seen ?? progress.received
+  } rows seen · total unknown · sequential · ${state.session}`;
+  sequentialProgress.textContent = `${
+    progress.rows_seen ?? progress.received
+  } rows seen; ${progress.watermark} rows advanced${
+    progress.done ? "; end of stream" : "; total unknown"
+  }.`;
+  const ids = state.cache.pageIds();
+  const cachedNext = ids.length > 0 &&
+    (progress.last_page ?? -1) > ids.at(-1);
+  sequentialNext.disabled = state.loading || (progress.done && !cachedNext);
   sequentialNext.textContent = state.loading
     ? "Loading…"
-    : progress.done
+    : progress.done && !cachedNext
     ? "End of stream"
     : "Load next";
   const notices = [];
-  if (progress.gap) {
+  const prefixGap = record.cacheInfo?.unavailable_before ?? 0;
+  if (state.cacheEnabled) {
+    const gaps = [];
+    if (prefixGap > 0) gaps.push([0, prefixGap]);
+    for (const page of record.cachePages.values()) {
+      if (page.unavailable_before_range) {
+        gaps.push(page.unavailable_before_range);
+      }
+    }
+    if (
+      progress.gap &&
+      !gaps.some(([start, end]) =>
+        start === progress.gap[0] && end === progress.gap[1]
+      )
+    ) gaps.push(progress.gap);
+    notices.push(...formatUnavailableRowRanges(gaps));
+  } else if (progress.gap) {
     notices.push(
       `${progress.gap[0]}–${progress.gap[1]} rows advanced but not displayed.`,
     );
   }
   if (state.cache.evictedThrough > 0) {
     notices.push(
-      `Rows through ${state.cache.evictedThrough} were evicted from the display cache and cannot be fetched again.`,
-    );
-  }
-  if (progress.received > 0 && state.cache.rows().length === 0) {
-    notices.push(
-      "Previously received rows are no longer in the display cache; this stream cannot rewind.",
+      state.cacheEnabled
+        ? `Older rows were evicted from this browser's display cache; load earlier cached rows to retrieve any pages the host still retains.`
+        : `Rows through ${state.cache.evictedThrough} were evicted from this browser's display cache.`,
     );
   }
   sequentialNotice.textContent = notices.join(" ");
+  sequentialEarlier.hidden = !state.cacheEnabled || !hasEarlierHostPages(state);
+  sequentialEarlier.disabled = state.loading;
+}
+
+function requestCacheInfo(state, afterPage, limit = 32) {
+  const params = {
+    view: state.descriptor.view,
+    generation: state.descriptor.generation,
+    limit,
+  };
+  if (afterPage !== null && afterPage >= 0) params.after_page = afterPage;
+  return cacheRequest(state, "stream/cache/info", params, 30_000)
+    .then((response) => {
+      const info = response?.result;
+      if (
+        !info || info.view !== state.descriptor.view ||
+        info.generation !== state.descriptor.generation ||
+        !Array.isArray(info.pages) ||
+        !Number.isSafeInteger(info.last_page) || info.last_page < -1 ||
+        !Number.isSafeInteger(info.rows_seen) || info.rows_seen < 0 ||
+        typeof info.done !== "boolean" ||
+        (info.next_after !== null &&
+          (!Number.isSafeInteger(info.next_after) || info.next_after < 0)) ||
+        (info.unavailable_before !== undefined &&
+          (!Number.isSafeInteger(info.unavailable_before) ||
+            info.unavailable_before < 0)) ||
+        info.pages.length > limit ||
+        !info.pages.every((page, index) =>
+          validCachePageMetadata(page) && page.page <= info.last_page &&
+          (index === 0 || page.page > info.pages[index - 1].page)
+        )
+      ) throw new Error("The host returned an invalid stream cache catalog.");
+      return info;
+    });
+}
+
+function validCachePageMetadata(page) {
+  return page && typeof page === "object" &&
+    Number.isSafeInteger(page.page) && page.page >= 0 &&
+    Number.isSafeInteger(page.first_row) && page.first_row >= 0 &&
+    Number.isSafeInteger(page.rows_fetched) && page.rows_fetched >= 0 &&
+    page.rows_seen === page.first_row + page.rows_fetched &&
+    Number.isSafeInteger(page.byte_length) && page.byte_length >= 0 &&
+    typeof page.done === "boolean" &&
+    (page.unavailable_before_range === undefined ||
+      (Array.isArray(page.unavailable_before_range) &&
+        page.unavailable_before_range.length === 2 &&
+        page.unavailable_before_range.every((n) =>
+          Number.isSafeInteger(n) && n >= 0
+        ) &&
+        page.unavailable_before_range[0] <=
+          page.unavailable_before_range[1]));
+}
+
+function cacheRequest(state, method, params, timeout) {
+  const promise = transport.request(state.session, method, params, timeout);
+  if (promise.id) state.activeRequestIds.add(promise.id);
+  return promise.finally(() => {
+    if (promise.id) state.activeRequestIds.delete(promise.id);
+  });
+}
+
+function mergeCacheInfo(record, info) {
+  const old = record.cacheInfo ?? {};
+  record.cacheInfo = mergeSequentialCacheInfo(old, info);
+  if (info.last_page >= (record.progress.last_page ?? -1)) {
+    record.progress.last_page = info.last_page;
+    record.progress.rows_seen = info.rows_seen;
+    record.progress.watermark = Math.max(
+      record.progress.watermark,
+      info.rows_seen,
+    );
+    record.progress.done = info.done;
+  }
+  for (const page of info.pages) {
+    record.cachePages.set(page.page, page);
+    if (page.unavailable_before_range) {
+      record.progress.gap = page.unavailable_before_range;
+    }
+  }
+  record.cacheCatalogCursor = info.next_after;
+  pruneCacheCatalog(record);
+}
+
+function pruneCacheCatalog(record) {
+  const keep = new Set(record.cache?.pageIds() ?? []);
+  if (Number.isSafeInteger(record.earliestHostPage)) {
+    for (const page of record.cachePages.keys()) {
+      if (page < record.earliestHostPage && !keep.has(page)) {
+        record.cachePages.delete(page);
+      }
+    }
+  }
+  const newest = [...record.cachePages.keys()].sort((a, b) => b - a);
+  for (const page of newest) {
+    if (keep.size >= 256) break;
+    keep.add(page);
+  }
+  for (const page of record.cachePages.keys()) {
+    if (!keep.has(page)) record.cachePages.delete(page);
+  }
+}
+
+async function refreshHostCache(state, hydrate) {
+  if (!state.cacheEnabled) return;
+  const record = sequentialRecord(state);
+  const tail = await requestCacheInfo(state, Number.MAX_SAFE_INTEGER, 1);
+  if (selected !== state) return;
+  mergeCacheInfo(record, tail);
+  const earliest = await requestCacheInfo(state, null, 1);
+  if (selected !== state) return;
+  if (earliest.pages.length) {
+    record.earliestHostPage = earliest.pages[0].page;
+    mergeCacheInfo(record, earliest);
+    pruneCacheCatalog(record);
+  } else {
+    record.earliestHostPage = null;
+  }
+  if (tail.last_page >= 0) {
+    const after = Math.max(-1, tail.last_page - SEQUENTIAL_CACHE_PAGES);
+    const window = await requestCacheInfo(state, after, SEQUENTIAL_CACHE_PAGES);
+    if (selected !== state) return;
+    mergeCacheInfo(record, window);
+    if (hydrate) await restoreHostPages(state, window.pages);
+  }
+  if (selected === state && isKnownView(state)) {
+    updateSequentialProgress(state);
+  }
+}
+
+async function restoreHostPages(state, pages) {
+  if (!Array.isArray(pages) || pages.length > SEQUENTIAL_CACHE_PAGES) {
+    throw new Error("The host cache page request exceeded its bound.");
+  }
+  const record = sequentialRecord(state);
+  for (const metadata of pages) {
+    if (selected !== state) return;
+    if (!validCachePageMetadata(metadata)) {
+      throw new Error("The host returned an invalid cached page index.");
+    }
+    if (record.cache.hasPage(metadata.page)) continue;
+    const response = await cacheRequest(
+      state,
+      "stream/cache/get",
+      {
+        view: state.descriptor.view,
+        generation: state.descriptor.generation,
+        page: metadata.page,
+        max_bytes: 4 * 1024 * 1024,
+      },
+      30_000,
+    );
+    if (selected !== state) return;
+    const result = response?.result;
+    const page = result?.cache_page;
+    if (
+      !response.binary || !page || page.page !== metadata.page ||
+      result.view !== state.descriptor.view ||
+      result.generation !== state.descriptor.generation ||
+      result.first_row !== page.first_row ||
+      result.rows_fetched !== page.rows_fetched ||
+      result.rows_seen !== page.rows_seen || result.done !== page.done ||
+      !validCachePageMetadata(page) ||
+      result.transfer?.encoding !== "arrow-ipc" ||
+      result.transfer.byte_length !== response.binary.byteLength ||
+      page.byte_length !== response.binary.byteLength
+    ) throw new Error("The host returned an invalid cached page.");
+    const decoded = decodeArrowPage(
+      response.binary,
+      state.descriptor,
+      result,
+    );
+    record.cache.discard(decoded.discardedThrough);
+    record.cache.setPage(page.page, decoded.rows);
+    record.cachePages.set(page.page, page);
+    pruneCacheCatalog(record);
+    record.cacheUse = ++cacheUseClock;
+    trimBrowserCaches(state);
+  }
+  if (selected === state && state.table) {
+    await state.table.setData(record.cache.rows());
+    updateSequentialProgress(state);
+  }
+}
+
+function trimBrowserCaches(activeState) {
+  const records = [...knownTables.values()].filter((record) => record.cache);
+  trimSequentialCaches(records, SEQUENTIAL_TOTAL_CACHE_BYTES);
+  if (selected === activeState && activeState.table) {
+    activeState.table.setData(activeState.cache.rows());
+  }
+}
+
+function hasEarlierHostPages(state) {
+  const record = sequentialRecord(state);
+  const ids = record.cache.pageIds();
+  return ids.length > 0 && Number.isSafeInteger(record.earliestHostPage) &&
+    ids[0] > record.earliestHostPage;
+}
+
+async function loadEarlierCachedPages(state) {
+  if (selected !== state || state.loading || !state.cacheEnabled) return;
+  const record = sequentialRecord(state);
+  const epoch = state.epoch;
+  const minimum = state.cache.pageIds()[0];
+  if (!Number.isSafeInteger(minimum)) return;
+  state.loading = true;
+  updateSequentialProgress(state);
+  try {
+    const info = await requestCacheInfo(
+      state,
+      Math.max(-1, minimum - SEQUENTIAL_CACHE_PAGES - 1),
+      SEQUENTIAL_CACHE_PAGES,
+    );
+    if (!isCurrent(state, epoch)) return;
+    mergeCacheInfo(record, info);
+    const pages = info.pages.filter((page) => page.page < minimum);
+    if (pages.length) {
+      record.cache.clear();
+      await restoreHostPages(state, pages);
+    } else updateSequentialProgress(state);
+  } catch (error) {
+    if (selected === state && error?.code === "unavailable") {
+      await refreshHostCache(state, true);
+    } else if (selected === state) {
+      showTableError(error);
+    }
+  } finally {
+    state.loading = false;
+    if (selected === state && isKnownView(state)) {
+      updateSequentialProgress(state);
+    }
+  }
 }
 
 async function loadSequentialPage(state) {
-  if (selected !== state || state.loading || sequentialRecord(state).done) {
+  const record = sequentialRecord(state);
+  const epoch = state.epoch;
+  const ids = state.cache.pageIds();
+  const nextPage = ids.length === 0 ? 0 : ids.at(-1) + 1;
+  if (selected !== state || state.loading) {
     return;
   }
+  if (state.cacheEnabled && record.cachePages.has(nextPage)) {
+    state.loading = true;
+    updateSequentialProgress(state);
+    try {
+      await restoreHostPages(state, [record.cachePages.get(nextPage)]);
+    } catch (error) {
+      if (error?.code === "unavailable") {
+        record.cachePages.delete(nextPage);
+        await refreshHostCache(state, true);
+      } else if (selected === state) showTableError(error);
+    } finally {
+      state.loading = false;
+      if (selected === state && isKnownView(state)) {
+        updateSequentialProgress(state);
+      }
+    }
+    return;
+  }
+  if (state.cacheEnabled) {
+    state.loading = true;
+    updateSequentialProgress(state);
+    try {
+      const info = await requestCacheInfo(state, Number.MAX_SAFE_INTEGER, 1);
+      if (!isCurrent(state, epoch)) return;
+      mergeCacheInfo(record, info);
+      if (info.last_page >= nextPage) {
+        const pages = await requestCacheInfo(
+          state,
+          nextPage - 1,
+          32,
+        );
+        if (!isCurrent(state, epoch)) return;
+        mergeCacheInfo(record, pages);
+        const metadata = pages.pages.find((page) => page.page === nextPage);
+        if (metadata) {
+          await restoreHostPages(state, [metadata]);
+          return;
+        }
+        // A retained-page race is retried from a fresh catalog, never by consuming R.
+        record.cachePages.delete(nextPage);
+        await refreshHostCache(state, true);
+        if (!isCurrent(state, epoch)) return;
+        if (record.cachePages.has(nextPage)) {
+          await restoreHostPages(state, [record.cachePages.get(nextPage)]);
+        }
+        return;
+      }
+      if (record.progress.done) return;
+    } catch (error) {
+      if (selected === state) showTableError(error);
+      return;
+    } finally {
+      state.loading = false;
+      if (selected === state && isKnownView(state)) {
+        updateSequentialProgress(state);
+      }
+    }
+  }
+  if (!isCurrent(state, epoch)) return;
   state.loading = true;
   updateSequentialProgress(state);
-  const epoch = state.epoch;
   const maxRows = sequentialPageRows(state.descriptor, PAGE_SIZE);
-  const promise = transport.request(state.session, "stream/next", {
+  const params = {
     view: state.descriptor.view,
     generation: state.descriptor.generation,
     max_rows: maxRows,
     max_bytes: 4 * 1024 * 1024,
-  }, 60_000);
+  };
+  if (state.cacheEnabled) params.after_page = record.progress.last_page ?? -1;
+  const promise = transport.request(
+    state.session,
+    "stream/next",
+    params,
+    60_000,
+  );
   if (promise.id) state.activeRequestIds.add(promise.id);
   try {
     const response = await promise;
@@ -1485,7 +1843,7 @@ async function loadSequentialPage(state) {
       metadata.rows_fetched < 0 || metadata.rows_fetched > maxRows ||
       !response.binary
     ) throw new Error("R returned an invalid sequential page.");
-    const progress = sequentialRecord(state);
+    const progress = sequentialRecord(state).progress;
     const nextProgress = { ...progress };
     recordSequentialProgress(nextProgress, metadata);
     const decoded = decodeArrowPage(
@@ -1494,15 +1852,48 @@ async function loadSequentialPage(state) {
       metadata,
     );
     Object.assign(progress, nextProgress);
+    progress.rows_seen = metadata.rows_seen;
     state.cache.discard(decoded.discardedThrough);
-    state.cache.append(decoded.rows);
+    const page = state.cacheEnabled ? metadata.cache_page?.page : nextPage;
+    if (state.cacheEnabled && (!Number.isSafeInteger(page) || page < 0)) {
+      throw new Error("The host omitted the sequential cache page index.");
+    }
+    state.cache.setPage(page, decoded.rows);
+    if (state.cacheEnabled) {
+      sequentialRecord(state).cachePages.set(page, metadata.cache_page);
+      pruneCacheCatalog(sequentialRecord(state));
+      progress.last_page = page;
+      progress.unavailable_before =
+        metadata.cache_page.unavailable_before_range?.[1] ??
+          progress.unavailable_before ?? 0;
+    }
+    trimBrowserCaches(state);
     await state.table.setData(state.cache.rows());
+    if (state.cacheEnabled) {
+      await refreshEarliestHostPage(state, epoch);
+    }
     showWarnings(response.warnings ?? []);
     setStatus(
       metadata.done ? "End of stream." : "Connected. Load next to continue.",
       "connected",
     );
   } catch (error) {
+    if (state.cacheEnabled && error?.code === "cache_changed") {
+      try {
+        await refreshHostCache(state, true);
+      } catch (refreshError) {
+        if (selected === state) showTableError(refreshError);
+      }
+      return;
+    }
+    if (state.cacheEnabled && error?.code === "unavailable") {
+      try {
+        await refreshHostCache(state, true);
+      } catch (refreshError) {
+        if (selected === state) showTableError(refreshError);
+      }
+      return;
+    }
     if (selected === state && error?.name !== "AbortError") {
       showTableError(error);
     }
@@ -1513,4 +1904,13 @@ async function loadSequentialPage(state) {
       updateSequentialProgress(state);
     }
   }
+}
+
+async function refreshEarliestHostPage(state, epoch) {
+  const info = await requestCacheInfo(state, null, 1);
+  if (!isCurrent(state, epoch)) return;
+  const record = sequentialRecord(state);
+  record.earliestHostPage = info.pages[0]?.page ?? null;
+  mergeCacheInfo(record, info);
+  updateSequentialProgress(state);
 }

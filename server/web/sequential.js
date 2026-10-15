@@ -2,7 +2,56 @@
 const NANOSECONDS = [1_000_000_000n, 1_000_000n, 1_000n, 1n];
 const UNIT_NAMES = ["s", "ms", "us", "ns"];
 export const SEQUENTIAL_CACHE_BYTES = 8 * 1024 * 1024;
+export const SEQUENTIAL_CACHE_PAGES = 32;
+export const SEQUENTIAL_TOTAL_CACHE_BYTES = 32 * 1024 * 1024;
 export const CELL_TEXT_LIMIT = 4096;
+
+export function mergeSequentialCacheInfo(old = {}, info) {
+  return {
+    ...old,
+    last_page: Math.max(old.last_page ?? -1, info.last_page),
+    rows_seen: Math.max(old.rows_seen ?? 0, info.rows_seen),
+    done: info.last_page >= (old.last_page ?? -1) ? info.done : old.done,
+    unavailable_before: Math.max(
+      old.unavailable_before ?? 0,
+      info.unavailable_before ?? 0,
+    ),
+  };
+}
+
+export function formatUnavailableRowRanges(ranges) {
+  const ordered = ranges.filter(([start, end]) =>
+    Number.isSafeInteger(start) && Number.isSafeInteger(end) &&
+    start >= 0 && end > start
+  ).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged = [];
+  for (const [start, end] of ordered) {
+    const previous = merged.at(-1);
+    if (previous && start <= previous[1]) {
+      previous[1] = Math.max(previous[1], end);
+    } else merged.push([start, end]);
+  }
+  return merged.map(([start, end]) =>
+    start === 0
+      ? `Rows 1–${end} are no longer retained by the host.`
+      : `Rows ${start + 1}–${end} are not retained by the host.`
+  );
+}
+
+export function trimSequentialCaches(records, maxBytes) {
+  let bytes = records.reduce((sum, record) => sum + record.cache.bytes, 0);
+  while (bytes > maxBytes) {
+    const candidates = records.filter((record) =>
+      record.cache.pageIds().length > 0
+    ).sort((a, b) => a.cacheUse - b.cacheUse);
+    const victim = candidates[0];
+    if (!victim) break;
+    const before = victim.cache.bytes;
+    if (!victim.cache.evictOldestPage()) break;
+    bytes -= before - victim.cache.bytes;
+  }
+  return bytes;
+}
 
 export function sequentialPageRows(descriptor, preferredRows = 200) {
   const cap = descriptor.max_page_rows === undefined
@@ -169,37 +218,67 @@ export function createSequentialCache(
   ) {
     throw new Error("Invalid sequential cache capacity.");
   }
-  const pages = [];
+  const pages = new Map();
   let bytes = 0;
   let evictedThrough = 0;
+  let nextPage = 0;
+  function pageBytes(rows) {
+    return rows.reduce((sum, row) =>
+      sum + 64 +
+      Object.values(row).reduce(
+        (rowSum, value) => rowSum + 16 + String(value).length * 2,
+        0,
+      ), 0);
+  }
+  function removePage(page) {
+    const removed = pages.get(page);
+    if (!removed) return false;
+    pages.delete(page);
+    bytes -= removed.bytes;
+    for (const row of removed.rows) {
+      evictedThrough = Math.max(evictedThrough, row.row_index);
+    }
+    return true;
+  }
   return {
     append(rows) {
-      const items = rows.map((row) => ({
-        row,
-        bytes: 64 +
-          Object.values(row).reduce(
-            (sum, value) => sum + 16 + String(value).length * 2,
-            0,
-          ),
-      }));
-      let size = items.reduce((sum, item) => sum + item.bytes, 0);
-      while (items.length && size > maxBytes) {
-        const removed = items.shift();
-        size -= removed.bytes;
-        evictedThrough = Math.max(evictedThrough, removed.row.row_index);
+      this.setPage(nextPage++, rows);
+    },
+    setPage(page, rows) {
+      if (!Number.isSafeInteger(page) || page < 0 || !Array.isArray(rows)) {
+        throw new Error("Invalid sequential display page.");
       }
-      pages.push({ items, bytes: size });
+      removePage(page);
+      const bounded = rows.slice();
+      let size = pageBytes(bounded);
+      while (bounded.length && size > maxBytes) {
+        const removed = bounded.shift();
+        size -= pageBytes([removed]);
+        evictedThrough = Math.max(evictedThrough, removed.row_index);
+      }
+      pages.set(page, { rows: bounded, bytes: size });
       bytes += size;
-      while (pages.length > maxPages || bytes > maxBytes) {
-        const removed = pages.shift();
-        bytes -= removed.bytes;
-        for (const item of removed.items) {
-          evictedThrough = Math.max(evictedThrough, item.row.row_index);
-        }
+      nextPage = Math.max(nextPage, page + 1);
+      while (pages.size > maxPages || bytes > maxBytes) {
+        const oldest = Math.min(...pages.keys());
+        if (oldest === page && pages.size === 1) break;
+        removePage(oldest);
       }
     },
     rows() {
-      return pages.flatMap((page) => page.items.map((item) => item.row));
+      return [...pages.keys()].sort((a, b) => a - b).flatMap((page) =>
+        pages.get(page).rows
+      );
+    },
+    pageIds() {
+      return [...pages.keys()].sort((a, b) => a - b);
+    },
+    hasPage(page) {
+      return pages.has(page);
+    },
+    evictOldestPage() {
+      const oldest = Math.min(...pages.keys());
+      return Number.isFinite(oldest) ? removePage(oldest) : false;
     },
     get bytes() {
       return bytes;
@@ -211,7 +290,7 @@ export function createSequentialCache(
       evictedThrough = Math.max(evictedThrough, through);
     },
     clear() {
-      pages.length = 0;
+      pages.clear();
       bytes = 0;
     },
   };

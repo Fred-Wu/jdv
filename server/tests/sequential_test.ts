@@ -9,8 +9,11 @@ import {
   formatArrowValue,
   formatScaled,
   formatTimestamp,
+  formatUnavailableRowRanges,
+  mergeSequentialCacheInfo,
   recordSequentialProgress,
   sequentialPageRows,
+  trimSequentialCaches,
 } from "../web/sequential.js";
 
 function words(values: bigint[], width: number): Uint32Array {
@@ -200,6 +203,69 @@ Deno.test("display cache is bounded and progress survives eviction and selection
     }),
     [1, 6],
   );
+});
+
+Deno.test("display cache inserts host pages in order and replaces a cached page", () => {
+  const cache = createSequentialCache(4096, 3);
+  cache.setPage(4, [{ row_index: 5, c0: "five" }]);
+  cache.setPage(2, [{ row_index: 3, c0: "three" }]);
+  cache.setPage(3, [{ row_index: 4, c0: "four" }]);
+  assertEquals(cache.pageIds(), [2, 3, 4]);
+  assertEquals(cache.rows().map((row) => row.row_index), [3, 4, 5]);
+  cache.setPage(3, [{ row_index: 4, c0: "replaced" }]);
+  assertEquals(cache.rows().map((row) => row.c0), [
+    "three",
+    "replaced",
+    "five",
+  ]);
+  cache.setPage(5, [{ row_index: 6, c0: "six" }]);
+  assertEquals(cache.pageIds(), [3, 4, 5]);
+  assertEquals(cache.evictOldestPage(), true);
+  assertEquals(cache.pageIds(), [4, 5]);
+});
+
+Deno.test("aggregate display budget trims caches even when host caching is disabled", () => {
+  const records = [1, 2, 3].map((cacheUse) => ({
+    cacheEnabled: false,
+    cache: createSequentialCache(4096),
+    cacheUse,
+  }));
+  for (const record of records) {
+    record.cache.setPage(0, [{ row_index: 0, c0: "x".repeat(100) }]);
+  }
+  const bytes = trimSequentialCaches(records, 500);
+  assert(bytes <= 500);
+  assertEquals(records[0].cache.pageIds(), []);
+  assertEquals(records[1].cache.pageIds(), []);
+  assertEquals(records[2].cache.pageIds(), [0]);
+});
+
+Deno.test("host eviction ranges use zero-based half-open coordinates", () => {
+  assertEquals(formatUnavailableRowRanges([[0, 10], [4, 10], [20, 30]]), [
+    "Rows 1–10 are no longer retained by the host.",
+    "Rows 21–30 are not retained by the host.",
+  ]);
+  assertEquals(formatUnavailableRowRanges([[5, 5], [30, 20]]), []);
+});
+
+Deno.test("late cache info cannot move the unavailable prefix backwards", () => {
+  const merged = mergeSequentialCacheInfo({
+    last_page: 8,
+    rows_seen: 1600,
+    done: false,
+    unavailable_before: 400,
+  }, {
+    last_page: 7,
+    rows_seen: 1400,
+    done: false,
+    unavailable_before: 200,
+  });
+  assertEquals(merged, {
+    last_page: 8,
+    rows_seen: 1600,
+    done: false,
+    unavailable_before: 400,
+  });
 });
 
 Deno.test("dictionary decimals and timestamps recurse through physical values with slices and nulls", () => {

@@ -4,7 +4,10 @@ import { startServer } from "../main.ts";
 
 type BrowserRuntime = {
   document: {
-    querySelector(selector: string): { textContent: string | null } | null;
+    querySelector(selector: string): {
+      textContent: string | null;
+      hasAttribute(name: string): boolean;
+    } | null;
   };
 };
 
@@ -25,7 +28,11 @@ if (rLibrary && !capabilities.polars) {
   );
 }
 
-async function sequentialBrowser(polarsOnly = false) {
+async function sequentialBrowser(
+  polarsOnly = false,
+  cacheEnabled = true,
+  options: { verifyEarlyEviction?: boolean; hostCacheBytes?: number } = {},
+) {
   const arrowModule = "npm:apache-arrow@21.2.0";
   const Arrow = await import(arrowModule);
   const playwrightModule = "npm:playwright@1.56.1";
@@ -145,6 +152,11 @@ async function sequentialBrowser(polarsOnly = false) {
     mode: "tcp",
     httpPort: 0,
     cacheDir: `${work}/cache`,
+    ...(cacheEnabled
+      ? options.hostCacheBytes === undefined
+        ? {}
+        : { streamCacheBytes: options.hostCacheBytes }
+      : { streamCacheBytes: 0 }),
   });
   const source = [
     "args <- commandArgs(TRUE)",
@@ -174,6 +186,40 @@ async function sequentialBrowser(polarsOnly = false) {
   }).spawn();
   let browser;
   const trace: Record<string, unknown>[] = [];
+  const traceWaiters: {
+    predicate: (frame: Record<string, unknown>) => boolean;
+    resolve: (frame: Record<string, unknown>) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }[] = [];
+  const pushTrace = (frame: Record<string, unknown>) => {
+    trace.push(frame);
+    for (let i = traceWaiters.length - 1; i >= 0; i--) {
+      const waiter = traceWaiters[i];
+      if (waiter.predicate(frame)) {
+        clearTimeout(waiter.timer);
+        traceWaiters.splice(i, 1);
+        waiter.resolve(frame);
+      }
+    }
+  };
+  const waitForTrace = (
+    predicate: (frame: Record<string, unknown>) => boolean,
+  ) => {
+    const existing = trace.find(predicate);
+    if (existing) return Promise.resolve(existing);
+    return new Promise<Record<string, unknown>>((resolve, reject) => {
+      const waiter = {
+        predicate,
+        resolve,
+        timer: setTimeout(() => {
+          const index = traceWaiters.indexOf(waiter);
+          if (index >= 0) traceWaiters.splice(index, 1);
+          reject(new Error("Timed out waiting for the browser trace."));
+        }, 30_000),
+      };
+      traceWaiters.push(waiter);
+    });
+  };
   const reader = child.stdout.pipeThrough(new TextDecoderStream())
     .getReader();
   const stderr = new Response(child.stderr).text();
@@ -253,7 +299,7 @@ async function sequentialBrowser(polarsOnly = false) {
                 message.result?.first_row !== undefined
               ) {
                 const metadata = message.result;
-                trace.push({
+                pushTrace({
                   browser: name,
                   direction,
                   id: message.id,
@@ -263,6 +309,7 @@ async function sequentialBrowser(polarsOnly = false) {
                   rows_fetched: metadata?.rows_fetched,
                   rows_seen: metadata?.rows_seen,
                   done: metadata?.done,
+                  cache_page: metadata?.cache_page?.page,
                 });
               }
             });
@@ -346,9 +393,10 @@ async function sequentialBrowser(polarsOnly = false) {
       advanced: number,
       done = false,
     ) => {
+      assert(received <= advanced);
       assertEquals(
         await page.locator("#sequential-progress").innerText(),
-        `${received} rows received; ${advanced} rows advanced; ${
+        `${advanced} rows seen; ${advanced} rows advanced; ${
           done ? "end of stream" : "total unknown"
         }.`,
       );
@@ -373,6 +421,10 @@ async function sequentialBrowser(polarsOnly = false) {
     }
     expectPage(await clickNext(first, "first"), 0, 200);
     await expectProgress(first, 200, 200);
+    const firstPageRequests = trace.filter((frame) =>
+      frame.browser === "first" && frame.direction === "framesent" &&
+      frame.method === "stream/next"
+    ).length;
     const content = await first.locator("#column-window").innerText();
     for (
       const exact of [
@@ -393,16 +445,146 @@ async function sequentialBrowser(polarsOnly = false) {
     ) {
       assert(content.includes(exact), `Missing exact display: ${exact}`);
     }
-    assertEquals((await clickNext(second, "second")).code, "in_use");
-    await expectProgress(second, 0, 0);
     await first.locator("#tables article").filter({
       hasText: "Ordinary table",
     }).getByRole("button", { name: "Open view", exact: true }).click();
     await first.locator("#tables article").filter({
       hasText: "Exact sequential stream",
     }).getByRole("button", { name: "Open view", exact: true }).click();
+    await first.waitForFunction(() =>
+      (globalThis as unknown as BrowserRuntime).document.querySelector(
+        "#column-window",
+      )?.textContent?.includes("-9223372036854775807") === true
+    );
+    assert(
+      (await first.locator("#column-window").innerText()).includes(
+        "-9223372036854775807",
+      ),
+      "Switching away and back should retain the displayed page.",
+    );
+    assertEquals(
+      trace.filter((frame) =>
+        frame.browser === "first" && frame.direction === "framesent" &&
+        frame.method === "stream/next"
+      ).length,
+      firstPageRequests,
+    );
+    if (!cacheEnabled) {
+      expectPage(await clickNext(first, "first"), 200, 200);
+      await expectProgress(first, 400, 400);
+      assertEquals(errors, []);
+      return;
+    }
     expectPage(await clickNext(first, "first"), 200, 200);
     await expectProgress(first, 400, 400);
+    if (options.verifyEarlyEviction) {
+      for (let page = 2; page < 6; page++) {
+        expectPage(await clickNext(first, "first"), page * 200, 200);
+        await expectProgress(first, page * 200 + 200, page * 200 + 200);
+      }
+      assertEquals(
+        await first.locator("#sequential-earlier").isHidden(),
+        false,
+      );
+      const beforeEarlier = trace.filter((frame) =>
+        frame.browser === "first" && frame.direction === "framesent" &&
+        frame.method === "stream/next"
+      ).length;
+      await first.locator("#sequential-earlier").click();
+      await first.waitForFunction(() =>
+        (globalThis as unknown as BrowserRuntime).document.querySelector(
+          "#sequential-earlier",
+        )?.hasAttribute("disabled") === false
+      );
+      assert(
+        (await first.locator("#column-window").innerText()).includes(
+          "-9223372036854775807",
+        ),
+      );
+      assert(
+        trace.filter((frame) =>
+          frame.browser === "first" && frame.direction === "framesent" &&
+          frame.method === "stream/next"
+        ).length === beforeEarlier,
+        "Restoring host pages after local eviction must not consume R again.",
+      );
+      assertEquals(errors, []);
+      return;
+    }
+    if (options.hostCacheBytes !== undefined) {
+      for (let page = 2; page < 8; page++) {
+        expectPage(await clickNext(first, "first"), page * 200, 200);
+        await expectProgress(first, page * 200, page * 200 + 200);
+      }
+      expectPage(await clickNext(first, "first"), 1600, 0, true);
+      await expectProgress(first, 1600, 1600, true);
+      const notice = await first.locator("#sequential-notice").innerText();
+      assert(
+        notice.includes("Rows 1–1600 are no longer retained by the host."),
+        `Expected exact one-based prefix eviction notice, got: ${notice}`,
+      );
+      const secondRequests = trace.filter((frame) =>
+        frame.browser === "second" && frame.direction === "framesent" &&
+        frame.method === "stream/next"
+      ).length;
+      await second.reload();
+      await second.locator("#tables article").filter({
+        hasText: "Exact sequential stream",
+      }).getByRole("button", { name: "Open view", exact: true }).click();
+      await second.waitForFunction(() =>
+        (globalThis as unknown as BrowserRuntime).document.querySelector(
+          "#sequential-progress",
+        )?.textContent?.includes(
+          "1600 rows seen; 1600 rows advanced; end of stream.",
+        ) === true
+      );
+      assert(
+        (await second.locator("#sequential-notice").innerText()).includes(
+          "Rows 1–1600 are no longer retained by the host.",
+        ),
+      );
+      assertEquals(await second.locator("#sequential-next").isDisabled(), true);
+      assert(
+        trace.filter((frame) =>
+          frame.browser === "second" && frame.direction === "framesent" &&
+          frame.method === "stream/next"
+        ).length === secondRequests,
+        "Reloading an evicted host page must restore progress without consuming R.",
+      );
+      assertEquals(errors, []);
+      return;
+    }
+    await second.locator("#tables article").filter({
+      hasText: "Exact sequential stream",
+    }).getByRole("button", { name: "Open view", exact: true }).click();
+    await second.waitForFunction(() =>
+      (globalThis as unknown as BrowserRuntime).document.querySelector(
+        "#column-window",
+      )?.textContent?.includes("-9223372036854775807") === true
+    );
+    const secondRequests = trace.filter((frame) =>
+      frame.browser === "second" && frame.direction === "framesent" &&
+      frame.method === "stream/next"
+    ).length;
+    assertEquals(secondRequests, 0);
+    await second.reload();
+    await second.locator("#tables article").filter({
+      hasText: "Exact sequential stream",
+    }).getByRole("button", { name: "Open view", exact: true }).click();
+    await second.waitForFunction(() =>
+      (globalThis as unknown as BrowserRuntime).document.querySelector(
+        "#column-window",
+      )?.textContent?.includes("-9223372036854775807") === true
+    );
+    assert(
+      trace.filter((frame) =>
+        frame.browser === "second" && frame.direction === "framesent" &&
+        frame.method === "stream/next"
+      ).length === secondRequests,
+      "Reloading should restore host-cached rows without consuming R.",
+    );
+    assertEquals((await clickNext(second, "second")).code, "in_use");
+    await expectProgress(second, 200, 400);
     assert(
       !(await first.locator("#sequential-notice").innerText()).includes(
         "advanced but not displayed",
@@ -413,7 +595,9 @@ async function sequentialBrowser(polarsOnly = false) {
     let acquired = false;
     for (let attempt = 0; attempt < 30; attempt++) {
       const terminal = await clickNext(second, "second");
-      if (terminal.code === "in_use") continue;
+      if (terminal.code === "in_use") {
+        continue;
+      }
       expectPage(terminal, 400, 200);
       await expectProgress(second, 200, 600);
       acquired = true;
@@ -421,9 +605,10 @@ async function sequentialBrowser(polarsOnly = false) {
     }
     assert(acquired, "The detached owner's lease was not released.");
     assert(
-      (await second.locator("#sequential-notice").innerText()).includes(
-        "1–400 rows advanced but not displayed",
+      !(await second.locator("#sequential-notice").innerText()).includes(
+        "advanced but not displayed",
       ),
+      "Host cache restore must not report recoverable rows as a gap.",
     );
     for (let received = 400; received <= 1200; received += 200) {
       expectPage(await clickNext(second, "second"), received + 200, 200);
@@ -439,6 +624,52 @@ async function sequentialBrowser(polarsOnly = false) {
     expectPage(await clickNext(second, "second"), 1600, 0, true);
     await expectProgress(second, 1200, 1600, true);
     assertEquals(await second.locator("#sequential-next").isDisabled(), true);
+    assertEquals(await second.locator("#sequential-earlier").isHidden(), false);
+    const beforeEarlier = trace.filter((frame) =>
+      frame.browser === "second" && frame.direction === "framesent" &&
+      frame.method === "stream/next"
+    ).length;
+    await second.locator("#sequential-earlier").click();
+    await second.waitForFunction(() =>
+      (globalThis as unknown as BrowserRuntime).document.querySelector(
+        "#sequential-earlier",
+      )?.hasAttribute("disabled") === false
+    );
+    assert(
+      (await second.locator("#column-window").innerText()).includes(
+        "-9223372036854775807",
+      ),
+      "Earlier retained pages should be recoverable after browser-cache eviction.",
+    );
+    assert(
+      trace.filter((frame) =>
+        frame.browser === "second" && frame.direction === "framesent" &&
+        frame.method === "stream/next"
+      ).length === beforeEarlier,
+      "Recovering earlier host pages must not consume another R page.",
+    );
+    const beforeCachedForward = trace.filter((frame) =>
+      frame.browser === "second" && frame.direction === "framesent" &&
+      frame.method === "stream/next"
+    ).length;
+    const cacheStart = trace.length;
+    await second.locator("#sequential-next").click();
+    await waitForTrace((frame) =>
+      trace.indexOf(frame) >= cacheStart && frame.browser === "second" &&
+      frame.direction === "framereceived" && frame.cache_page === 4
+    );
+    await second.waitForFunction(() =>
+      (globalThis as unknown as BrowserRuntime).document.querySelector(
+        "#sequential-next",
+      )?.textContent !== "Loading…"
+    );
+    assert(
+      trace.filter((frame) =>
+        frame.browser === "second" && frame.direction === "framesent" &&
+        frame.method === "stream/next"
+      ).length === beforeCachedForward,
+      "Moving forward within retained pages must not consume another R page.",
+    );
     assertEquals(errors, []);
   } finally {
     console.info(JSON.stringify({ sequential_trace: trace }));
@@ -462,6 +693,24 @@ Deno.test({
   fn: () => sequentialBrowser(false),
 });
 Deno.test({
+  name:
+    "real R browser display eviction reveals and restores the earliest host page",
+  ignore: !executable || !rLibrary || !capabilities.arrow ||
+    !capabilities.nanoarrow,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () => sequentialBrowser(false, true, { verifyEarlyEviction: true }),
+});
+Deno.test({
+  name:
+    "real R browser reports host FIFO eviction exactly and restores progress after reload",
+  ignore: !executable || !rLibrary || !capabilities.arrow ||
+    !capabilities.nanoarrow,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () => sequentialBrowser(false, true, { hostCacheBytes: 1024 }),
+});
+Deno.test({
   name: "optional Polars newest sequential view renders in Chromium",
   ignore: !executable || !rLibrary || !capabilities.arrow ||
     !capabilities.polars ||
@@ -469,4 +718,13 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: () => sequentialBrowser(true),
+});
+Deno.test({
+  name:
+    "sequential view keeps legacy forward-only behavior when host cache is disabled",
+  ignore: !executable || !rLibrary || !capabilities.arrow ||
+    !capabilities.nanoarrow,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () => sequentialBrowser(false, false),
 });
