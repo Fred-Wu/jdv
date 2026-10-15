@@ -1,12 +1,31 @@
 import { assert, assertEquals } from "./assert.ts";
 import { join } from "node:path";
 import { ArfSession } from "./helpers/arf_session.ts";
-import { removeCacheDirectory } from "./integration_cleanup.ts";
+import {
+  finishIntegrationCleanup,
+  removeCacheDirectory,
+} from "./integration_cleanup.ts";
 import { type TestBrowser, TestServer } from "./helpers/test_server.ts";
+import { launchOwnedBrowser, phase } from "./bounded_browser.ts";
 
 const testLibrary = Deno.env.get("JDV_TEST_R_LIB");
 const browserExecutable = Deno.env.get("JDV_TEST_BROWSER");
 const browserLibraryPath = Deno.env.get("JDV_TEST_BROWSER_LIBS");
+
+let rEvaluationSequence = 0;
+
+function rEval(
+  arf: ArfSession,
+  code: string,
+  timeoutMs = 30_000,
+): Promise<Awaited<ReturnType<ArfSession["eval"]>>> {
+  const sequence = ++rEvaluationSequence;
+  return phase(
+    `Cell E2E R evaluation ${sequence}`,
+    () => arf.eval(code, timeoutMs),
+    timeoutMs + 3_000,
+  );
+}
 
 interface Runtime {
   server: TestServer;
@@ -136,27 +155,67 @@ async function startRuntime(): Promise<Runtime> {
   let startedArf = false;
   let browser: TestBrowser | undefined;
   try {
-    await server.start();
     startedServer = true;
-    await arf.start({ env: server.rEnv(testLibrary) });
+    await phase("Cell E2E server startup", () => server.start(), 30_000);
     startedArf = true;
+    await phase(
+      "Cell E2E arf startup",
+      () => arf.start({ env: server.rEnv(testLibrary) }),
+      60_000,
+    );
     const libraryPath = rQuote(testLibrary);
-    const loaded = await arf.eval(
+    const loaded = await rEval(
+      arf,
       `.libPaths(c(${libraryPath}, .libPaths())); ` +
         `library(jdv, lib.loc = ${libraryPath}); ` +
         `cat("JDV_TEST_R_LIB", normalizePath(getNamespaceInfo(asNamespace("jdv"), "path"), winslash = "/"), ` +
         `getLoadedDLLs()[["jdv"]][["path"]], sep = "\\t"); cat("\\n")`,
     );
     console.log(`Loaded Cell E2E R package and DLL:\n${loaded.stdout ?? ""}`);
-    browser = await server.connectBrowser();
-    assertEquals((await browser.read()).type, "welcome");
+    browser = await phase(
+      "Cell E2E browser connection",
+      () => server.connectBrowser(),
+      30_000,
+    );
+    assertEquals(
+      (await phase(
+        "Cell E2E browser welcome",
+        () => browser!.read(10_000),
+        12_000,
+      ))
+        .type,
+      "welcome",
+    );
     return { server, arf, browser };
   } catch (error) {
-    browser?.close();
-    await Promise.allSettled([
-      startedArf ? arf.close() : Promise.resolve(),
-      startedServer ? server.close() : Promise.resolve(),
-    ]);
+    await finishIntegrationCleanup([
+      ...(browser
+        ? [
+          () =>
+            phase(
+              "Cell E2E startup browser cleanup",
+              () => Promise.resolve(browser!.close()),
+              10_000,
+            ),
+        ]
+        : []),
+      ...(startedArf
+        ? [
+          () =>
+            phase("Cell E2E startup arf cleanup", () => arf.close(), 50_000),
+        ]
+        : []),
+      ...(startedServer
+        ? [
+          () =>
+            phase(
+              "Cell E2E startup server cleanup",
+              () => server.close(),
+              10_000,
+            ),
+        ]
+        : []),
+    ], [error]);
     throw error;
   }
 }
@@ -212,364 +271,449 @@ Deno.test({
     const release = join(markerDir, "release");
     let screenshotDir: string | undefined;
     let closeChromium: (() => Promise<void>) | undefined;
+    let primaryError: unknown;
     let busy: {
       result: Promise<unknown>;
       wait(timeoutMs?: number): Promise<unknown>;
     } | undefined;
     try {
-      const { arf, browser, server } = runtime;
-      await arf.eval(cellFixtureCode());
-      const snapshot = await openedView(browser, "Cell Snapshot");
-      const paged = await openedView(browser, "Cell Paged");
-      const noDrill = await openedView(browser, "Cell No Drill");
-      const captureView = await openedView(browser, "Cell Capture");
-      const snapshotColumns = asArray(snapshot.params.columns).map(asRecord);
-      const pagedColumns = asArray(paged.params.columns).map(asRecord);
-      const noDrillColumns = asArray(noDrill.params.columns).map(asRecord);
-      assertEquals(snapshotColumns[0].drillable, false);
-      assertEquals(snapshotColumns[1].drillable, true);
-      assertEquals(pagedColumns[1].drillable, true);
-      assertEquals(
-        noDrillColumns.some((column) => column.drillable === true),
-        false,
-      );
-      const sourceProbe = await arf.eval(
-        'state <- get(".jdv_state", envir = asNamespace("jdv")); ' +
-          "snapshot <- get(as.character(jdv_cell_snapshot), envir = state$entries, inherits = FALSE); " +
-          "plain <- get(as.character(jdv_cell_no_drill), envir = state$entries, inherits = FALSE); " +
-          'cat("CELL_SOURCE", !is.null(snapshot$source), !is.null(plain$source), sep = "\\t"); cat("\\n")',
-      );
-      assert(
-        sourceProbe.stdout?.includes("CELL_SOURCE\tTRUE\tFALSE"),
-        `Expected only the drillable Snapshot to retain a source: ${sourceProbe.stdout}`,
-      );
-
-      const cellPath = (rowIndex: number, column: number) => [
-        { kind: "cell", row_index: rowIndex, column },
-      ];
-      const listCell = responseResult(
-        await request(
-          browser,
-          snapshot,
-          "cell-list",
-          "object/open",
-          { path: cellPath(1, 1) },
-        ),
-      );
-      assertEquals(listCell.kind, "tree");
-      assertEquals(listCell.parent, snapshot.params.view);
-      const suffix = responseResult(
-        await request(
-          browser,
-          snapshot,
-          "cell-suffix",
-          "object/open",
-          {
-            path: [
-              ...cellPath(205, 1),
-              { type: "index", index: 2 },
-            ],
-          },
-        ),
-      );
-      assertEquals(suffix.kind, "tree");
-      assertEquals(suffix.parent, snapshot.params.view);
-      const frameCell = responseResult(
-        await request(
-          browser,
-          snapshot,
-          "cell-frame",
-          "object/open",
-          { path: cellPath(2, 1) },
-        ),
-      );
-      assertEquals(frameCell.kind, "grid");
-      const matrixCell = responseResult(
-        await request(
-          browser,
-          snapshot,
-          "cell-matrix",
-          "object/open",
-          { path: cellPath(3, 1) },
-        ),
-      );
-      assertEquals(matrixCell.kind, "grid");
-
-      const invalidRequests = [
-        { path: cellPath(0, 1) },
-        { path: cellPath(406, 1) },
-        { path: cellPath(1, -1) },
-        { path: cellPath(1, 3) },
-      ];
-      for (const [index, params] of invalidRequests.entries()) {
-        const failure = await request(
-          browser,
-          snapshot,
-          `cell-invalid-${index}`,
-          "object/open",
-          params,
+      await phase("Cell E2E overall body", async () => {
+        const { arf, browser, server } = runtime;
+        await rEval(arf, cellFixtureCode());
+        const snapshot = await openedView(browser, "Cell Snapshot");
+        const paged = await openedView(browser, "Cell Paged");
+        const noDrill = await openedView(browser, "Cell No Drill");
+        const captureView = await openedView(browser, "Cell Capture");
+        const snapshotColumns = asArray(snapshot.params.columns).map(asRecord);
+        const pagedColumns = asArray(paged.params.columns).map(asRecord);
+        const noDrillColumns = asArray(noDrill.params.columns).map(asRecord);
+        assertEquals(snapshotColumns[0].drillable, false);
+        assertEquals(snapshotColumns[1].drillable, true);
+        assertEquals(pagedColumns[1].drillable, true);
+        assertEquals(
+          noDrillColumns.some((column) => column.drillable === true),
+          false,
+        );
+        const sourceProbe = await rEval(
+          arf,
+          'state <- get(".jdv_state", envir = asNamespace("jdv")); ' +
+            "snapshot <- get(as.character(jdv_cell_snapshot), envir = state$entries, inherits = FALSE); " +
+            "plain <- get(as.character(jdv_cell_no_drill), envir = state$entries, inherits = FALSE); " +
+            'cat("CELL_SOURCE", !is.null(snapshot$source), !is.null(plain$source), sep = "\\t"); cat("\\n")',
         );
         assert(
-          typeof responseErrorCode(failure) === "string",
-          `Invalid cell position ${index} should return a terminal error.`,
+          sourceProbe.stdout?.includes("CELL_SOURCE\tTRUE\tFALSE"),
+          `Expected only the drillable Snapshot to retain a source: ${sourceProbe.stdout}`,
         );
-      }
-      const stale = await request(
-        browser,
-        snapshot,
-        "cell-stale",
-        "object/open",
-        {
-          generation: Number(snapshot.params.generation) + 1,
-          path: cellPath(1, 1),
-        },
-      );
-      assertEquals(responseErrorCode(stale), "stale_generation");
-      const nonDrillable = await request(
-        browser,
-        snapshot,
-        "cell-nondrillable",
-        "object/open",
-        { path: cellPath(1, 0) },
-      );
-      assertEquals(responseErrorCode(nonDrillable), "invalid_request");
 
-      const pagedRows = await request(
-        browser,
-        paged,
-        "cell-paged-rows",
-        "table/rows",
-        {
-          offset: 200,
-          limit: 5,
-          cols: [0, 1],
-          sort: [{ col: 0, desc: true }],
-          filter: { op: "gt", col: 0, value: 100 },
-        },
-      );
-      const pagedRowsData = asRecord(asRecord(responseResult(pagedRows).data));
-      assertEquals(pagedRowsData.row_index, [205, 204, 203, 202, 201]);
-      const pagedCell = responseResult(
-        await request(
+        const cellPath = (rowIndex: number, column: number) => [
+          { kind: "cell", row_index: rowIndex, column },
+        ];
+        const listCell = responseResult(
+          await request(
+            browser,
+            snapshot,
+            "cell-list",
+            "object/open",
+            { path: cellPath(1, 1) },
+          ),
+        );
+        assertEquals(listCell.kind, "tree");
+        assertEquals(listCell.parent, snapshot.params.view);
+        const suffix = responseResult(
+          await request(
+            browser,
+            snapshot,
+            "cell-suffix",
+            "object/open",
+            {
+              path: [
+                ...cellPath(205, 1),
+                { type: "index", index: 2 },
+              ],
+            },
+          ),
+        );
+        assertEquals(suffix.kind, "tree");
+        assertEquals(suffix.parent, snapshot.params.view);
+        const frameCell = responseResult(
+          await request(
+            browser,
+            snapshot,
+            "cell-frame",
+            "object/open",
+            { path: cellPath(2, 1) },
+          ),
+        );
+        assertEquals(frameCell.kind, "grid");
+        const matrixCell = responseResult(
+          await request(
+            browser,
+            snapshot,
+            "cell-matrix",
+            "object/open",
+            { path: cellPath(3, 1) },
+          ),
+        );
+        assertEquals(matrixCell.kind, "grid");
+
+        const invalidRequests = [
+          { path: cellPath(0, 1) },
+          { path: cellPath(406, 1) },
+          { path: cellPath(1, -1) },
+          { path: cellPath(1, 3) },
+        ];
+        for (const [index, params] of invalidRequests.entries()) {
+          const failure = await request(
+            browser,
+            snapshot,
+            `cell-invalid-${index}`,
+            "object/open",
+            params,
+          );
+          assert(
+            typeof responseErrorCode(failure) === "string",
+            `Invalid cell position ${index} should return a terminal error.`,
+          );
+        }
+        const stale = await request(
+          browser,
+          snapshot,
+          "cell-stale",
+          "object/open",
+          {
+            generation: Number(snapshot.params.generation) + 1,
+            path: cellPath(1, 1),
+          },
+        );
+        assertEquals(responseErrorCode(stale), "stale_generation");
+        const nonDrillable = await request(
+          browser,
+          snapshot,
+          "cell-nondrillable",
+          "object/open",
+          { path: cellPath(1, 0) },
+        );
+        assertEquals(responseErrorCode(nonDrillable), "invalid_request");
+
+        const pagedRows = await request(
           browser,
           paged,
-          "cell-paged-open",
-          "object/open",
-          { path: cellPath(Number(asArray(pagedRowsData.row_index)[0]), 1) },
-        ),
-      );
-      assertEquals(pagedCell.kind, "tree");
-      assertEquals(pagedCell.parent, paged.params.view);
-
-      const capturePath = cellPath(1, 1);
-      await arf.eval("options(jdv.snapshot_max_cells = 0L)");
-      const capturedChild = responseResult(
-        await request(browser, captureView, "cell-capture-old", "object/open", {
-          path: capturePath,
-        }),
-      );
-      assertEquals(capturedChild.kind, "grid");
-      assertEquals(capturedChild.mode, "paged");
-      await arf.eval(
-        "jdv_cell_capture_backing$payload[[1L]] <- " +
-          "data.frame(value = c(99L, 100L), check.names = FALSE)",
-      );
-      const capturedChildView: OpenedView = {
-        session: captureView.session,
-        params: capturedChild,
-      };
-      const capturedRows = responseResult(
-        await request(
-          browser,
-          capturedChildView,
-          "cell-capture-old-rows",
+          "cell-paged-rows",
           "table/rows",
-          { offset: 0, limit: 10, cols: [0] },
-        ),
-      );
-      assertEquals(snapshotColumnValues(capturedRows), [17, 18]);
-      const replacementChild = responseResult(
-        await request(
-          browser,
-          captureView,
-          "cell-capture-new",
-          "object/open",
-          { path: capturePath },
-        ),
-      );
-      assertEquals(replacementChild.mode, "paged");
-      const replacementRows = responseResult(
-        await request(
-          browser,
           {
-            session: captureView.session,
-            params: replacementChild,
+            offset: 200,
+            limit: 5,
+            cols: [0, 1],
+            sort: [{ col: 0, desc: true }],
+            filter: { op: "gt", col: 0, value: 100 },
           },
-          "cell-capture-new-rows",
-          "table/rows",
-          { offset: 0, limit: 10, cols: [0] },
-        ),
-      );
-      assertEquals(snapshotColumnValues(replacementRows), [99, 100]);
-      await arf.eval("options(jdv.snapshot_max_cells = 10000L)");
+        );
+        const pagedRowsData = asRecord(
+          asRecord(responseResult(pagedRows).data),
+        );
+        assertEquals(pagedRowsData.row_index, [205, 204, 203, 202, 201]);
+        const pagedCell = responseResult(
+          await request(
+            browser,
+            paged,
+            "cell-paged-open",
+            "object/open",
+            { path: cellPath(Number(asArray(pagedRowsData.row_index)[0]), 1) },
+          ),
+        );
+        assertEquals(pagedCell.kind, "tree");
+        assertEquals(pagedCell.parent, paged.params.view);
 
-      const pagedChildView: OpenedView = {
-        session: paged.session,
-        params: pagedCell,
-      };
-      assertEquals(
-        responseResult(
-          await request(browser, paged, "cell-paged-close", "view/close", {}),
-        ).closed,
-        true,
-      );
-      await nextMessage(
-        browser,
-        (message) => {
-          if (message.type !== "view/closed") return false;
-          const params = asRecord(asRecord(message.message).params);
-          return params.view === pagedCell.view &&
-            params.reason === "parent_closed";
-        },
-        "cell child cascade close",
-      );
-      const closedChild = await request(
-        browser,
-        pagedChildView,
-        "cell-paged-child-closed",
-        "object/children",
-        { path: [], offset: 0, limit: 10 },
-      );
-      assertEquals(responseErrorCode(closedChild), "view_not_found");
-
-      const playwrightSpecifier = "npm:playwright@1.56.1";
-      const { chromium } = await import(playwrightSpecifier);
-      const chromiumBrowser = await chromium.launch({
-        executablePath: browserExecutable,
-        headless: true,
-        args: ["--no-sandbox"],
-        ...(browserLibraryPath
-          ? {
-            env: {
-              ...Deno.env.toObject(),
-              LD_LIBRARY_PATH: browserLibraryPath,
+        const capturePath = cellPath(1, 1);
+        await rEval(arf, "options(jdv.snapshot_max_cells = 0L)");
+        const capturedChild = responseResult(
+          await request(
+            browser,
+            captureView,
+            "cell-capture-old",
+            "object/open",
+            {
+              path: capturePath,
             },
-          }
-          : {}),
-      });
-      closeChromium = () => chromiumBrowser.close();
-      const page = await chromiumBrowser.newPage({
-        viewport: { width: 1280, height: 1000 },
-      });
-      const pageErrors: string[] = [];
-      page.on("pageerror", (error: Error) => pageErrors.push(error.message));
-      await page.goto(server.url, { waitUntil: "networkidle" });
-      await page.waitForSelector('#status[data-state="connected"]');
-      await page.locator("#tables article").filter({ hasText: "Cell Snapshot" })
-        .getByRole("button", { name: "Open view" }).click();
-      await page.waitForSelector("#viewer:not([hidden]) .tabulator-row");
+          ),
+        );
+        assertEquals(capturedChild.kind, "grid");
+        assertEquals(capturedChild.mode, "paged");
+        await rEval(
+          arf,
+          "jdv_cell_capture_backing$payload[[1L]] <- " +
+            "data.frame(value = c(99L, 100L), check.names = FALSE)",
+        );
+        const capturedChildView: OpenedView = {
+          session: captureView.session,
+          params: capturedChild,
+        };
+        const capturedRows = responseResult(
+          await request(
+            browser,
+            capturedChildView,
+            "cell-capture-old-rows",
+            "table/rows",
+            { offset: 0, limit: 10, cols: [0] },
+          ),
+        );
+        assertEquals(snapshotColumnValues(capturedRows), [17, 18]);
+        const replacementChild = responseResult(
+          await request(
+            browser,
+            captureView,
+            "cell-capture-new",
+            "object/open",
+            { path: capturePath },
+          ),
+        );
+        assertEquals(replacementChild.mode, "paged");
+        const replacementRows = responseResult(
+          await request(
+            browser,
+            {
+              session: captureView.session,
+              params: replacementChild,
+            },
+            "cell-capture-new-rows",
+            "table/rows",
+            { offset: 0, limit: 10, cols: [0] },
+          ),
+        );
+        assertEquals(snapshotColumnValues(replacementRows), [99, 100]);
+        await rEval(arf, "options(jdv.snapshot_max_cells = 10000L)");
 
-      await page.selectOption("#sort-column", "0");
-      await page.selectOption("#sort-direction", "desc");
-      await page.getByRole("button", { name: "Add sort" }).click();
-      await page.selectOption("#filter-column", "0");
-      await page.selectOption("#filter-op", "gt");
-      await page.locator("#filter-value").fill("0");
-      await page.getByRole("button", { name: "Apply filter" }).click();
-      await page.locator('.tabulator-page[data-page="next"]').click();
-      const sourceCell = page.locator(
-        '[data-action="open-cell"][data-row-index="205"][data-column="1"]',
-      );
-      await sourceCell.waitFor({ state: "visible" });
+        const pagedChildView: OpenedView = {
+          session: paged.session,
+          params: pagedCell,
+        };
+        assertEquals(
+          responseResult(
+            await request(browser, paged, "cell-paged-close", "view/close", {}),
+          ).closed,
+          true,
+        );
+        await nextMessage(
+          browser,
+          (message) => {
+            if (message.type !== "view/closed") return false;
+            const params = asRecord(asRecord(message.message).params);
+            return params.view === pagedCell.view &&
+              params.reason === "parent_closed";
+          },
+          "cell child cascade close",
+        );
+        const closedChild = await request(
+          browser,
+          pagedChildView,
+          "cell-paged-child-closed",
+          "object/children",
+          { path: [], offset: 0, limit: 10 },
+        );
+        assertEquals(responseErrorCode(closedChild), "view_not_found");
 
-      const wireBeforeBusyOpen = server.wire.snapshot();
-      busy = arf.send(
-        `writeLines("busy-entered", ${rQuote(marker)}, useBytes = TRUE); ` +
-          `while (!file.exists(${rQuote(release)})) jdv_cell_spin <- 1L`,
-        { timeoutMs: 30_000 },
-      );
-      await arf.waitForFile(marker);
-      await sourceCell.click();
-      await page.waitForSelector('#child-open-status[data-state="waiting"]');
-      await server.wire.waitFor(
-        (wire) =>
-          wire.serverToRFrames.some((frame) =>
-            frame.method === "object/open" &&
-            frame.view === snapshot.params.view &&
-            frame.generation === snapshot.params.generation
-          ) &&
-          wire.serverToRFrames.length >
-            wireBeforeBusyOpen.serverToRFrames.length,
-        5_000,
-      );
-      await assertNoCompletedEvaluation(busy);
-      assert(
-        server.wire.snapshot().tableRowsRequests.length ===
-          wireBeforeBusyOpen.tableRowsRequests.length,
-        "Snapshot query and cell opening must not request Paged rows from R.",
-      );
+        const playwrightSpecifier = "npm:playwright@1.56.1";
+        const { chromium } = await phase(
+          "Cell E2E Playwright import",
+          () => import(playwrightSpecifier),
+          15_000,
+        );
+        const ownedBrowser = await launchOwnedBrowser(chromium, {
+          executablePath: browserExecutable,
+          headless: true,
+          args: ["--no-sandbox"],
+          ...(browserLibraryPath
+            ? {
+              env: {
+                ...Deno.env.toObject(),
+                LD_LIBRARY_PATH: browserLibraryPath,
+              },
+            }
+            : {}),
+        });
+        closeChromium = () => ownedBrowser.close();
+        const chromiumBrowser = ownedBrowser.browser;
+        const page = await phase(
+          "Cell E2E new page",
+          () =>
+            chromiumBrowser.newPage({
+              viewport: { width: 1280, height: 1000 },
+            }),
+          20_000,
+        );
+        page.setDefaultTimeout(15_000);
+        page.setDefaultNavigationTimeout(20_000);
+        const pageErrors: string[] = [];
+        page.on("pageerror", (error: Error) => pageErrors.push(error.message));
+        await phase("Cell E2E navigation and session connection", async () => {
+          await page.goto(server.url, { waitUntil: "networkidle" });
+          await page.waitForSelector('#status[data-state="connected"]');
+        }, 30_000);
+        await phase("Cell E2E open and query snapshot", async () => {
+          await page.locator("#tables article").filter({
+            hasText: "Cell Snapshot",
+          })
+            .getByRole("button", { name: "Open view" }).click();
+          await page.waitForSelector("#viewer:not([hidden]) .tabulator-row");
+          await page.selectOption("#sort-column", "0");
+          await page.selectOption("#sort-direction", "desc");
+          await page.getByRole("button", { name: "Add sort" }).click();
+          await page.selectOption("#filter-column", "0");
+          await page.selectOption("#filter-op", "gt");
+          await page.locator("#filter-value").fill("0");
+          await page.getByRole("button", { name: "Apply filter" }).click();
+          await page.locator('.tabulator-page[data-page="next"]').click();
+        }, 45_000);
+        const sourceCell = page.locator(
+          '[data-action="open-cell"][data-row-index="205"][data-column="1"]',
+        );
+        await phase(
+          "Cell E2E selected cell becomes visible",
+          () => sourceCell.waitFor({ state: "visible" }),
+          20_000,
+        );
 
-      await page.locator("#sort-list button").filter({ hasText: "Reverse" })
-        .first().click();
-      await page.locator("#filter-value").fill("100");
-      await page.getByRole("button", { name: "Apply filter" }).click();
-      await page.locator('.tabulator-page[data-page="next"]').click();
-      await page.waitForSelector('#child-open-status[data-state="waiting"]');
-      await assertNoCompletedEvaluation(busy);
-      assert(
-        await page.locator("#viewer:not([hidden]) .tabulator-row").count() > 0,
-        "Snapshot sorting/filtering/paging should remain interactive while the child request waits.",
-      );
-      assert(
-        server.wire.snapshot().tableRowsRequests.length ===
-          wireBeforeBusyOpen.tableRowsRequests.length,
-        "Snapshot queries during R busy must remain local.",
-      );
+        const wireBeforeBusyOpen = server.wire.snapshot();
+        busy = arf.send(
+          `writeLines("busy-entered", ${rQuote(marker)}, useBytes = TRUE); ` +
+            `while (!file.exists(${rQuote(release)})) jdv_cell_spin <- 1L`,
+          { timeoutMs: 30_000 },
+        );
+        await phase(
+          "Cell E2E wait for busy R marker",
+          () => arf.waitForFile(marker),
+          12_000,
+        );
+        await phase("Cell E2E open cell while R is busy", async () => {
+          await sourceCell.click();
+          await page.waitForSelector(
+            '#child-open-status[data-state="waiting"]',
+          );
+        }, 20_000);
+        await phase(
+          "Cell E2E object request reaches busy R",
+          () =>
+            server.wire.waitFor(
+              (wire) =>
+                wire.serverToRFrames.some((frame) =>
+                  frame.method === "object/open" &&
+                  frame.view === snapshot.params.view &&
+                  frame.generation === snapshot.params.generation
+                ) &&
+                wire.serverToRFrames.length >
+                  wireBeforeBusyOpen.serverToRFrames.length,
+              5_000,
+            ),
+          7_000,
+        );
+        await assertNoCompletedEvaluation(busy);
+        assert(
+          server.wire.snapshot().tableRowsRequests.length ===
+            wireBeforeBusyOpen.tableRowsRequests.length,
+          "Snapshot query and cell opening must not request Paged rows from R.",
+        );
 
-      await Deno.writeTextFile(release, "release\n");
-      await busy.wait(30_000);
-      await page.waitForSelector("#tree-viewer:not([hidden])");
-      await page.waitForFunction(() =>
-        (globalThis as unknown as {
-          document: {
-            querySelector(
-              selector: string,
-            ): { textContent: string | null } | null;
-          };
-        }).document.querySelector("#tree-child-list")?.textContent
-          ?.includes("payload-205") === true
-      );
-      assertEquals(await page.locator("#tree-child-list img").count(), 0);
-      assert(
-        (await page.locator("#tree-child-list").textContent())?.includes(
-          "<img src=x onerror=alert(1)>",
-        ),
-        "Cell child labels containing HTML-like text must remain text.",
-      );
-      await page.screenshot({
-        path: join(
-          screenshotDir ??= await Deno.makeTempDir({
-            prefix: "jdv-cell-screenshot-",
-          }),
-          "cell-inspector.png",
-        ),
-        fullPage: true,
-      });
-      await page.locator('#view-breadcrumb [data-view-depth="0"]').click();
-      await page.waitForSelector("#viewer:not([hidden])");
-      assert(
-        (await page.locator("#sort-list").textContent())?.includes("ascending"),
-        "Returning from the child should restore the parent sort state.",
-      );
-      assertEquals(await page.locator("#filter-value").inputValue(), "100");
-      assertEquals(pageErrors, []);
+        await phase(
+          "Cell E2E viewer remains interactive while R waits",
+          async () => {
+            await page.locator("#sort-list button").filter({
+              hasText: "Reverse",
+            })
+              .first().click();
+            await page.locator("#filter-value").fill("100");
+            await page.getByRole("button", { name: "Apply filter" }).click();
+            await page.locator('.tabulator-page[data-page="next"]').click();
+            await page.waitForSelector(
+              '#child-open-status[data-state="waiting"]',
+            );
+          },
+          35_000,
+        );
+        await assertNoCompletedEvaluation(busy);
+        assert(
+          await page.locator("#viewer:not([hidden]) .tabulator-row").count() >
+            0,
+          "Snapshot sorting/filtering/paging should remain interactive while the child request waits.",
+        );
+        assert(
+          server.wire.snapshot().tableRowsRequests.length ===
+            wireBeforeBusyOpen.tableRowsRequests.length,
+          "Snapshot queries during R busy must remain local.",
+        );
+
+        await Deno.writeTextFile(release, "release\n");
+        await phase(
+          "Cell E2E wait for busy R completion",
+          () => busy!.wait(30_000),
+          35_000,
+        );
+        await phase(
+          "Cell E2E inspector displays the opened object",
+          async () => {
+            await page.waitForSelector("#tree-viewer:not([hidden])");
+            await page.waitForFunction(() =>
+              (globalThis as unknown as {
+                document: {
+                  querySelector(
+                    selector: string,
+                  ): { textContent: string | null } | null;
+                };
+              }).document.querySelector("#tree-child-list")?.textContent
+                ?.includes("payload-205") === true
+            );
+          },
+          35_000,
+        );
+        assertEquals(await page.locator("#tree-child-list img").count(), 0);
+        assert(
+          (await page.locator("#tree-child-list").textContent())?.includes(
+            "<img src=x onerror=alert(1)>",
+          ),
+          "Cell child labels containing HTML-like text must remain text.",
+        );
+        await page.screenshot({
+          path: join(
+            screenshotDir ??= await Deno.makeTempDir({
+              prefix: "jdv-cell-screenshot-",
+            }),
+            "cell-inspector.png",
+          ),
+          fullPage: true,
+        });
+        await phase("Cell E2E return to parent view", async () => {
+          await page.locator('#view-breadcrumb [data-view-depth="0"]').click();
+          await page.waitForSelector("#viewer:not([hidden])");
+        }, 20_000);
+        assert(
+          (await page.locator("#sort-list").textContent())?.includes(
+            "ascending",
+          ),
+          "Returning from the child should restore the parent sort state.",
+        );
+        assertEquals(await page.locator("#filter-value").inputValue(), "100");
+        assertEquals(pageErrors, []);
+      }, 300_000);
+    } catch (error) {
+      primaryError = error;
+      throw error;
     } finally {
-      await Deno.writeTextFile(release, "release\n").catch(() => undefined);
-      await closeChromium?.().catch(() => undefined);
-      runtime.browser.close();
-      await Promise.allSettled([runtime.arf.close(), runtime.server.close()]);
-      if (screenshotDir) await removeCacheDirectory(screenshotDir);
-      await removeCacheDirectory(markerDir);
+      await finishIntegrationCleanup([
+        () => Deno.writeTextFile(release, "release\n"),
+        ...(closeChromium
+          ? [() => phase("Cell E2E Chromium cleanup", closeChromium!, 25_000)]
+          : []),
+        () => runtime.browser.close(),
+        () => phase("Cell E2E arf cleanup", () => runtime.arf.close(), 50_000),
+        () =>
+          phase(
+            "Cell E2E server cleanup",
+            () => runtime.server.close(),
+            10_000,
+          ),
+        ...(screenshotDir ? [() => removeCacheDirectory(screenshotDir!)] : []),
+        () => removeCacheDirectory(markerDir),
+      ], primaryError === undefined ? [] : [primaryError]);
     }
   },
 });

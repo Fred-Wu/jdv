@@ -139,10 +139,30 @@ export class ArfSession {
       this.#pid = ready.pid;
       this.#stdoutDrain = this.#drainStdout();
     } catch (error) {
-      await this.#cleanupProcess(process);
       this.#process = undefined;
       this.#pid = undefined;
-      await this.#removePrivateFiles();
+      const cleanupErrors: unknown[] = [];
+      try {
+        await this.#cleanupProcess(process);
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      try {
+        await withTimeout(
+          this.#removePrivateFiles(),
+          5_000,
+          "arf startup private-file cleanup timed out.",
+        );
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      if (cleanupErrors.length) {
+        throw new AggregateError(
+          [error, ...cleanupErrors],
+          "arf startup failed and cleanup was incomplete.",
+          { cause: error },
+        );
+      }
       throw error;
     }
   }
@@ -202,7 +222,11 @@ export class ArfSession {
 
   async close(): Promise<void> {
     if (this.#closePromise) return await this.#closePromise;
-    this.#closePromise = this.#closeSession();
+    this.#closePromise = withTimeout(
+      this.#closeSession(),
+      45_000,
+      "arf session cleanup exceeded 45 seconds.",
+    );
     return await this.#closePromise;
   }
 
@@ -211,10 +235,20 @@ export class ArfSession {
     const pid = this.#pid;
     this.#process = undefined;
     this.#pid = undefined;
+    const errors: unknown[] = [];
+    const attempt = async (label: string, action: () => Promise<unknown>) => {
+      try {
+        await action();
+      } catch (error) {
+        errors.push(
+          new Error(`arf cleanup failed: ${label}`, { cause: error }),
+        );
+      }
+    };
 
     // EOF releases a browser() console read before we ask the busy R process
     // to shut down over IPC.
-    await this.#closeStdin();
+    await attempt("closing R console input", () => this.#closeStdin(2_000));
     if (this.#evalProcesses.size > 0) {
       try {
         await withTimeout(
@@ -222,7 +256,8 @@ export class ArfSession {
           5_000,
           "R evaluations did not finish after console EOF.",
         );
-      } catch {
+      } catch (error) {
+        errors.push(error);
         for (const child of this.#evalProcesses) {
           try {
             child.kill("SIGKILL");
@@ -230,15 +265,11 @@ export class ArfSession {
             // The IPC evaluation may already have exited.
           }
         }
-        await Promise.all(
-          [...this.#evalProcesses].map((child) =>
-            child.status.catch(() => undefined)
-          ),
-        );
       }
     }
 
     if (process && pid !== undefined) {
+      let shutdownConfirmed = false;
       try {
         const shutdown = new Deno.Command("arf", {
           args: ["ipc", "shutdown", "--pid", String(pid)],
@@ -252,16 +283,28 @@ export class ArfSession {
             5_000,
             "arf IPC shutdown timed out.",
           );
-        } catch {
+          shutdownConfirmed = true;
+        } catch (shutdownError) {
+          errors.push(shutdownError);
           try {
             shutdown.kill("SIGKILL");
           } catch {
             // The shutdown helper may already have exited.
           }
-          await shutdown.status.catch(() => undefined);
-          throw new Error("arf IPC shutdown could not be completed.");
+          try {
+            await withTimeout(
+              shutdown.status,
+              5_000,
+              "arf shutdown helper remained alive after SIGKILL.",
+            );
+          } catch (error) {
+            errors.push(error);
+          }
         }
-      } catch {
+      } catch (error) {
+        errors.push(error);
+      }
+      if (!shutdownConfirmed) {
         try {
           process.kill("SIGKILL");
         } catch {
@@ -274,35 +317,81 @@ export class ArfSession {
           5_000,
           "R process did not exit.",
         );
-      } catch {
+      } catch (gracefulExitError) {
+        errors.push(gracefulExitError);
         try {
           process.kill("SIGKILL");
         } catch {
           // R may already have exited.
         }
-        await process.status.catch(() => undefined);
-      }
-      await Promise.all([...this.#evalProcesses].map(async (child) => {
         try {
-          child.kill("SIGKILL");
-        } catch {
-          // The IPC eval command may already have exited.
+          await withTimeout(
+            process.status,
+            5_000,
+            "R process remained alive after SIGKILL.",
+          );
+        } catch (error) {
+          errors.push(error);
         }
-        await child.status.catch(() => undefined);
-      }));
+      }
+      try {
+        await withTimeout(
+          Promise.all([...this.#evalProcesses].map(async (child) => {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              // The IPC eval command may already have exited.
+            }
+            await child.status;
+          })),
+          5_000,
+          "arf eval children did not exit during cleanup.",
+        );
+      } catch (error) {
+        errors.push(error);
+      }
     } else if (process) {
-      await this.#cleanupProcess(process);
+      await attempt(
+        "stopping R after startup failure",
+        () => this.#cleanupProcess(process),
+      );
     }
 
-    try {
-      await this.#stdoutReader?.cancel();
-    } catch {
-      // The stream may already be closed.
+    await attempt("cancelling arf stdout", async () => {
+      const reader = this.#stdoutReader;
+      if (reader) {
+        await withTimeout(
+          reader.cancel(),
+          2_000,
+          "arf stdout cancellation timed out.",
+        );
+      }
+    });
+    if (this.#stdoutDrain) {
+      await attempt(
+        "waiting for arf stdout reader",
+        () =>
+          withTimeout(
+            this.#stdoutDrain!,
+            2_000,
+            "arf stdout reader did not stop during cleanup.",
+          ),
+      );
     }
-    await this.#stdoutDrain?.catch(() => undefined);
     this.#stdoutDrain = undefined;
     this.#stdoutReader = undefined;
-    await this.#removePrivateFiles();
+    await attempt(
+      "removing private IPC files",
+      () =>
+        withTimeout(
+          this.#removePrivateFiles(),
+          5_000,
+          "arf private IPC cleanup timed out.",
+        ),
+    );
+    if (errors.length) {
+      throw new AggregateError(errors, "arf session cleanup failed.");
+    }
   }
 
   shutdown(): Promise<void> {
@@ -355,7 +444,11 @@ export class ArfSession {
       throw error;
     } finally {
       this.#evalProcesses.delete(command);
-      await command.status.catch(() => undefined);
+      await withTimeout(
+        command.status,
+        5_000,
+        "arf eval helper did not exit after its result was read.",
+      );
     }
   }
 
@@ -406,36 +499,71 @@ export class ArfSession {
 
   async #cleanupProcess(process?: Deno.ChildProcess): Promise<void> {
     if (!process) return;
+    const errors: unknown[] = [];
     try {
       process.kill("SIGKILL");
     } catch {
       // The process may already have exited.
     }
-    await process.status.catch(() => undefined);
     try {
-      await this.#stdoutReader?.cancel();
-    } catch {
-      // The stream may already be closed.
+      await withTimeout(
+        process.status,
+        5_000,
+        "arf process did not exit after SIGKILL.",
+      );
+    } catch (error) {
+      errors.push(error);
     }
-    await this.#stdoutDrain?.catch(() => undefined);
+    if (this.#stdoutReader) {
+      try {
+        await withTimeout(
+          this.#stdoutReader.cancel(),
+          2_000,
+          "arf stdout cancellation timed out after startup failure.",
+        );
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (this.#stdoutDrain) {
+      try {
+        await withTimeout(
+          this.#stdoutDrain,
+          2_000,
+          "arf stdout reader did not stop after process cleanup.",
+        );
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     this.#stdoutDrain = undefined;
     this.#stdoutReader = undefined;
-    await this.#closeStdin();
+    try {
+      await this.#closeStdin(2_000);
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length) {
+      throw new AggregateError(errors, "arf startup process cleanup failed.");
+    }
   }
 
-  async #closeStdin(): Promise<void> {
+  async #closeStdin(timeoutMs: number): Promise<void> {
     const writer = this.#stdinWriter;
     this.#stdinWriter = undefined;
     if (!writer) return;
     try {
-      await writer.close();
-    } catch {
-      // The R process may already have exited or been killed.
-    }
-    try {
-      writer.releaseLock();
-    } catch {
-      // The stream may already be closed.
+      await withTimeout(
+        writer.close(),
+        timeoutMs,
+        "R console input close timed out.",
+      );
+    } finally {
+      try {
+        writer.releaseLock();
+      } catch {
+        // The stream may already be closed.
+      }
     }
   }
 
