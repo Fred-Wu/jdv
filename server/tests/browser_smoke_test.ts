@@ -35,6 +35,7 @@ import { assert, assertEquals } from "./assert.ts";
 import { startServer } from "../main.ts";
 
 type BrowserElement = {
+  clientLeft: number;
   clientWidth: number;
   clientHeight: number;
   className: string;
@@ -68,6 +69,7 @@ type BrowserRuntime = {
   document: BrowserDocument;
   Event: new (type: string) => unknown;
   getComputedStyle(element: BrowserElement): {
+    borderLeftWidth: string;
     left: string;
     position: string;
     transform: string;
@@ -343,6 +345,23 @@ Deno.test({
           const document = runtime.document;
           const viewport = document.querySelector("#column-viewport");
           if (!viewport) throw new Error("The column viewport was not found.");
+          const initialRowHeader = viewport.querySelector(
+            '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+          );
+          const initialRowCell = viewport.querySelector(
+            '.tabulator-row [tabulator-field="row_index"]',
+          );
+          const table = viewport.querySelector("#column-window");
+          if (!initialRowHeader || !initialRowCell || !table) {
+            throw new Error("The row index column was not rendered.");
+          }
+          const initialViewportRect = viewport.getBoundingClientRect();
+          const initialHeaderRect = initialRowHeader.getBoundingClientRect();
+          const initialCellRect = initialRowCell.getBoundingClientRect();
+          const initialTableBorderLeft = Number.parseFloat(
+            runtime.getComputedStyle(table).borderLeftWidth,
+          );
+          const requestedScrollLeft = 86 + 290 * 180;
           for (const column of [80, 140, 200, 260, 290]) {
             viewport.scrollLeft = 86 + column * 180;
             viewport.dispatchEvent(new runtime.Event("scroll"));
@@ -362,12 +381,40 @@ Deno.test({
           const rowCell = viewport.querySelector(
             '.tabulator-row [tabulator-field="row_index"]',
           );
-          const viewportLeft = viewport.getBoundingClientRect().left;
+          const viewportRect = viewport.getBoundingClientRect();
           const headerRect = rowHeader?.getBoundingClientRect();
           const cellRect = rowCell?.getBoundingClientRect();
+          const scrollWidth = viewport.scrollWidth;
+          const clientWidth = viewport.clientWidth;
+          const maximumScrollLeft = Math.max(0, scrollWidth - clientWidth);
+          const clampedRequestedScrollLeft = Math.min(
+            requestedScrollLeft,
+            maximumScrollLeft,
+          );
+          const alignedScrollLeft = maximumScrollLeft -
+                clampedRequestedScrollLeft <= 180
+            ? maximumScrollLeft
+            : Math.floor(clampedRequestedScrollLeft / 180) * 180;
+          const displayedColumnIndex = Math.floor(
+            Math.max(0, viewport.scrollLeft - 86) / 180,
+          );
           return {
             scrollLeft: viewport.scrollLeft,
-            viewportLeft,
+            requestedScrollLeft,
+            clampedRequestedScrollLeft,
+            maximumScrollLeft,
+            scrollWidth,
+            clientWidth,
+            alignedScrollLeft,
+            displayedColumnIndex,
+            requestedColumnIndex: 290,
+            viewportLeft: viewportRect.left,
+            viewportContentLeft: viewportRect.left + viewport.clientLeft,
+            initialViewportContentLeft: initialViewportRect.left +
+              viewport.clientLeft,
+            initialHeaderLeft: initialHeaderRect.left,
+            initialCellLeft: initialCellRect.left,
+            tableBorderLeft: initialTableBorderLeft,
             headerLeft: headerRect?.left ?? Number.NaN,
             headerRight: headerRect?.right ?? Number.NaN,
             cellLeft: cellRect?.left ?? Number.NaN,
@@ -380,15 +427,42 @@ Deno.test({
             JSON.stringify(requests.slice(pagedRequestsBeforeHorizontalScroll))
           }`,
         );
+        console.log(
+          "rapid-scroll-range",
+          JSON.stringify(heldScrollGeometry),
+        );
         assert(
-          heldScrollGeometry.scrollLeft === 86 + 290 * 180 &&
-            heldScrollGeometry.headerLeft >=
-              heldScrollGeometry.viewportLeft - 1 &&
-            heldScrollGeometry.headerLeft <
-              heldScrollGeometry.viewportLeft + 8 &&
-            heldScrollGeometry.cellLeft >=
-              heldScrollGeometry.viewportLeft - 1 &&
-            heldScrollGeometry.cellLeft < heldScrollGeometry.viewportLeft + 8 &&
+          heldScrollGeometry.scrollLeft > 0 &&
+            (heldScrollGeometry.scrollLeft ===
+                heldScrollGeometry.clampedRequestedScrollLeft ||
+              heldScrollGeometry.scrollLeft ===
+                heldScrollGeometry.alignedScrollLeft) &&
+            Math.abs(
+                heldScrollGeometry.displayedColumnIndex -
+                  heldScrollGeometry.requestedColumnIndex,
+              ) <= 1 &&
+            Math.abs(
+                heldScrollGeometry.initialHeaderLeft -
+                  heldScrollGeometry.initialViewportContentLeft -
+                  heldScrollGeometry.tableBorderLeft,
+              ) <= 1 &&
+            Math.abs(
+                heldScrollGeometry.initialCellLeft -
+                  heldScrollGeometry.initialViewportContentLeft -
+                  heldScrollGeometry.tableBorderLeft,
+              ) <= 1 &&
+            Math.abs(
+                heldScrollGeometry.headerLeft -
+                  heldScrollGeometry.viewportContentLeft -
+                  (heldScrollGeometry.initialHeaderLeft -
+                    heldScrollGeometry.initialViewportContentLeft),
+              ) <= 1 &&
+            Math.abs(
+                heldScrollGeometry.cellLeft -
+                  heldScrollGeometry.viewportContentLeft -
+                  (heldScrollGeometry.initialCellLeft -
+                    heldScrollGeometry.initialViewportContentLeft),
+              ) <= 1 &&
             heldScrollGeometry.headerRight - heldScrollGeometry.headerLeft ===
               86 &&
             heldScrollGeometry.cellRight - heldScrollGeometry.cellLeft === 86,
@@ -396,7 +470,38 @@ Deno.test({
             JSON.stringify(heldScrollGeometry)
           }`,
         );
-        await page.waitForTimeout(500);
+        const settledScrollLeft = await waitFor(
+          page,
+          (expectedScrollLeft: number) => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            const actual = document.querySelector(
+              "#column-viewport",
+            )?.scrollLeft;
+            return actual === expectedScrollLeft ? actual : false;
+          },
+          heldScrollGeometry.alignedScrollLeft,
+          { timeout: 5_000 },
+        ).catch(async (error: unknown) => {
+          const actual = await evaluateElement(
+            page,
+            "#column-viewport",
+            (viewport: BrowserElement) => viewport.scrollLeft,
+          );
+          throw new Error(
+            `The scroll position did not settle on the virtual column grid: ${
+              JSON.stringify({ heldScrollGeometry, actual })
+            }`,
+            { cause: error },
+          );
+        });
+        assert(
+          settledScrollLeft === heldScrollGeometry.alignedScrollLeft,
+          `The scroll position should settle on the virtual column grid: ${
+            JSON.stringify({ ...heldScrollGeometry, settledScrollLeft })
+          }`,
+        );
         console.log(
           "horizontal-column-diagnostic",
           await evaluateElement(
@@ -474,6 +579,7 @@ Deno.test({
             const cellRect = cell?.getBoundingClientRect();
             return {
               viewportLeft: viewportRect.left,
+              viewportContentLeft: viewportRect.left + viewport.clientLeft,
               headerLeft: headerRect?.left,
               headerRight: headerRect?.right,
               cellLeft: cellRect?.left,
@@ -486,11 +592,18 @@ Deno.test({
             pinnedRowGeometry.headerRight !== undefined &&
             pinnedRowGeometry.cellLeft !== undefined &&
             pinnedRowGeometry.cellRight !== undefined &&
-            pinnedRowGeometry.headerLeft >=
-              pinnedRowGeometry.viewportLeft - 1 &&
-            pinnedRowGeometry.headerLeft < pinnedRowGeometry.viewportLeft + 8 &&
-            pinnedRowGeometry.cellLeft >= pinnedRowGeometry.viewportLeft - 1 &&
-            pinnedRowGeometry.cellLeft < pinnedRowGeometry.viewportLeft + 8 &&
+            Math.abs(
+                pinnedRowGeometry.headerLeft -
+                  pinnedRowGeometry.viewportContentLeft -
+                  (heldScrollGeometry.initialHeaderLeft -
+                    heldScrollGeometry.initialViewportContentLeft),
+              ) <= 1 &&
+            Math.abs(
+                pinnedRowGeometry.cellLeft -
+                  pinnedRowGeometry.viewportContentLeft -
+                  (heldScrollGeometry.initialCellLeft -
+                    heldScrollGeometry.initialViewportContentLeft),
+              ) <= 1 &&
             pinnedRowGeometry.headerRight - pinnedRowGeometry.headerLeft ===
               86 &&
             pinnedRowGeometry.cellRight - pinnedRowGeometry.cellLeft === 86,

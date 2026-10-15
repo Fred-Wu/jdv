@@ -277,7 +277,9 @@ function rVector(column: Record<string, unknown>): string {
         case "neg_inf":
           return "-Inf";
         default:
-          return value === null ? "NA_real_" : String(value);
+          return value === null
+            ? "NA_real_"
+            : `jdv_e2e_json_number(${rQuote(String(value))})`;
       }
     });
     return `c(${tokens.join(", ")})`;
@@ -303,6 +305,11 @@ function fixtureTableCode(
     (_, index) => rQuote(`fixture-row-${index + 1}`),
   );
   return [
+    ...(columns.some((column) => column.type === "number")
+      ? [
+        'jdv_e2e_json_number <- function(value) unlist(getFromNamespace(".jdv_json_parse", "jdv")(paste0("[", value, "]")), use.names = FALSE)',
+      ]
+      : []),
     ...(columns.some((column) => column.type === "other")
       ? [
         'format.query_record <- function(x, ...) paste0("value:", as.numeric(x))',
@@ -322,6 +329,24 @@ function fixtureCase(name: string): Record<string, unknown> {
   );
   assert(result, `Missing shared query fixture ${name}.`);
   return result;
+}
+
+function assertFixtureQueryRows(
+  actual: unknown,
+  expected: unknown,
+  caseName: string,
+  query: Record<string, unknown>,
+): void {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(
+      `Paged query failed for ${caseName}/${String(query.name)}: ` +
+        `expected ${JSON.stringify(expected)}, got ${
+          JSON.stringify(actual)
+        }; ` +
+        `sort=${JSON.stringify(query.sort ?? [])}; ` +
+        `filter=${JSON.stringify(query.filter ?? null)}.`,
+    );
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -688,7 +713,12 @@ Deno.test({
                 cols: [0],
               },
             );
-            assertEquals(responseRowIndex(result), query.expected);
+            assertFixtureQueryRows(
+              responseRowIndex(result),
+              query.expected,
+              caseName,
+              query,
+            );
           }
         }
 
