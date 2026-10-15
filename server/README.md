@@ -229,36 +229,33 @@ continuing a Windows `browser()` prompt.
 
 For the integration task, install `jdv` into a scratch library and install the
 optional R packages `arrow`, `nanoarrow`, `jsonlite`, `bit64`, and `polars`. Set
-`JDV_TEST_R_LIB` to the scratch library. Install the full Chromium build matched
-by Playwright 1.56.1, then select that executable:
+`JDV_TEST_R_LIB` to the scratch library and `JDV_TEST_BROWSER` to an existing
+full Chromium 141.0.7390.37 executable matched by Playwright 1.56.1:
 
 ```sh
-mise exec -- deno task browser:install
-# On Linux, add --with-deps when system dependencies need installation.
-export JDV_TEST_BROWSER="$(mise exec -- deno eval --no-lock 'import { chromium } from "npm:playwright@1.56.1"; console.log(chromium.executablePath());')"
-JDV_TEST_R_LIB=/path/to/scratch-library mise exec -- deno task test:e2e
+JDV_TEST_R_LIB=/path/to/scratch-library JDV_TEST_BROWSER=/path/to/chrome mise exec -- deno task test:e2e
 ```
 
-The install task uses `--no-shell`: tests supply the full Chromium executable
-rather than Playwright's separate headless shell. If a matching browser is
-already installed in another location, set `PLAYWRIGHT_BROWSERS_PATH` to its
-browser-cache directory before resolving the executable; no second download is
-needed. In PowerShell, assign the path command's output to
-`$env:JDV_TEST_BROWSER` instead of using `export`.
+Tests use the full Chromium executable rather than Playwright's separate
+headless shell. In PowerShell, set `$env:JDV_TEST_R_LIB` and
+`$env:JDV_TEST_BROWSER` before invoking the test task.
 
 The manual `Test server` workflow runs formatting, linting, type checks, and
 `test:unit` on Ubuntu, Windows, and macOS. Its mise tool subset installs only
-Deno. The separate manual `E2E test` workflow installs both pinned tools, R, the
-package and its optional producers, and Playwright-matched Chromium on all three
-platforms. It runs `test:e2e`, including all arf-controlled files; prerequisite
-checks fail rather than silently skipping them when tools or required R packages
-are missing. The default installed-package connection uses a named pipe on
-Windows, while the interactive regression selects TCP.
+Deno. The separate manual `E2E test` workflow installs the pinned Deno and arf
+tools, R, the package and its optional producers, and Playwright-matched
+Chromium on all three platforms. It runs `test:e2e`, including all
+arf-controlled files; prerequisite checks fail rather than silently skipping
+them when tools or required R packages are missing. The default
+installed-package connection uses a named pipe on Windows, while the interactive
+regression selects TCP.
 
 This repository pins Playwright 1.56.1 and its bundled Chromium revision 1194
 (141.0.7390.37), using `JDV_TEST_BROWSER` to select the resolved executable. CI
-uses the same pinned install task on all three platforms, adding `--with-deps`
-only on Linux; it does not select the moving Chrome stable channel. The
+uses the runner-provided `npx` only in the browser installation step:
+`npx -y playwright@1.56.1 install --no-shell chromium`, adding `--with-deps`
+only on Linux, with a five-minute step deadline. The resulting executable is
+resolved with Deno and passed to the tests through `JDV_TEST_BROWSER`. The
 [pinned browser manifest](https://github.com/microsoft/playwright/blob/v1.56.1/packages/playwright-core/browsers.json)
 and
 [CLI implementation](https://github.com/microsoft/playwright/blob/v1.56.1/packages/playwright-core/src/cli/program.ts)

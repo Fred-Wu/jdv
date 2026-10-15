@@ -66,12 +66,11 @@ mise exec -- deno task test:unit
 
 `mise.toml` pins Deno 2.9.7 and arf 0.6.0. The unit task does not require R,
 arf, or a browser. For the R and browser integration suite, install `jdv` into a
-scratch library and select it with `JDV_TEST_R_LIB`. Run
-`mise exec -- deno task browser:install` to install the Chromium build matched
-by the pinned Playwright 1.56.1, then set `JDV_TEST_BROWSER` to
-`chromium.executablePath()` before running `mise exec -- deno task test:e2e`.
-See [the server test instructions](server/README.md#development) for optional R
-packages and the browser setup.
+scratch library, select it with `JDV_TEST_R_LIB`, and set `JDV_TEST_BROWSER` to
+an existing full Chromium 141.0.7390.37 executable matched by Playwright 1.56.1.
+Then run `mise exec -- deno task test:e2e`. See
+[the server test instructions](server/README.md#development) for optional R
+packages and browser selection.
 
 The manual `Test server` workflow runs formatting, linting, type checks, and
 Deno unit tests. The separate manual `E2E test` workflow installs R, jdv,
