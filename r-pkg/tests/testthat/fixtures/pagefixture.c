@@ -1,6 +1,8 @@
 /* Independent C Data producer for parent-offset page regression coverage. */
 #include <nanoarrow/r.h>
 #include <R_ext/Rdynload.h>
+#include <R_ext/GraphicsEngine.h>
+#include <R_ext/GraphicsDevice.h>
 #include <R_ext/Visibility.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -91,13 +93,13 @@ static int get_schema(struct ArrowArrayStream *stream,
       (struct ArrowSchema *)calloc(1, sizeof(struct ArrowSchema));
   if (schema->children[0] == NULL) return ENOMEM;
   field = schema->children[0];
-  field->format = pagefixture_strdup(state->mode == 0 ? "i" :
+  field->format = pagefixture_strdup(state->mode == 0 || state->mode == 6 ? "i" :
                                      (state->mode == 1 ? "+vl" :
                                       (state->mode == 2 || state->mode == 4
                                            ? "+L"
                                            : "+s")));
   field->name = pagefixture_strdup(
-      state->mode == 0 ? "value" :
+      state->mode == 0 || state->mode == 6 ? "value" :
       (state->mode == 1 ? "unsupported" :
        (state->mode == 2 ? "items" :
         (state->mode == 4 ? "items" : "group"))));
@@ -184,6 +186,34 @@ static int get_next(struct ArrowArrayStream *stream, struct ArrowArray *array) {
   const void **child_buffers;
   int32_t *values;
   memset(array, 0, sizeof(*array));
+  if (state->mode == 6) {
+    struct ArrowArray *child;
+    const void **child_buffers;
+    int32_t *value;
+    if (state->position >= 2) return 0;
+    array->length = 1;
+    array->n_buffers = 1;
+    array->buffers = (const void **)calloc(1, sizeof(void *));
+    array->n_children = 1;
+    array->children = (struct ArrowArray **)calloc(1, sizeof(void *));
+    array->release = array_release;
+    if (array->buffers == NULL || array->children == NULL) return ENOMEM;
+    child = (struct ArrowArray *)calloc(1, sizeof(*child));
+    if (child == NULL) return ENOMEM;
+    array->children[0] = child;
+    child->length = 1;
+    child->n_buffers = 2;
+    child_buffers = (const void **)calloc(2, sizeof(void *));
+    value = (int32_t *)malloc(sizeof(int32_t));
+    if (child_buffers == NULL || value == NULL) return ENOMEM;
+    value[0] = state->position == 0 ? 101 : 202;
+    child_buffers[1] = value;
+    child->buffers = child_buffers;
+    child->release = array_release;
+    state->position++;
+    if (state->position == 2) R_interrupts_pending = 1;
+    return 0;
+  }
   if (state->mode >= 3 && state->mode <= 5) {
     struct ArrowArray *field, *text;
     const void **root_buffers, **field_buffers, **text_buffers;

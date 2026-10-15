@@ -19,11 +19,15 @@ decode_page <- function(payload) {
 }
 
 compile_pagefixture <- function(work, output) {
-  old_wd <- setwd(work)
-  on.exit(setwd(old_wd), add = TRUE)
   system2(
     file.path(R.home("bin"), "R"),
-    c("CMD", "SHLIB", "-o", shQuote(output), "pagefixture.c"),
+    c(
+      "CMD",
+      "SHLIB",
+      "-o",
+      shQuote(output),
+      shQuote(file.path(work, "pagefixture.c"))
+    ),
     stdout = TRUE,
     stderr = TRUE
   )
@@ -66,6 +70,7 @@ test_that("page slicing adds the parent struct offset to unoffset children", {
   skip_if_not_installed("arrow")
   work <- tempfile("jdv-page-parent-offset-")
   dir.create(work)
+  work <- normalizePath(work, winslash = "/", mustWork = TRUE)
   output <- file.path(work, paste0("pagefixture", .Platform$dynlib.ext))
   dll <- NULL
   token <- NULL
@@ -96,6 +101,7 @@ test_that("page slicing adds the parent struct offset to unoffset children", {
   Sys.setenv(PKG_CPPFLAGS = paste0("-I", shQuote(include)))
   log <- compile_pagefixture(work, output)
   expect_null(attr(log, "status"), info = paste(log, collapse = "\n"))
+  expect_true(file.exists(output), info = paste(log, collapse = "\n"))
   dll <- dyn.load(output)
   pointer <- getExportedValue("nanoarrow", "nanoarrow_allocate_array_stream")()
   init <- getDLLRegisteredRoutines(dll)[[".Call"]][["pagefixture_init"]]
@@ -113,6 +119,7 @@ test_that("unsupported top-level fields are mapped out without losing rows", {
   skip_if_not_installed("arrow")
   work <- tempfile("jdv-page-unsupported-")
   dir.create(work)
+  work <- normalizePath(work, winslash = "/", mustWork = TRUE)
   output <- file.path(work, paste0("pagefixture", .Platform$dynlib.ext))
   dll <- NULL
   token <- NULL
@@ -142,6 +149,7 @@ test_that("unsupported top-level fields are mapped out without losing rows", {
   Sys.setenv(PKG_CPPFLAGS = paste0("-I", shQuote(include)))
   log <- compile_pagefixture(work, output)
   expect_null(attr(log, "status"), info = paste(log, collapse = "\n"))
+  expect_true(file.exists(output), info = paste(log, collapse = "\n"))
   dll <- dyn.load(output)
   pointer <- getExportedValue("nanoarrow", "nanoarrow_allocate_array_stream")()
   init <- getDLLRegisteredRoutines(dll)[[".Call"]][["pagefixture_init"]]
@@ -461,38 +469,58 @@ test_that("byte budget splits batches and empty batches do not imply EOF", {
 test_that("encoder interrupts unwind cleanly and preserve the page cursor", {
   skip_if_not_installed("nanoarrow")
   skip_if_not_installed("arrow")
-  children <- 1400000L
-  input <- arrow::Array$create(list(1L, rep(2L, children)))
-  token <- jdv:::.jdv_stream_move(nanoarrow::as_nanoarrow_array_stream(arrow::Table$create(
-    items = input
-  )))
+  work <- tempfile("jdv-page-interrupt-")
+  dir.create(work)
+  work <- normalizePath(work, winslash = "/", mustWork = TRUE)
+  output <- file.path(work, paste0("pagefixture", .Platform$dynlib.ext))
+  file.copy(test_path("fixtures", "pagefixture.c"), work)
+  include <- system.file("include", package = "nanoarrow")
+  old_flags <- Sys.getenv("PKG_CPPFLAGS", unset = NA_character_)
+  on.exit(
+    if (is.na(old_flags)) {
+      Sys.unsetenv("PKG_CPPFLAGS")
+    } else {
+      Sys.setenv(PKG_CPPFLAGS = old_flags)
+    },
+    add = TRUE
+  )
+  Sys.setenv(PKG_CPPFLAGS = paste0("-I", shQuote(include)))
+  compile_log <- compile_pagefixture(work, output)
+  expect_null(
+    attr(compile_log, "status"),
+    info = paste(compile_log, collapse = "\n")
+  )
+  expect_true(file.exists(output), info = paste(compile_log, collapse = "\n"))
+  fixture <- dyn.load(output)
+  init <- getDLLRegisteredRoutines(fixture)[[".Call"]][["pagefixture_init"]]
+  pointer <- getExportedValue("nanoarrow", "nanoarrow_allocate_array_stream")()
+  .Call(init, pointer, 6L)
+  token <- jdv:::.jdv_stream_move(pointer)
   on.exit(
     {
-      setTimeLimit(cpu = Inf, elapsed = Inf, transient = FALSE)
       jdv:::.jdv_stream_close(token)
+      dyn.unload(output)
+      unlink(work, recursive = TRUE)
     },
     add = TRUE
   )
   jdv:::.jdv_stream_open(token)
-  first <- jdv:::.jdv_stream_page(token, 1L, 10 * 1024 * 1024)
+  first <- jdv:::.jdv_stream_page(token, 1L, 100000L)
   expect_identical(first$first_row, 0)
   expect_identical(first$rows_fetched, 1)
+  expect_identical(as.data.frame(decode_page(first$payload))$value, 101L)
 
-  setTimeLimit(elapsed = 0.01, transient = TRUE)
   interrupted <- tryCatch(
-    jdv:::.jdv_stream_page(token, 1L, 10 * 1024 * 1024),
-    error = identity
+    jdv:::.jdv_stream_page(token, 1L, 100000L),
+    interrupt = identity
   )
-  setTimeLimit(cpu = Inf, elapsed = Inf, transient = FALSE)
-  expect_s3_class(interrupted, "error")
-  expect_match(conditionMessage(interrupted), "elapsed time limit")
+  expect_s3_class(interrupted, "interrupt")
 
-  retry <- jdv:::.jdv_stream_page(token, 1L, 10 * 1024 * 1024)
+  retry <- jdv:::.jdv_stream_page(token, 1L, 100000L)
   expect_identical(retry$first_row, 1)
   expect_identical(retry$rows_fetched, 1)
   expect_identical(retry$rows_seen, 2)
-  observed <- decode_page(retry$payload)
-  expect_length(as.data.frame(observed)$items[[1]], children)
+  expect_identical(as.data.frame(decode_page(retry$payload))$value, 202L)
 })
 
 test_that("only a null release callback marks producer EOF", {
