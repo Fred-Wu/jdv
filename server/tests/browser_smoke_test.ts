@@ -607,33 +607,43 @@ Deno.test({
           '#column-window .tabulator-col[tabulator-field="c299"]',
         );
         await waitForSelector(page, '.tabulator-row [tabulator-field="c299"]');
-        await waitFor(page, () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector(
-            '.tabulator-row [tabulator-field="c299"]',
-          )?.textContent?.startsWith("value-299-") === true;
-        }, { timeout: 5_000 });
-        await waitFor(page, () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          const viewport = document.querySelector("#column-viewport");
-          if (!viewport) return false;
-          const viewportRect = viewport.getBoundingClientRect();
-          const header = viewport.querySelector(
-            '.tabulator-header .tabulator-col[tabulator-field="c299"]',
-          )?.getBoundingClientRect();
-          const cell = viewport.querySelector(
-            '.tabulator-row [tabulator-field="c299"]',
-          )?.getBoundingClientRect();
-          return header !== undefined && cell !== undefined &&
-            header.left >= viewportRect.left - 1 &&
-            header.right <= viewportRect.right + 1 &&
-            cell.left >= viewportRect.left - 1 &&
-            cell.right <= viewportRect.right + 1;
-        }, { timeout: 5_000 });
+        await waitFor(
+          page,
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector(
+              '.tabulator-row [tabulator-field="c299"]',
+            )?.textContent?.startsWith("value-299-") === true;
+          },
+          undefined,
+          { timeout: 5_000 },
+        );
+        await waitFor(
+          page,
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            const viewport = document.querySelector("#column-viewport");
+            if (!viewport) return false;
+            const viewportRect = viewport.getBoundingClientRect();
+            const header = viewport.querySelector(
+              '.tabulator-header .tabulator-col[tabulator-field="c299"]',
+            )?.getBoundingClientRect();
+            const cell = viewport.querySelector(
+              '.tabulator-row [tabulator-field="c299"]',
+            )?.getBoundingClientRect();
+            return header !== undefined && cell !== undefined &&
+              header.left >= viewportRect.left - 1 &&
+              header.right <= viewportRect.right + 1 &&
+              cell.left >= viewportRect.left - 1 &&
+              cell.right <= viewportRect.right + 1;
+          },
+          undefined,
+          { timeout: 5_000 },
+        );
         assert(
           (await text(page, '.tabulator-row [tabulator-field="c299"]'))
             ?.startsWith("value-299-"),
