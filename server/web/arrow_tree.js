@@ -5,6 +5,7 @@ export const ARROW_TREE_MAX_DEPTH = 32;
 const pages = new WeakMap();
 const roots = new WeakMap();
 const names = {
+  [-1]: "dictionary",
   1: "null",
   2: "integer",
   3: "float",
@@ -81,7 +82,11 @@ export function createArrowTreePage(
     );
     if (columns.has(index)) invalid("Duplicate Arrow column selector.");
     columns.set(index, {
-      label: bounded(column.name ?? `Column ${index + 1}`),
+      label: bounded(
+        column.name === ""
+          ? `[${index + 1}] (unnamed)`
+          : column.name ?? `Column ${index + 1}`,
+      ),
       ipc: column.ipc_index,
       unsupported: column.unsupported,
     });

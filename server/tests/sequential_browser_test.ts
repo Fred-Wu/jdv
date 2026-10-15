@@ -7,6 +7,7 @@ type BrowserRuntime = {
     querySelector(selector: string): {
       textContent: string | null;
       hasAttribute(name: string): boolean;
+      getAttribute(name: string): string | null;
     } | null;
   };
 };
@@ -31,7 +32,11 @@ if (rLibrary && !capabilities.polars) {
 async function sequentialBrowser(
   polarsOnly = false,
   cacheEnabled = true,
-  options: { verifyEarlyEviction?: boolean; hostCacheBytes?: number } = {},
+  options: {
+    verifyEarlyEviction?: boolean;
+    hostCacheBytes?: number;
+    verifyHostRecovery?: boolean;
+  } = {},
 ) {
   const arrowModule = "npm:apache-arrow@21.2.0";
   const Arrow = await import(arrowModule);
@@ -53,6 +58,55 @@ async function sequentialBrowser(
     }
     return words;
   }
+  const decimal128Type = new Arrow.Decimal(10, 38, 128);
+  const decimal256Type = new Arrow.Decimal(10, 76, 256);
+  const timestampType = new Arrow.TimestampNanosecond("Asia/Kolkata");
+  const decimal128Vector = Arrow.makeVector(
+    Arrow.makeData({
+      type: decimal128Type,
+      length: rowCount,
+      data: coefficient(128, -123456789012345678901234567890n),
+    }),
+  );
+  const decimal256Vector = Arrow.makeVector(
+    Arrow.makeData({
+      type: decimal256Type,
+      length: rowCount,
+      data: coefficient(
+        256,
+        12345678901234567890123456789012345678901234567890n,
+      ),
+    }),
+  );
+  const timestampVector = Arrow.makeVector(
+    Arrow.makeData({
+      type: timestampType,
+      length: rowCount,
+      data: new BigInt64Array(rowCount).fill(-1n),
+    }),
+  );
+  const dictionaryVector = Arrow.vectorFromArray(
+    Array(rowCount).fill("dictionary-red"),
+    new Arrow.Dictionary(new Arrow.Utf8(), new Arrow.Int8(), 7),
+  );
+  const nestedPrecisionType = new Arrow.Struct([
+    new Arrow.Field("decimal128", decimal128Type, true),
+    new Arrow.Field("decimal256", decimal256Type, true),
+    new Arrow.Field("timestamp", timestampType, true),
+    new Arrow.Field("category", dictionaryVector.type, true),
+  ]);
+  const nestedPrecision = Arrow.makeVector(
+    Arrow.makeData({
+      type: nestedPrecisionType,
+      length: rowCount,
+      children: [
+        decimal128Vector.data[0],
+        decimal256Vector.data[0],
+        timestampVector.data[0],
+        dictionaryVector.data[0],
+      ],
+    }),
+  );
   const table = new Arrow.Table({
     int64: Arrow.vectorFromArray(
       Array(rowCount).fill(-9223372036854775807n),
@@ -62,23 +116,8 @@ async function sequentialBrowser(
       Array(rowCount).fill(18446744073709551615n),
       new Arrow.Uint64(),
     ),
-    decimal128: Arrow.makeVector(
-      Arrow.makeData({
-        type: new Arrow.Decimal(10, 38, 128),
-        length: rowCount,
-        data: coefficient(128, -123456789012345678901234567890n),
-      }),
-    ),
-    decimal256: Arrow.makeVector(
-      Arrow.makeData({
-        type: new Arrow.Decimal(10, 76, 256),
-        length: rowCount,
-        data: coefficient(
-          256,
-          12345678901234567890123456789012345678901234567890n,
-        ),
-      }),
-    ),
+    decimal128: decimal128Vector,
+    decimal256: decimal256Vector,
     negative_scale: Arrow.makeVector(
       Arrow.makeData({
         type: new Arrow.Decimal(-3, 38, 128),
@@ -88,7 +127,7 @@ async function sequentialBrowser(
     ),
     timestamp: Arrow.makeVector(
       Arrow.makeData({
-        type: new Arrow.TimestampNanosecond("Asia/Kolkata"),
+        type: timestampType,
         length: rowCount,
         data: new BigInt64Array(rowCount).fill(-1n),
       }),
@@ -104,22 +143,23 @@ async function sequentialBrowser(
     text: Arrow.vectorFromArray(
       Array.from(
         { length: rowCount },
-        (_, row) => `${row}:` + "x".repeat(8192),
+        (_, row) =>
+          `${row}:` + (options.verifyHostRecovery ? "x" : "x".repeat(8192)),
       ),
       new Arrow.Utf8(),
     ),
-    code: Arrow.vectorFromArray(
-      Array(rowCount).fill("dictionary-red"),
-      new Arrow.Dictionary(new Arrow.Utf8(), new Arrow.Int8(), 7),
-    ),
+    code: dictionaryVector,
     large: Arrow.vectorFromArray(
       Array.from({ length: rowCount }, () => [3, 4, 5]),
       new Arrow.LargeList(new Arrow.Field("item", new Arrow.Int32(), true)),
     ),
     record: Arrow.vectorFromArray(
-      Array.from({ length: rowCount }, () => ({ id: 1, label: "a" })),
+      Array.from({ length: rowCount }, () => ({
+        id: 9007199254740997n,
+        label: "a",
+      })),
       new Arrow.Struct([
-        new Arrow.Field("id", new Arrow.Int32(), true),
+        new Arrow.Field("id", new Arrow.Int64(), true),
         new Arrow.Field("label", new Arrow.Utf8(), true),
       ]),
     ),
@@ -141,6 +181,31 @@ async function sequentialBrowser(
       Array(rowCount).fill(777),
       new Arrow.Int32(),
     ),
+    precise_list: Arrow.vectorFromArray(
+      Array.from({ length: rowCount }, () => [
+        7n,
+        9007199254740993n,
+      ]),
+      new Arrow.List(new Arrow.Field("exact", new Arrow.Int64(), true)),
+    ),
+    fixed_list: Arrow.vectorFromArray(
+      Array.from({ length: rowCount }, () => [
+        11n,
+        9007199254740995n,
+      ]),
+      new Arrow.FixedSizeList(
+        2,
+        new Arrow.Field("exact", new Arrow.Int64(), true),
+      ),
+    ),
+    large_nested: Arrow.vectorFromArray(
+      Array.from(
+        { length: rowCount },
+        () => Array.from({ length: 1000 }, (_, item) => item),
+      ),
+      new Arrow.List(new Arrow.Field("item", new Arrow.Int32(), true)),
+    ),
+    nested_precision: nestedPrecision,
   });
   table.schema.fields.at(-1)!.metadata.set(
     "ARROW:extension:name",
@@ -294,7 +359,8 @@ async function sequentialBrowser(
                 );
               }
               if (
-                message.method === "stream/next" ||
+                (direction === "framesent" &&
+                  typeof message.method === "string") ||
                 message.code !== undefined || message.error !== undefined ||
                 message.result?.first_row !== undefined
               ) {
@@ -304,6 +370,8 @@ async function sequentialBrowser(
                   direction,
                   id: message.id,
                   method: message.method,
+                  view: message.params?.view,
+                  page: message.params?.page,
                   code: message.code ?? message.error?.code,
                   first_row: metadata?.first_row,
                   rows_fetched: metadata?.rows_fetched,
@@ -401,6 +469,35 @@ async function sequentialBrowser(
         }.`,
       );
     };
+    const inspectCell = async (page: typeof first, column: number) => {
+      await page.locator(
+        `#column-window button[data-action="inspect-arrow-cell"][data-row-index="1"][data-column="${column}"]`,
+      ).click();
+      await page.waitForFunction(() => {
+        const tree = (globalThis as unknown as BrowserRuntime).document
+          .querySelector("#tree-viewer");
+        const status = (globalThis as unknown as BrowserRuntime).document
+          .querySelector("#child-open-status");
+        return (tree !== null && !tree.hasAttribute("hidden")) ||
+          status?.getAttribute("data-state") === "error";
+      });
+      return await page.locator("#tree-child-list").innerText();
+    };
+    const returnFromInspection = async (page: typeof first) => {
+      await page.locator("#tree-parent-return").click();
+      await page.waitForFunction(() => {
+        const viewer = (globalThis as unknown as BrowserRuntime).document
+          .querySelector("#viewer");
+        return viewer !== null && !viewer.hasAttribute("hidden");
+      });
+    };
+    const rRequestCount = (browserName: string) =>
+      trace.filter((frame) =>
+        frame.browser === browserName && frame.direction === "framesent" &&
+        typeof frame.method === "string" &&
+        frame.method !== "stream/cache/info" &&
+        frame.method !== "stream/cache/get"
+      ).length;
     for (const page of [first, second]) {
       await page.goto(server.url);
       await page.locator("#tables article").filter({
@@ -416,6 +513,99 @@ async function sequentialBrowser(
       for (const value of ["polars-alpha", "polars-beta", "<list: 2 items>"]) {
         assert(content.includes(value));
       }
+      const requestsBeforeInspect = rRequestCount("first");
+      const children = await inspectCell(first, 1);
+      assert(children.includes("x"), children);
+      assert(children.includes("y"), children);
+      await returnFromInspection(first);
+      assertEquals(rRequestCount("first"), requestsBeforeInspect);
+      assertEquals(errors, []);
+      return;
+    }
+    if (options.verifyHostRecovery) {
+      expectPage(await clickNext(first, "first"), 0, 200);
+      await expectProgress(first, 200, 200);
+      for (let page = 1; page < 8; page++) {
+        expectPage(await clickNext(first, "first"), page * 200, 200);
+        await expectProgress(first, page * 200, page * 200 + 200);
+      }
+      expectPage(await clickNext(first, "first"), 1600, 0, true);
+      await expectProgress(first, 1600, 1600, true);
+      const requestsBeforeInspect = rRequestCount("first");
+      if (cacheEnabled) {
+        await inspectCell(first, 16);
+        assert(
+          trace.some((frame) =>
+            frame.browser === "first" && frame.direction === "framesent" &&
+            frame.method === "stream/cache/get" && frame.page === 0
+          ),
+          "An IPC-cache miss should ask the host for the page.",
+        );
+        if (options.hostCacheBytes !== undefined) {
+          await first.waitForFunction(() =>
+            (globalThis as unknown as BrowserRuntime).document.querySelector(
+              "#child-open-status",
+            )?.getAttribute("data-state") === "error"
+          );
+          const message = await first.locator("#child-open-status").innerText();
+          assert(message.startsWith("Could not inspect this value:"), message);
+          assert(
+            trace.some((frame) =>
+              frame.browser === "first" &&
+              frame.direction === "framereceived" &&
+              frame.code === "unavailable"
+            ),
+            "The host should report that the page has been evicted.",
+          );
+          assertEquals(await first.locator("#tree-viewer").isHidden(), true);
+        } else {
+          assert(
+            (await first.locator("#tree-child-list").innerText()).includes(
+              "[1]",
+            ),
+          );
+          await returnFromInspection(first);
+          await second.reload();
+          await second.locator("#tables article").filter({
+            hasText: "Exact sequential stream",
+          }).getByRole("button", { name: "Open view", exact: true }).click();
+          const secondRequestsBeforeInspect = rRequestCount("second");
+          await inspectCell(second, 16);
+          assert(
+            trace.some((frame) =>
+              frame.browser === "second" && frame.direction === "framesent" &&
+              frame.method === "stream/cache/get" && frame.page === 0
+            ),
+            "A fresh browser page should recover a retained IPC page from the host.",
+          );
+          assert(
+            (await second.locator("#tree-child-list").innerText()).includes(
+              "[1]",
+            ),
+          );
+          assert(
+            rRequestCount("second") === secondRequestsBeforeInspect,
+            "Reloaded-page inspection must not issue requests to R.",
+          );
+        }
+      } else {
+        await first.locator(
+          '#column-window button[data-action="inspect-arrow-cell"][data-row-index="1"][data-column="16"]',
+        ).click();
+        await first.waitForFunction(() =>
+          (globalThis as unknown as BrowserRuntime).document.querySelector(
+            "#child-open-status",
+          )?.textContent?.includes("no longer retained") === true
+        );
+        assertEquals(
+          await first.locator("#tree-viewer").isHidden(),
+          true,
+        );
+      }
+      assert(
+        rRequestCount("first") === requestsBeforeInspect,
+        "Inspection must not add R requests, including after a browser-cache miss.",
+      );
       assertEquals(errors, []);
       return;
     }
@@ -445,6 +635,65 @@ async function sequentialBrowser(
     ) {
       assert(content.includes(exact), `Missing exact display: ${exact}`);
     }
+    const requestsBeforeInspect = rRequestCount("first");
+    const hostGetsBeforeInspect = trace.filter((frame) =>
+      frame.browser === "first" && frame.direction === "framesent" &&
+      frame.method === "stream/cache/get"
+    ).length;
+    const listChildren = await inspectCell(first, 7);
+    assert(listChildren.includes("[1]"));
+    assert(listChildren.includes("[2]"));
+    await returnFromInspection(first);
+    const preciseChildren = await inspectCell(first, 14);
+    assert(
+      preciseChildren.includes("9007199254740993"),
+      `Unexpected precise-list children: ${preciseChildren}`,
+    );
+    await returnFromInspection(first);
+    const fixedChildren = await inspectCell(first, 15);
+    assert(fixedChildren.includes("9007199254740995"));
+    await returnFromInspection(first);
+    const structChildren = await inspectCell(first, 11);
+    assert(structChildren.includes("9007199254740997"));
+    await returnFromInspection(first);
+    const mapChildren = await inspectCell(first, 12);
+    assert(mapChildren.includes("Entry 1"));
+    await first.locator(
+      "#tree-child-list li[data-child-index='0'] button",
+    ).click();
+    assert(
+      (await first.locator("#tree-child-list").innerText()).includes("key"),
+    );
+    assert(
+      (await first.locator("#tree-child-list").innerText()).includes("value"),
+    );
+    await returnFromInspection(first);
+    const nestedPrecisionChildren = await inspectCell(first, 17);
+    for (
+      const exact of [
+        "-12345678901234567890.1234567890",
+        "1234567890123456789012345678901234567890.1234567890",
+        "1970-01-01T05:29:59.999999999+05:30 [Asia/Kolkata]",
+        "dictionary-red",
+      ]
+    ) {
+      assert(
+        nestedPrecisionChildren.includes(exact),
+        `Missing exact nested Arrow value: ${exact}`,
+      );
+    }
+    await returnFromInspection(first);
+    assert(
+      rRequestCount("first") === requestsBeforeInspect,
+      "Arrow-cell inspection must not add R-directed requests.",
+    );
+    assert(
+      trace.filter((frame) =>
+        frame.browser === "first" && frame.direction === "framesent" &&
+        frame.method === "stream/cache/get"
+      ).length === hostGetsBeforeInspect,
+      "The visible page should be inspected from the browser's local IPC cache.",
+    );
     await first.locator("#tables article").filter({
       hasText: "Ordinary table",
     }).getByRole("button", { name: "Open view", exact: true }).click();
@@ -468,6 +717,14 @@ async function sequentialBrowser(
         frame.method === "stream/next"
       ).length,
       firstPageRequests,
+    );
+    const requestsBeforeReturnInspection = rRequestCount("first");
+    const returnedChildren = await inspectCell(first, 14);
+    assert(returnedChildren.includes("9007199254740993"));
+    await returnFromInspection(first);
+    assert(
+      rRequestCount("first") === requestsBeforeReturnInspection,
+      "Inspecting a locally retained page after returning to a view must not request data from R.",
     );
     if (!cacheEnabled) {
       expectPage(await clickNext(first, "first"), 200, 200);
@@ -709,6 +966,36 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: () => sequentialBrowser(false, true, { hostCacheBytes: 1024 }),
+});
+Deno.test({
+  name:
+    "real R Arrow inspector recovers an evicted browser page from host cache without R requests",
+  ignore: !executable || !rLibrary || !capabilities.arrow ||
+    !capabilities.nanoarrow,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () => sequentialBrowser(false, true, { verifyHostRecovery: true }),
+});
+Deno.test({
+  name:
+    "real R Arrow inspector reports unavailable pages without host cache or R requests",
+  ignore: !executable || !rLibrary || !capabilities.arrow ||
+    !capabilities.nanoarrow,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () => sequentialBrowser(false, false, { verifyHostRecovery: true }),
+});
+Deno.test({
+  name: "real R Arrow inspector reports host-evicted pages without R requests",
+  ignore: !executable || !rLibrary || !capabilities.arrow ||
+    !capabilities.nanoarrow,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () =>
+    sequentialBrowser(false, true, {
+      verifyHostRecovery: true,
+      hostCacheBytes: 1024,
+    }),
 });
 Deno.test({
   name: "optional Polars newest sequential view renders in Chromium",

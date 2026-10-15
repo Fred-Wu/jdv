@@ -95,13 +95,13 @@ request R object navigation or convert the stream to an R data frame. Exact
 inside nested values as well.
 
 Paths stop at 32 steps, dictionary resolution rejects cycles or more than 32
-hops, and labels and summaries are limited to 4,096 code units. Null and
-unsupported values are leaves. Columns omitted from IPC show their existing
-unsupported reason; the browser cannot reconstruct them. A missing local IPC
-page can be restored from the host cache without consuming more stream rows. If
-neither cache retains it, inspection reports that the page is unavailable. The
-separate raw IPC cache retains at most eight pages and 32 MiB in aggregate, plus
-the single active inspector page.
+hops, and labels and summaries are limited to 4,096 code units, including any
+truncation marker. Null and unsupported values are leaves. Columns omitted from
+IPC show their existing unsupported reason; the browser cannot reconstruct them.
+A missing local IPC page can be restored from the host cache without consuming
+more stream rows. If neither cache retains it, inspection reports that the page
+is unavailable. The separate raw IPC cache retains at most eight pages and 32
+MiB in aggregate, plus the single active inspector page.
 
 ## Browser WebSocket protocol
 

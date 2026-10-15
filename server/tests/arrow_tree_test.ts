@@ -304,7 +304,8 @@ Deno.test("Arrow tree bounds huge child pages depth text and cyclic dictionaries
     ),
   );
   const text = fromVector(Arrow.vectorFromArray(["x".repeat(9000)]), true)();
-  assert(arrowTreeNode(text).summary.length <= 4096);
+  assertEquals(arrowTreeNode(text).summary.length, 4096);
+  assert(arrowTreeNode(text).summary.endsWith("… [truncated]"));
   const dictionary = Arrow.makeVector(
     Arrow.makeData({
       type: new Arrow.Dictionary(new Arrow.Int32(), new Arrow.Int8(), 3),
@@ -457,4 +458,39 @@ Deno.test("Arrow tree unnamed struct fields have stable positional labels", () =
       ["[2] (unnamed)", "9"],
     ],
   );
+});
+
+Deno.test("null dictionaries retain shallow types and unnamed columns use positions", () => {
+  const vector = Arrow.vectorFromArray(
+    [null, "value"],
+    new Arrow.Dictionary(new Arrow.Utf8(), new Arrow.Int8(), 8),
+  );
+  const table = new Arrow.Table({ x: vector });
+  const bytes = Arrow.tableToIPC(table, "stream");
+  const page = createArrowTreePage(
+    bytes,
+    {
+      columns: [{ position: 4, name: "", ipc_index: 0 }],
+    },
+    { first_row: 0, rows_fetched: 2 },
+    Arrow,
+  );
+  const node = arrowTreeNode(createArrowCellRoot(page, 1, 4));
+  assertEquals(node.type, "dictionary");
+  assertEquals(node.summary, "NA");
+  assertEquals(node.label, "[5] (unnamed)");
+  assertEquals(node.has_children, false);
+  assertEquals(node.total_children, 0);
+  const longLabelPage = createArrowTreePage(
+    bytes,
+    {
+      columns: [{ index: 0, name: "x".repeat(9000), ipc_index: 0 }],
+    },
+    { first_row: 0, rows_fetched: 2 },
+    Arrow,
+  );
+  const longLabel =
+    arrowTreeNode(createArrowCellRoot(longLabelPage, 1, 0)).label;
+  assertEquals(longLabel.length, 4096);
+  assert(longLabel.endsWith("… [truncated]"));
 });

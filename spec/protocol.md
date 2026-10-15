@@ -491,9 +491,10 @@ unsupported nested node does not imply the R encoder emits that node.
 Only the requested child page is materialized, with at most 200 children. Paths
 are limited to 32 steps; values at that depth show a depth-limit reason instead
 of an expansion control. Dictionary resolution has a separate 32-hop and cycle
-guard. Labels and summaries are bounded to 4,096 UTF-16 code units. Composite
-summaries use shallow type labels and counts rather than recursively formatting
-schemas or subtrees. These bounds also apply to very large lists of nulls.
+guard. Labels and summaries are bounded to 4,096 UTF-16 code units, including
+any truncation marker. Composite summaries use shallow type labels and counts
+rather than recursively formatting schemas or subtrees. These bounds also apply
+to very large lists of nulls.
 
 Decoded page and cell handles are private browser objects. Their lifetime is
 owned by the UI's bounded raw IPC cache (at most eight pages and 32 MiB

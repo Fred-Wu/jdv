@@ -26,9 +26,8 @@ from `/assets/vendor/TABULATOR-LICENSE.txt`. SHA-256 checksums are:
 
 The minified Tabulator JavaScript and CSS and the vendored Arrow JavaScript
 bundle should stay excluded from formatting and lint checks with Deno CLI
-`--ignore` arguments. Arrow JS 21.2.0 is present for the planned binary viewer;
-this vendoring change does not load or integrate it into the UI. Its upstream
-license, notice, source, and checksums are recorded in
+`--ignore` arguments. Arrow JS 21.2.0 decodes retained IPC pages for nested cell
+inspection. Its upstream license, notice, source, and checksums are recorded in
 `vendor/ARROW-JS-PROVENANCE.md`.
 
 The viewer keeps each table's complete schema and renders a fixed-width column
@@ -45,3 +44,12 @@ the R request contract, which can interpret an offset-free datetime using the R
 session's timezone. The browser cannot infer that timezone from a cached
 Snapshot, so the viewer applies the same explicit-offset input rule to both
 modes. Text matching folds ASCII letters only.
+
+Sequential Arrow cells with an IPC column mapping have an Inspect control. The
+inspector reads nested values from the page's Arrow buffers and schema, using
+the existing bounded child pagination; it does not ask R to reopen or traverse
+the value. The browser keeps at most eight IPC pages and 32 MiB across views,
+then asks the host page cache for an evicted page when that capability is
+available. If neither cache retains the page, inspection reports that state
+without advancing the R stream. Only the active inspected page is decoded for
+the tree view, and closing or leaving the inspector releases that tree handle.

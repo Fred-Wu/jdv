@@ -9,6 +9,14 @@ import {
   sequentialPageRows,
   trimSequentialCaches,
 } from "/assets/sequential.js";
+import {
+  arrowTreeChildren,
+  arrowTreeNode,
+  createArrowCellRoot,
+  createArrowTreePage,
+  openArrowChild,
+} from "/assets/arrow_tree.js";
+import { createArrowPageCache } from "/assets/arrow_page_cache.js";
 import { decodeRows, querySnapshot } from "/assets/jdv_query.js";
 import {
   columnWindow,
@@ -61,6 +69,7 @@ const COLUMN_WIDTH = 180;
 const ROW_WIDTH = 86;
 const knownSessions = new Map();
 const knownTables = new Map();
+const arrowPageCache = createArrowPageCache();
 let selected = null;
 let nextWindowFrame = 0;
 let nextWindowTimer;
@@ -137,6 +146,8 @@ socket.addEventListener("message", (event) => {
     for (const [key, entry] of knownTables) {
       if (entry.session === message.session) {
         entry.cache?.clear();
+        entry.arrowPageMetadata?.clear();
+        arrowPageCache.deleteView(entry.session, entry.descriptor.view);
         knownTables.delete(key);
       }
     }
@@ -152,6 +163,8 @@ socket.addEventListener("message", (event) => {
       const current = knownTables.get(key);
       if (current?.descriptor.generation === descriptor.generation) {
         current.cache?.clear();
+        current.arrowPageMetadata?.clear();
+        arrowPageCache.deleteView(message.session, descriptor.view);
         knownTables.delete(key);
       }
       transport.cancelTable(
@@ -169,8 +182,13 @@ socket.addEventListener("message", (event) => {
         selected.returnTree.descriptor.view === descriptor.view &&
         selected.returnTree.descriptor.generation === descriptor.generation
       ) {
-        selected.returnTree = null;
-        treeReturn.hidden = true;
+        if (selected.kind === "arrow-cell") {
+          closeSelectedTable();
+          setStatus("The inspected view was closed.", "error");
+        } else {
+          selected.returnTree = null;
+          treeReturn.hidden = true;
+        }
       }
     }
     renderLists();
@@ -194,12 +212,12 @@ filterOperator.addEventListener("change", updateFilterInputs);
 filterColumn.addEventListener("change", updateFilterOperators);
 viewport.addEventListener("scroll", scheduleColumnWindow);
 treePrevious.addEventListener("click", () => {
-  if (selected?.kind === "tree") {
+  if (selected?.kind === "tree" || selected?.kind === "arrow-cell") {
     loadTreeChildren(selected, Math.max(0, selected.offset - TREE_PAGE_SIZE));
   }
 });
 treeNext.addEventListener("click", () => {
-  if (selected?.kind === "tree") {
+  if (selected?.kind === "tree" || selected?.kind === "arrow-cell") {
     loadTreeChildren(
       selected,
       Math.min(
@@ -246,6 +264,10 @@ function addTable(session, message) {
     previous && descriptor.generation <= previous.descriptor.generation
   ) return;
   previous?.cache?.clear();
+  if (previous) {
+    previous.arrowPageMetadata?.clear();
+    arrowPageCache.deleteView(session, descriptor.view);
+  }
   const replaceSelected = selected?.session === session &&
     selected.descriptor.view === descriptor.view &&
     selected.descriptor.generation < descriptor.generation;
@@ -255,6 +277,7 @@ function addTable(session, message) {
     descriptor,
     progress: { watermark: 0, received: 0, done: false, gap: null },
     cache: descriptor.access === "sequential" ? createSequentialCache() : null,
+    arrowPageMetadata: new Map(),
     cachePages: new Map(),
     cacheInfo: null,
     cacheCatalogCursor: null,
@@ -262,6 +285,52 @@ function addTable(session, message) {
   });
   renderLists();
   if (replaceSelected) openView(session, descriptor);
+}
+
+function arrowPageKey(session, view, generation, page) {
+  return JSON.stringify([session, view, generation, page]);
+}
+
+function retainArrowPage(record, payload, metadata) {
+  const page = metadata.cache_page?.page ?? metadata.page;
+  if (
+    !Number.isSafeInteger(page) || page < 0 ||
+    !Number.isSafeInteger(metadata.first_row) || metadata.first_row < 0 ||
+    !Number.isSafeInteger(metadata.rows_fetched) ||
+    metadata.rows_fetched < 0 ||
+    !Number.isSafeInteger(metadata.rows_seen) ||
+    metadata.rows_seen !== metadata.first_row + metadata.rows_fetched ||
+    typeof metadata.done !== "boolean" ||
+    !(payload instanceof ArrayBuffer || payload instanceof Uint8Array)
+  ) return;
+  const pageMetadata = {
+    page,
+    first_row: metadata.first_row,
+    rows_fetched: metadata.rows_fetched,
+    rows_seen: metadata.rows_seen,
+    done: metadata.done,
+    byte_length: payload.byteLength,
+  };
+  record.arrowPageMetadata.set(page, pageMetadata);
+  while (record.arrowPageMetadata.size > 256) {
+    const oldest = Math.min(...record.arrowPageMetadata.keys());
+    record.arrowPageMetadata.delete(oldest);
+  }
+  arrowPageCache.set(
+    arrowPageKey(
+      record.session,
+      record.descriptor.view,
+      record.descriptor.generation,
+      page,
+    ),
+    payload,
+    pageMetadata,
+    {
+      session: record.session,
+      view: record.descriptor.view,
+      generation: record.descriptor.generation,
+    },
+  );
 }
 
 function viewSupport(descriptor) {
@@ -495,6 +564,8 @@ function closeSelectedTable() {
   selected.table?.destroy();
   sequentialControls.hidden = true;
   paginationElement.replaceChildren();
+  treeChildList.replaceChildren();
+  treeBreadcrumb.replaceChildren();
   selected = null;
   viewer.hidden = true;
   treeViewer.hidden = true;
@@ -542,6 +613,10 @@ function cancelQueryRequests(state) {
 }
 
 function loadTreeChildren(state, offset) {
+  if (state.kind === "arrow-cell") {
+    loadArrowTreeChildren(state, offset);
+    return;
+  }
   if (selected !== state || state.kind !== "tree") return;
   state.epoch++;
   const epoch = state.epoch;
@@ -637,8 +712,12 @@ function renderTreePage(state) {
       expand.dataset.action = "expand-child";
       expand.textContent = label;
       expand.addEventListener("click", () => {
-        if (!Array.isArray(child.path)) return;
-        state.path = child.path;
+        if (state.kind === "arrow-cell") {
+          state.path = openArrowChild(state.root, state.path, child.index);
+        } else {
+          if (!Array.isArray(child.path)) return;
+          state.path = child.path;
+        }
         state.breadcrumbs.push({ path: child.path, label });
         renderTreeBreadcrumbs(state);
         loadTreeChildren(state, 0);
@@ -682,6 +761,163 @@ function renderTreePage(state) {
     state.totalChildren + " children";
   treePrevious.disabled = state.offset === 0;
   treeNext.disabled = end >= state.totalChildren;
+}
+
+function loadArrowTreeChildren(state, offset) {
+  if (selected !== state || state.kind !== "arrow-cell") return;
+  state.offset = Math.max(0, offset);
+  const node = arrowTreeNode(state.root, state.path);
+  const result = arrowTreeChildren(
+    state.root,
+    state.path,
+    state.offset,
+    TREE_PAGE_SIZE,
+  );
+  state.totalChildren = result.total_children;
+  state.children = result.children;
+  treeTitleElement.textContent = node.label;
+  treeMetaElement.textContent = `${node.type} · ${node.summary}`;
+  renderTreePage(state);
+  setStatus("Connected.", "connected");
+}
+
+function pageMetadataForRow(record, rowIndex) {
+  const row = rowIndex - 1;
+  const all = new Map(record.arrowPageMetadata);
+  for (const [page, metadata] of record.cachePages ?? []) {
+    if (!all.has(page)) all.set(page, metadata);
+  }
+  return [...all.values()].find((metadata) =>
+    Number.isSafeInteger(metadata.first_row) &&
+    Number.isSafeInteger(metadata.rows_fetched) &&
+    metadata.rows_fetched > 0 && row >= metadata.first_row &&
+    row < metadata.first_row + metadata.rows_fetched
+  ) ?? null;
+}
+
+function showInspectFailure(message) {
+  childOpenStatus.hidden = false;
+  childOpenStatus.dataset.state = "error";
+  childOpenStatus.textContent = message;
+}
+
+async function ensureArrowPage(state, metadata, epoch) {
+  const record = sequentialRecord(state);
+  const key = arrowPageKey(
+    state.session,
+    state.descriptor.view,
+    state.descriptor.generation,
+    metadata.page,
+  );
+  const cached = arrowPageCache.get(key);
+  if (cached) {
+    return { ...cached, metadata: { ...metadata, ...cached.metadata } };
+  }
+  if (!state.cacheEnabled) return null;
+
+  let hostMetadata = record.cachePages.get(metadata.page);
+  if (!hostMetadata) {
+    const info = await requestCacheInfo(state, metadata.page - 1, 1);
+    if (!isCurrent(state, epoch)) return null;
+    mergeCacheInfo(record, info);
+    hostMetadata = info.pages.find((page) => page.page === metadata.page);
+    if (!hostMetadata) return null;
+    record.cachePages.set(metadata.page, hostMetadata);
+    pruneCacheCatalog(record);
+  }
+
+  const response = await cacheRequest(
+    state,
+    "stream/cache/get",
+    {
+      view: state.descriptor.view,
+      generation: state.descriptor.generation,
+      page: metadata.page,
+      max_bytes: 4 * 1024 * 1024,
+    },
+    30_000,
+  );
+  if (!isCurrent(state, epoch)) return null;
+  const result = response?.result;
+  const page = result?.cache_page;
+  if (
+    !response.binary || !page || page.page !== metadata.page ||
+    result.view !== state.descriptor.view ||
+    result.generation !== state.descriptor.generation ||
+    result.first_row !== page.first_row ||
+    result.rows_fetched !== page.rows_fetched ||
+    result.rows_seen !== page.rows_seen || result.done !== page.done ||
+    !validCachePageMetadata(page) ||
+    result.transfer?.encoding !== "arrow-ipc" ||
+    result.transfer.byte_length !== response.binary.byteLength ||
+    page.byte_length !== response.binary.byteLength
+  ) throw new Error("The host returned an invalid Arrow inspection page.");
+  retainArrowPage(record, response.binary, result);
+  return arrowPageCache.get(key);
+}
+
+async function inspectArrowCell(state, rowIndex, column) {
+  if (selected !== state || state.kind !== "sequential") return;
+  const epoch = state.epoch;
+  const record = sequentialRecord(state);
+  const metadata = pageMetadataForRow(record, rowIndex);
+  if (!metadata) {
+    showInspectFailure("This value's Arrow page is no longer available.");
+    return;
+  }
+  childOpenStatus.hidden = false;
+  childOpenStatus.dataset.state = "waiting";
+  childOpenStatus.textContent = "Loading the cached Arrow page…";
+  try {
+    const entry = await ensureArrowPage(state, metadata, epoch);
+    if (!isCurrent(state, epoch)) return;
+    if (!entry) {
+      showInspectFailure(
+        "This value's Arrow page is no longer retained by the browser or host.",
+      );
+      return;
+    }
+    const page = createArrowTreePage(
+      new Uint8Array(entry.payload),
+      state.descriptor,
+      entry.metadata,
+    );
+    const root = createArrowCellRoot(page, rowIndex, column);
+    const node = arrowTreeNode(root);
+    openArrowTree(state, root, node);
+  } catch (error) {
+    if (!isCurrent(state, epoch) || error?.name === "AbortError") return;
+    showInspectFailure(
+      `Could not inspect this value: ${error?.message ?? String(error)}`,
+    );
+  }
+}
+
+function openArrowTree(parent, root, node) {
+  closeSelectedTable();
+  selected = {
+    kind: "arrow-cell",
+    session: parent.session,
+    descriptor: parent.descriptor,
+    root,
+    path: [],
+    breadcrumbs: [{ path: [], label: node.label }],
+    offset: 0,
+    totalChildren: node.total_children,
+    children: [],
+    activeRequestIds: new Set(),
+    queryRequestIds: new Set(),
+    epoch: 0,
+    returnTree: parent,
+  };
+  renderViewBreadcrumbs();
+  viewer.hidden = true;
+  treeViewer.hidden = false;
+  treeParentReturn.hidden = false;
+  treeReturn.hidden = true;
+  treeChildList.replaceChildren();
+  renderTreeBreadcrumbs(selected);
+  loadArrowTreeChildren(selected, 0);
 }
 
 async function openChild(state, path) {
@@ -1195,8 +1431,13 @@ function buildTableColumns(positions) {
       headerSort: false,
       resizable: false,
       tooltip: false,
-      formatter: schema.drillable === true &&
-          selected.descriptor.capabilities.children === true
+      formatter: state.kind === "sequential" &&
+          selected.descriptor.encoding === "arrow-ipc" &&
+          !schema.unsupported && schema.ipc_index !== null &&
+          schema.ipc_index !== undefined
+        ? (cell) => arrowCellFormatter(cell, schema, state)
+        : schema.drillable === true &&
+            selected.descriptor.capabilities.children === true
         ? (cell) => cellFormatter(cell, schema, state)
         : textFormatter,
     });
@@ -1228,6 +1469,29 @@ function cellFormatter(cell, schema, state) {
     }]);
   });
   content.append(open);
+  return content;
+}
+
+function arrowCellFormatter(cell, schema, state) {
+  const content = textNode(cell.getValue() ?? "");
+  const rowIndex = cell.getRow().getData().row_index;
+  if (!Number.isSafeInteger(rowIndex) || rowIndex < 1) return content;
+  content.className = "drillable-cell";
+  const inspect = document.createElement("button");
+  inspect.type = "button";
+  inspect.dataset.action = "inspect-arrow-cell";
+  inspect.dataset.rowIndex = String(rowIndex);
+  inspect.dataset.column = String(schema.position ?? schema.index);
+  inspect.textContent = "Inspect";
+  inspect.setAttribute(
+    "aria-label",
+    `Inspect row ${rowIndex}, column ${schema.position ?? schema.index}`,
+  );
+  inspect.addEventListener("click", (event) => {
+    event.stopPropagation();
+    inspectArrowCell(state, rowIndex, schema.position ?? schema.index);
+  });
+  content.append(inspect);
   return content;
 }
 
@@ -1685,6 +1949,7 @@ async function restoreHostPages(state, pages) {
       state.descriptor,
       result,
     );
+    retainArrowPage(record, response.binary, result);
     record.cache.discard(decoded.discardedThrough);
     record.cache.setPage(page.page, decoded.rows);
     record.cachePages.set(page.page, page);
@@ -1858,6 +2123,10 @@ async function loadSequentialPage(state) {
     if (state.cacheEnabled && (!Number.isSafeInteger(page) || page < 0)) {
       throw new Error("The host omitted the sequential cache page index.");
     }
+    retainArrowPage(sequentialRecord(state), response.binary, {
+      ...metadata,
+      page,
+    });
     state.cache.setPage(page, decoded.rows);
     if (state.cacheEnabled) {
       sequentialRecord(state).cachePages.set(page, metadata.cache_page);
