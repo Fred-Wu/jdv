@@ -1,8 +1,10 @@
 import type { Page } from "@astral/astral";
 import { waitFor } from "./astral_page.ts";
 import { assertEquals } from "./assert.ts";
+import { finishIntegrationCleanup } from "./integration_cleanup.ts";
 import {
   BrowserEndpointParser,
+  finishOwnedBrowserProcess,
   launchOwnedBrowser,
   reclaimLateResult,
   resolveBrowserBinary,
@@ -140,4 +142,109 @@ Deno.test("browser endpoint parsing waits for a complete CRLF line across chunks
     parser.push(bytes("\nnext diagnostic")),
     "ws://127.0.0.1:9222/devtools/browser/test-id",
   );
+});
+
+Deno.test("acknowledged browser cleanup confirms a slow owned process after termination", async () => {
+  let finish!: (status: Deno.CommandStatus) => void;
+  const signals: string[] = [];
+  const child = {
+    status: new Promise<Deno.CommandStatus>((resolve) => finish = resolve),
+    kill(signal?: Deno.Signal | number) {
+      signals.push(String(signal));
+      finish({ success: false, code: 1, signal: null });
+    },
+  };
+  await finishOwnedBrowserProcess(child, () => false, 2);
+  assertEquals(signals, ["SIGTERM"]);
+});
+
+Deno.test("browser cleanup escalates to a hard stop and requires confirmed exit", async () => {
+  for (const exits of [true, false]) {
+    let finish!: (status: Deno.CommandStatus) => void;
+    const signals: string[] = [];
+    const child = {
+      status: new Promise<Deno.CommandStatus>((resolve) => finish = resolve),
+      kill(signal?: Deno.Signal | number) {
+        signals.push(String(signal));
+        if (signal === "SIGKILL" && exits) {
+          finish({ success: false, code: 137, signal: "SIGKILL" });
+        }
+      },
+    };
+    let caught: unknown;
+    try {
+      await finishOwnedBrowserProcess(child, () => false, 2);
+    } catch (error) {
+      caught = error;
+    }
+    assertEquals(signals, ["SIGTERM", "SIGKILL"]);
+    assertEquals(caught instanceof AggregateError, !exits);
+  }
+});
+
+Deno.test("browser cleanup retains unexpected termination errors after exit confirmation", async () => {
+  const original = new Error("Unexpected process permission failure");
+  let finish!: (status: Deno.CommandStatus) => void;
+  const child = {
+    status: new Promise<Deno.CommandStatus>((resolve) => finish = resolve),
+    kill() {
+      finish({ success: false, code: 1, signal: null });
+      throw original;
+    },
+  };
+  let caught: unknown;
+  try {
+    await finishOwnedBrowserProcess(child, () => false, 2);
+  } catch (error) {
+    caught = error;
+  }
+  assertEquals(caught, original);
+});
+
+Deno.test("browser status errors are not mistaken for an elapsed exit grace period", async () => {
+  const original = new Error("Unexpected status failure");
+  let killed = false;
+  let caught: unknown;
+  try {
+    await finishOwnedBrowserProcess(
+      {
+        status: Promise.reject(original),
+        kill() {
+          killed = true;
+        },
+      },
+      () => false,
+      2,
+    );
+  } catch (error) {
+    caught = error;
+  }
+  assertEquals(caught instanceof AggregateError, true);
+  if (caught instanceof AggregateError) assertEquals(caught.cause, original);
+  assertEquals(killed, true);
+});
+
+Deno.test("a CDP failure stays fatal even when owned process recovery succeeds", async () => {
+  const original = new Error("Unexpected CDP shutdown failure");
+  let finish!: (status: Deno.CommandStatus) => void;
+  let killed = false;
+  const child = {
+    status: new Promise<Deno.CommandStatus>((resolve) => finish = resolve),
+    kill() {
+      killed = true;
+      finish({ success: false, code: 1, signal: null });
+    },
+  };
+  let caught: unknown;
+  try {
+    await finishIntegrationCleanup([
+      () => Promise.reject(original),
+      () => finishOwnedBrowserProcess(child, () => false, 2),
+    ]);
+  } catch (error) {
+    caught = error;
+  }
+  assertEquals(killed, true);
+  assertEquals(caught instanceof AggregateError, true);
+  if (caught instanceof AggregateError) assertEquals(caught.errors, [original]);
 });

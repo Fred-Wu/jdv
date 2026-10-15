@@ -135,6 +135,42 @@ export async function closeBrowserProcess(
   );
 }
 
+export async function finishOwnedBrowserProcess(
+  child: Pick<Deno.ChildProcess, "kill" | "status">,
+  hasExited: () => boolean,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const elapsed = Symbol("browser exit grace period elapsed");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let result: Deno.CommandStatus | typeof elapsed;
+  try {
+    result = await Promise.race([
+      child.status,
+      new Promise<typeof elapsed>((resolve) => {
+        timer = setTimeout(() => resolve(elapsed), timeoutMs);
+      }),
+    ]);
+  } catch (error) {
+    await finishIntegrationCleanup([
+      () => stopRChild(child, hasExited(), timeoutMs),
+    ], [error]);
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  if (result !== elapsed) return;
+  // Browser.close acknowledges the request before every owned process exits.
+  // Termination is part of teardown; only confirmed recovery completes cleanup.
+  console.log(
+    "[browser process recovery] grace period elapsed; terminating owned process",
+  );
+  await stopRChild(child, hasExited(), timeoutMs);
+  const status = await child.status;
+  console.log(
+    `[browser process recovery] exit confirmed: code=${status.code}; signal=${status.signal}`,
+  );
+}
+
 export class BrowserEndpointParser {
   #decoder = new TextDecoder();
   #buffer = "";
@@ -263,20 +299,11 @@ export async function launchOwnedBrowser(
           )
           : undefined,
       () =>
-        phase("browser process shutdown", async () => {
-          try {
-            await cleanupDeadline(
-              child.status,
-              5_000,
-              "Browser did not exit after CDP shutdown.",
-            );
-          } catch (error) {
-            await finishIntegrationCleanup([() => stopRChild(child, exited)], [
-              error,
-            ]);
-            throw error;
-          }
-        }, 16_000),
+        phase(
+          "browser process shutdown",
+          () => finishOwnedBrowserProcess(child, () => exited),
+          16_000,
+        ),
       () =>
         cleanupDeadline(
           reader.cancel(),
