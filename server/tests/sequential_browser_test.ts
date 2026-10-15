@@ -519,7 +519,9 @@ async function sequentialBrowser(
           frame.method !== "stream/cache/info" &&
           frame.method !== "stream/cache/get"
         ).length;
-      for (const page of [first, second]) {
+      for (
+        const [name, page] of [["first", first], ["second", second]] as const
+      ) {
         await phase(
           `${name} sequential navigation`,
           () => page.goto(server.url),
