@@ -275,11 +275,16 @@ jdv_json_object <- function(x = list()) {
       budget = work_budget
     )
     row_names <- .jdv_explicit_row_names(x)
+    retain_source <- any(vapply(
+      snapshot$schema,
+      function(column) isTRUE(column$drillable),
+      logical(1L)
+    ))
     return(list(
       mode = mode,
-      source = NULL,
+      source = if (retain_source) x else NULL,
       holder = NULL,
-      fingerprint = NULL,
+      fingerprint = if (retain_source) .jdv_fingerprint(x) else NULL,
       nrow = snapshot$nrow,
       ncol = snapshot$ncol,
       schema = snapshot$schema,
@@ -334,7 +339,11 @@ jdv_json_object <- function(x = list()) {
     sort = TRUE,
     filter = TRUE,
     known_total = TRUE,
-    children = FALSE
+    children = any(vapply(
+      content$schema,
+      function(column) isTRUE(column$drillable),
+      logical(1L)
+    ))
   )
   capabilities <- append(capabilities, list(FALSE), after = 4L)
   names(capabilities)[[5L]] <- "next"
@@ -928,12 +937,19 @@ jdv_register <- function(
     )
     entry <- .jdv_rpc_entry(params$view, params$generation)
     on.exit(.jdv_release_entry(entry), add = TRUE)
-    if (!identical(entry$mode, "tree")) {
-      query_error("unsupported", "Object navigation requires a tree view.")
+    if (identical(entry$mode, "tree")) {
+      path <- .jdv_tree_path(params$path)
+      ancestry <- .jdv_tree_ancestry(entry)
+      resolved <- .jdv_tree_resolve(entry$tree_value, path, ancestry)
+    } else {
+      if (method == "object/children") {
+        query_error("unsupported", "Object children requires a tree view.")
+      }
+      path <- .jdv_cell_path(params$path)
+      ancestry <- .jdv_tree_ancestry(entry)
+      value <- .jdv_cell_value(entry, path[[1L]])
+      resolved <- .jdv_tree_resolve(value, path[-1L], ancestry)
     }
-    path <- .jdv_tree_path(params$path)
-    ancestry <- .jdv_tree_ancestry(entry)
-    resolved <- .jdv_tree_resolve(entry$tree_value, path, ancestry)
     if (!identical(resolved$status, "value")) {
       query_error(
         "unavailable",

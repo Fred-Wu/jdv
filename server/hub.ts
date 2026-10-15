@@ -265,14 +265,14 @@ export class Hub {
     }
     if (
       (method === "object/children" || method === "object/open") &&
-      !isTreeRequest(current.descriptor, method, params)
+      !isObjectRequest(current.descriptor, method, params)
     ) {
       client.send({
         type: "error",
         id: browserId,
         session: session.id,
         code: "invalid_request",
-        message: "The request is not valid for this tree view.",
+        message: "The request is not valid for this view.",
       });
       return;
     }
@@ -1187,7 +1187,7 @@ function isCoalescibleMethod(method: string): boolean {
   return method === "table/rows" || method === "object/children";
 }
 
-function isTreeRequest(
+function isObjectRequest(
   descriptor: JsonObject,
   method: string,
   params: JsonObject,
@@ -1195,10 +1195,31 @@ function isTreeRequest(
   const viewParams = descriptor.params;
   const path = params.path;
   if (
-    !isObject(viewParams) || viewParams.kind !== "tree" ||
+    !isObject(viewParams) ||
     !isObject(viewParams.capabilities) ||
-    viewParams.capabilities.children !== true || !isTypedPath(path)
+    viewParams.capabilities.children !== true || !Array.isArray(path) ||
+    path.length > 32
   ) return false;
+  if (viewParams.kind === "grid") {
+    if (method !== "object/open" || path.length === 0) return false;
+    const cell = path[0];
+    if (
+      !isObject(cell) || cell.kind !== "cell" || Object.hasOwn(cell, "type") ||
+      !Number.isSafeInteger(cell.row_index) || Number(cell.row_index) < 1 ||
+      !Number.isSafeInteger(cell.column) || Number(cell.column) < 0 ||
+      !isTypedPath(path.slice(1))
+    ) return false;
+    const columns = viewParams.columns;
+    const schema = Array.isArray(columns)
+      ? columns.find((column) =>
+        isObject(column) && column.position === cell.column
+      )
+      : undefined;
+    return isObject(schema) && schema.drillable === true &&
+      (!Number.isSafeInteger(viewParams.nrow) ||
+        Number(cell.row_index) <= Number(viewParams.nrow));
+  }
+  if (viewParams.kind !== "tree" || !isTypedPath(path)) return false;
   if (method === "object/open") {
     return Array.isArray(path) && path.length > 0;
   }
@@ -1213,6 +1234,7 @@ function isTypedPath(value: unknown): boolean {
   if (!Array.isArray(value) || value.length > 32) return false;
   return value.every((step) => {
     if (!isObject(step)) return false;
+    if (Object.hasOwn(step, "kind")) return false;
     if (step.type === "index") {
       return Number.isSafeInteger(step.index) && Number(step.index) >= 1;
     }

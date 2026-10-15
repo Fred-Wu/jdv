@@ -21,9 +21,10 @@ deno run -A --no-config https://raw.githubusercontent.com/eitsupi/jdv/main/serve
 
 Open the URL from the server's single JSON ready line, then call
 `jdv::jdv_view(x)` in R. Data frames and matrices open as tables; other R
-objects open in a browsable tree by default. See
-[server/README.md](server/README.md) for the browser protocol, connection
-limits, and platform details.
+objects open in a browsable tree by default. Use a drillable cell's **Open**
+button to inspect its captured value as a child view. View breadcrumbs restore
+the parent table's query and page. See [server/README.md](server/README.md) for
+the browser protocol, connection limits, and platform details.
 
 ## Local development
 

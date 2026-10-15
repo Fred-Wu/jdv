@@ -36,7 +36,8 @@ column_schema <- function(x, name = "", position = 0L) {
     type = type,
     class = class(x),
     sortable = sortable,
-    filterable = filterable
+    filterable = filterable,
+    drillable = column_drillable(x)
   )
   if (type == "factor") {
     schema$levels <- levels(x)

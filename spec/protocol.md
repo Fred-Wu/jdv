@@ -111,11 +111,12 @@ starts at generation 1. If `jdv.max_tables` is lowered below the active count,
 registration evicts as many oldest entries as needed to satisfy it.
 
 Snapshot registration materializes and encodes its data in the `open` message.
-After successful message construction, the R registry retains only table
-metadata; the host is responsible for caching the snapshot. A Snapshot view has
-no `table/rows` endpoint. Paged registration retains the source and its initial
-schema in R and returns schema and dimensions in `open`; rows are computed on
-demand.
+After successful message construction, a Snapshot with drillable columns retains
+its source and registration fingerprint in R for cell inspection. Other
+Snapshots retain only table metadata. The host is responsible for caching the
+snapshot data in both cases, and neither has a `table/rows` endpoint. Paged
+registration retains the source and its initial schema in R and returns schema
+and dimensions in `open`; rows are computed on demand.
 
 For Paged tables, dimensions, column names, and column classes are checked
 against the registration fingerprint on requests. Mutation of values through a
@@ -183,8 +184,9 @@ is not passed to `jdv_rpc()`; it is returned by `jdv_register()` for the host to
 deliver. `kind` is `grid`; `access` is `snapshot` or `random` for Snapshot or
 Paged mode, respectively; and `encoding` is `r-json`. Every descriptor includes
 all six `capabilities` fields shown for a grid: `seek`, `sort`, `filter`, and
-`known_total` are `true`; `next` and `children` are `false`. Tree descriptors
-use `kind: "tree"`, `access: "random"`, `encoding: "r-json"`, and capabilities
+`known_total` are `true`; `next` is `false`. Grid `children` is `true` if and
+only if at least one column has `drillable: true`. Tree descriptors use
+`kind: "tree"`, `access: "random"`, `encoding: "r-json"`, and capabilities
 `seek: true`, `sort: false`, `filter: false`, `known_total: true`,
 `next: false`, and `children: true`. Tree descriptors omit grid-only fields
 (`mode`, `nrow`, `ncol`, `row_names`, `columns`, and `data`). A tree descriptor
@@ -220,6 +222,7 @@ A tree descriptor has no grid fields:
     "view": "v-2",
     "generation": 1,
     "title": "object",
+    "path": [],
     "kind": "tree",
     "access": "random",
     "encoding": "r-json",
@@ -331,18 +334,21 @@ closed view produces `view_not_found`.
 
 ### `object/children`
 
+This method is available only on tree views. A grid with `children: true` uses
+`object/open` to capture a cell; it does not expose `object/children`.
+
 Parameters are `view`, `generation`, `path`, and optionally `offset` and
 `limit`. The path is a full typed path from the root value held by the named
 tree view; an empty path selects that root. `offset` is zero-based and defaults
 to 0; `limit` defaults to 200 and must be between 1 and 500. A path contains at
 most 32 steps. Each step is one of:
 
-| Step      | Fields  | Meaning                                                |
-| --------- | ------- | ------------------------------------------------------ |
-| `index`   | `index` | One-based position in an unnamed or positional object. |
-| `binding` | `name`  | Environment binding name.                              |
-| `slot`    | `name`  | S4 slot name.                                          |
-| `attr`    | `name`  | Attribute name.                                        |
+| Step `type` | Fields  | Meaning                                                |
+| ----------- | ------- | ------------------------------------------------------ |
+| `index`     | `index` | One-based position in an unnamed or positional object. |
+| `binding`   | `name`  | Environment binding name.                              |
+| `slot`      | `name`  | S4 slot name.                                          |
+| `attr`      | `name`  | Attribute name.                                        |
 
 The result contains the same `view`, `generation`, full `path`, and `offset`,
 plus `children` and `total_children`. Each child has its one-based `index`,
@@ -360,17 +366,59 @@ values.
 
 Tree navigation never evaluates a promise, active binding, classed `[[`, `$`, or
 `names` method. Paths are resolved again for each `object/children` request.
-`object/open` requires a non-empty path and resolves the selected value once,
-holding that captured value in the new view. A path that cannot be resolved
-returns `unavailable`; malformed paths return `invalid_request`, missing views
-return `view_not_found`, and old generations return `stale_generation`. The
-returned child descriptor is the direct `view/open.params` descriptor. A tree
-child starts a new root with an empty path; the descriptor may identify its
-parent with `parent`. The limit is 32 live descendant views total per root,
-counting nested tree and grid views across all levels. Closing a child releases
-its slot for a later child view. Closing, replacing, or evicting a parent closes
-its descendants; each cascaded child emits `view/closed` with
-`reason: "parent_closed"`.
+
+### `object/open`
+
+Parameters are `view`, `generation`, and a non-empty `path`. On a tree view,
+every step uses the `type` discriminant from the table above. On a grid view,
+the first step must select a drillable cell:
+
+```json
+{
+  "view": "v-1",
+  "generation": 1,
+  "path": [{ "kind": "cell", "row_index": 205, "column": 2 }]
+}
+```
+
+`row_index` is the original, one-based R row index, independent of sorting,
+filtering, and pagination. `column` is the zero-based schema position, including
+when column names are duplicated. `kind: "cell"` is allowed only at the start of
+a grid path. Remaining steps, if any, use the tree `type` forms above and are
+resolved within the captured cell value. The complete path, including its cell
+step, contains at most 32 steps. Grid `object/open` requires
+`capabilities.children: true` and `columns[column].drillable: true`; malformed
+selectors or non-drillable columns return `invalid_request`.
+
+Each grid column schema includes the Boolean `drillable`. It is true only for
+unclassed list, `AsIs` list, `vctrs_list_of`, data-frame, and matrix columns. It
+is false for record columns, `POSIXlt`, other classed lists, and atomic columns.
+This metadata is independent of `sortable` and `filterable`; clients must not
+infer drillability from display text. Snapshot views retain the R source only
+when a drillable column needs subsequent cell capture. Retained source
+references are released when the view closes.
+
+`object/open` resolves the selected value once, holding that captured value in
+the new view. A path that cannot be resolved returns `unavailable`; malformed
+paths return `invalid_request`, missing views return `view_not_found`, and old
+generations return `stale_generation`. The returned child descriptor is the
+direct `view/open.params` descriptor. A tree child starts a new root with an
+empty path; the descriptor may identify its parent with `parent`. The limit is
+32 live descendant views total per root, counting nested tree and grid views
+across all levels. Closing a child releases its slot for a later child view.
+Closing, replacing, or evicting a parent closes its descendants; each cascaded
+child emits `view/closed` with `reason: "parent_closed"`.
+
+The browser uses the same child-view navigation for tree and grid parents.
+Opening controls appear only in drillable cells and use the displayed row's
+original `row_index`. View breadcrumbs restore the parent's sort, filter, page,
+horizontal scroll, or tree path and child-page offset. A pending child open is
+tied to the active parent view and generation, separately from page query
+epochs: Snapshot sort, filter, and page operations remain local and do not
+cancel the captured cell request. Returning to the R prompt lets that original
+request complete without another browser request. Selecting a different view,
+replacing its generation, or closing it cancels its pending browser requests.
+Display text and navigation labels are inserted as DOM text.
 
 R 4.6 and newer use the public experimental `R_GetBindingType()` and
 `R_getVarEx()` APIs to distinguish `Value`, `Forced`, `Delayed`, `Unbound`,
@@ -636,20 +684,20 @@ R's handling of missing and special values follow `query.md`.
 Error codes are stable machine-readable values. The `error` object contains
 `code` and `message`, with optional `details`. The current codes include:
 
-| Code               | Meaning                                                                                                                 |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| `invalid_request`  | Malformed JSON, missing required fields, strict filter/sort field errors, or invalid parameters.                        |
-| `unsupported`      | A known operation or encoding is not supported for this table or protocol version.                                      |
-| `limit_exceeded`   | A configured request, page, or JSON byte limit was exceeded.                                                            |
-| `schema_changed`   | A Paged source no longer matches its registered dimensions, names, or classes, or a required channel no longer matches. |
-| `r_error`          | An R method or other request computation failed.                                                                        |
-| `interrupted`      | Request processing began and was interrupted.                                                                           |
-| `cancelled`        | The accepted request was cancelled before processing began.                                                             |
-| `expired`          | The request deadline elapsed before processing began.                                                                   |
-| `unavailable`      | A well-formed object path no longer resolves or cannot be read safely.                                                  |
-| `stale_generation` | The request names a generation that is no longer active.                                                                |
-| `view_not_found`   | The view id is missing or closed.                                                                                       |
-| `method_not_found` | No implementation exists for the requested method.                                                                      |
+| Code               | Meaning                                                                                                                                                         |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_request`  | Malformed JSON, missing required fields, strict filter/sort field errors, or invalid parameters.                                                                |
+| `unsupported`      | A known operation or encoding is not supported for this table or protocol version.                                                                              |
+| `limit_exceeded`   | A configured request, page, or JSON byte limit was exceeded.                                                                                                    |
+| `schema_changed`   | A retained grid source (Paged or a drillable Snapshot) no longer matches its registered dimensions, names, or classes, or a required channel no longer matches. |
+| `r_error`          | An R method or other request computation failed.                                                                                                                |
+| `interrupted`      | Request processing began and was interrupted.                                                                                                                   |
+| `cancelled`        | The accepted request was cancelled before processing began.                                                                                                     |
+| `expired`          | The request deadline elapsed before processing began.                                                                                                           |
+| `unavailable`      | A well-formed object path no longer resolves or cannot be read safely.                                                                                          |
+| `stale_generation` | The request names a generation that is no longer active.                                                                                                        |
+| `view_not_found`   | The view id is missing or closed.                                                                                                                               |
+| `method_not_found` | No implementation exists for the requested method.                                                                                                              |
 
 Per-column channel failures are represented in the page payload and do not
 necessarily fail the whole request. The request and response byte limits are

@@ -37,6 +37,8 @@ const treePrevious = $("#tree-previous");
 const treeNext = $("#tree-next");
 const treeReturn = $("#tree-return");
 const treeParentReturn = $("#tree-parent-return");
+const viewBreadcrumb = $("#view-breadcrumb");
+const childOpenStatus = $("#child-open-status");
 const PAGE_SIZE = 200;
 const TREE_PAGE_SIZE = 200;
 const COLUMN_WIDTH = 180;
@@ -311,18 +313,18 @@ function renderLists() {
   }
 }
 
-function openView(session, descriptor, returnTree = null) {
+function openView(session, descriptor, returnTree = null, restored = null) {
   if (!viewSupport(descriptor)) {
     setStatus("This view format is not supported by this viewer.", "error");
     return;
   }
   if (descriptor.kind === "tree") {
-    openTree(session, descriptor);
+    openTree(session, descriptor, returnTree);
     return;
   }
   closeSelectedTable();
   const columns = Array.isArray(descriptor.columns) ? descriptor.columns : [];
-  selected = {
+  selected = restored ?? {
     kind: "grid",
     session,
     descriptor,
@@ -332,10 +334,13 @@ function openView(session, descriptor, returnTree = null) {
     epoch: 0,
     page: 1,
     activeRequestIds: new Set(),
+    queryRequestIds: new Set(),
     returnTree,
     table: null,
     window: { start: 0, end: 0, columns: [], offsetPx: 0, totalWidth: 0 },
   };
+  selected.childOpening = false;
+  renderViewBreadcrumbs();
   viewer.hidden = false;
   treeViewer.hidden = true;
   treeParentReturn.hidden = true;
@@ -347,6 +352,10 @@ function openView(session, descriptor, returnTree = null) {
   warningsElement.replaceChildren();
   paginationElement.replaceChildren();
   populateColumnChoices();
+  spacer.style.width = `${
+    columnScrollExtent(ROW_WIDTH + columns.length * COLUMN_WIDTH)
+  }px`;
+  viewport.scrollLeft = restored?.scrollLeft ?? 0;
   const windowState = calculateColumnWindow();
   selected.window = windowState;
   spacer.style.width = `${columnScrollExtent(windowState.totalWidth)}px`;
@@ -372,6 +381,7 @@ function openView(session, descriptor, returnTree = null) {
       descriptor.capabilities.known_total === true,
     paginationMode: "remote",
     paginationSize: PAGE_SIZE,
+    paginationInitialPage: selected.page,
     paginationButtonCount: 5,
     paginationCounter: "rows",
     paginationElement,
@@ -383,10 +393,15 @@ function openView(session, descriptor, returnTree = null) {
   setStatus("Loading table…", "loading");
   updateFilterOperators();
   renderSortTerms();
+  if (restored?.form) restoreQueryForm(restored.form);
 }
 
 function closeSelectedTable() {
   if (!selected) return;
+  if (selected.kind === "grid") {
+    selected.scrollLeft = viewport.scrollLeft;
+    selected.form = captureQueryForm();
+  }
   cancelColumnWindowUpdate();
   selected.epoch++;
   transport.cancelTable(
@@ -402,6 +417,8 @@ function closeSelectedTable() {
   treeViewer.hidden = true;
   treeReturn.hidden = true;
   treeParentReturn.hidden = true;
+  viewBreadcrumb.replaceChildren();
+  childOpenStatus.hidden = true;
 }
 
 function openTree(session, descriptor, returnTree = null) {
@@ -415,10 +432,12 @@ function openTree(session, descriptor, returnTree = null) {
     offset: 0,
     totalChildren: 0,
     activeRequestIds: new Set(),
+    queryRequestIds: new Set(),
     epoch: 0,
     children: [],
     returnTree,
   };
+  renderViewBreadcrumbs();
   viewer.hidden = true;
   treeViewer.hidden = false;
   treeParentReturn.hidden = returnTree === null;
@@ -431,18 +450,19 @@ function openTree(session, descriptor, returnTree = null) {
   loadTreeChildren(selected, 0);
 }
 
-function cancelTreeRequests(state) {
-  for (const id of state.activeRequestIds) {
-    transport.cancel(id, "The object path changed.");
+function cancelQueryRequests(state) {
+  for (const id of state.queryRequestIds) {
+    transport.cancel(id, "A newer page or object path replaced this request.");
+    state.activeRequestIds.delete(id);
   }
-  state.activeRequestIds.clear();
+  state.queryRequestIds.clear();
 }
 
 function loadTreeChildren(state, offset) {
   if (selected !== state || state.kind !== "tree") return;
   state.epoch++;
   const epoch = state.epoch;
-  cancelTreeRequests(state);
+  cancelQueryRequests(state);
   state.offset = Math.max(0, offset);
   setStatus("Loading object children…", "loading");
   treePrevious.disabled = state.offset === 0;
@@ -460,7 +480,10 @@ function loadTreeChildren(state, offset) {
     60_000,
   );
   const id = promise.id;
-  if (id) state.activeRequestIds.add(id);
+  if (id) {
+    state.activeRequestIds.add(id);
+    state.queryRequestIds.add(id);
+  }
   promise.then((response) => {
     if (selected !== state || state.epoch !== epoch) return;
     const result = response?.result;
@@ -486,7 +509,10 @@ function loadTreeChildren(state, offset) {
       : error?.message ?? String(error);
     setStatus("The object request failed.", "error");
   }).finally(() => {
-    if (id) state.activeRequestIds.delete(id);
+    if (id) {
+      state.activeRequestIds.delete(id);
+      state.queryRequestIds.delete(id);
+    }
   });
 }
 
@@ -559,7 +585,7 @@ function renderTreePage(state) {
       open.type = "button";
       open.dataset.action = "open-child";
       open.textContent = "Open view";
-      open.addEventListener("click", () => openTreeChild(state, child));
+      open.addEventListener("click", () => openChild(state, child.path));
       item.append(open);
     }
     treeChildList.append(item);
@@ -575,16 +601,19 @@ function renderTreePage(state) {
   treeNext.disabled = end >= state.totalChildren;
 }
 
-async function openTreeChild(state, child) {
-  if (selected !== state || state.kind !== "tree") return;
-  const epoch = state.epoch;
+async function openChild(state, path) {
+  if (!isActiveView(state) || state.childOpening) return;
+  state.childOpening = true;
+  childOpenStatus.hidden = false;
+  childOpenStatus.dataset.state = "waiting";
+  childOpenStatus.textContent = "Opening the captured value. Waiting for R…";
   const promise = transport.request(
     state.session,
     "object/open",
     {
       view: state.descriptor.view,
       generation: state.descriptor.generation,
-      path: child.path,
+      path,
     },
     60_000,
   );
@@ -592,7 +621,7 @@ async function openTreeChild(state, child) {
   if (id) state.activeRequestIds.add(id);
   try {
     const response = await promise;
-    if (selected !== state || state.epoch !== epoch) return;
+    if (!isActiveView(state)) return;
     const descriptor = response?.result;
     if (!viewSupport(descriptor)) {
       throw new Error("R returned an invalid child view descriptor.");
@@ -604,23 +633,32 @@ async function openTreeChild(state, child) {
       openView(state.session, descriptor, state);
     }
   } catch (error) {
-    if (selected !== state || state.epoch !== epoch) return;
+    if (!isActiveView(state)) return;
     if (error?.name !== "AbortError") {
-      treeMetaElement.textContent = error?.code
+      childOpenStatus.dataset.state = "error";
+      childOpenStatus.textContent = error?.code
         ? error.code + ": " + error.message
         : error?.message ?? String(error);
     }
   } finally {
     if (id) state.activeRequestIds.delete(id);
+    state.childOpening = false;
+    if (selected === state && childOpenStatus.dataset.state !== "error") {
+      childOpenStatus.hidden = true;
+    }
   }
 }
 
 function returnToTree() {
-  const state = selected?.returnTree;
-  if (!state || !viewSupport(state.descriptor)) return;
+  returnToView(selected?.returnTree);
+}
+
+function returnToView(state) {
+  if (!state || !viewSupport(state.descriptor) || !isKnownView(state)) return;
   closeSelectedTable();
-  selected = state;
   if (state.kind === "tree") {
+    selected = state;
+    renderViewBreadcrumbs();
     viewer.hidden = true;
     treeViewer.hidden = false;
     treeParentReturn.hidden = state.returnTree === null;
@@ -631,8 +669,61 @@ function returnToTree() {
     renderTreeBreadcrumbs(state);
     loadTreeChildren(state, state.offset);
   } else {
-    openView(state.session, state.descriptor, state.returnTree);
+    openView(state.session, state.descriptor, state.returnTree, state);
   }
+}
+
+function isActiveView(state) {
+  return selected === state && isKnownView(state);
+}
+
+function isKnownView(state) {
+  const current = knownTables.get(`${state.session}\0${state.descriptor.view}`);
+  return current?.descriptor.generation === state.descriptor.generation;
+}
+
+function renderViewBreadcrumbs() {
+  viewBreadcrumb.replaceChildren();
+  childOpenStatus.hidden = true;
+  const chain = [];
+  for (let state = selected; state; state = state.returnTree) {
+    chain.unshift(state);
+  }
+  chain.forEach((state, depth) => {
+    const item = document.createElement("li");
+    const label = state.descriptor.title ?? "Untitled view";
+    if (state === selected) item.textContent = label;
+    else {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.viewDepth = String(depth);
+      button.textContent = label;
+      button.addEventListener("click", () => returnToView(state));
+      item.append(button);
+    }
+    viewBreadcrumb.append(item);
+  });
+}
+
+function captureQueryForm() {
+  return [
+    sortColumn,
+    sortDirection,
+    filterColumn,
+    filterOperator,
+    filterValue,
+    filterUpper,
+  ]
+    .map((element) => element.value);
+}
+
+function restoreQueryForm(values) {
+  [sortColumn.value, sortDirection.value, filterColumn.value] = values;
+  updateFilterOperators();
+  [filterOperator.value, filterValue.value, filterUpper.value] = values.slice(
+    3,
+  );
+  updateFilterInputs();
 }
 
 function populateColumnChoices() {
@@ -881,12 +972,7 @@ function clearFilter() {
 function reloadFirstPage() {
   if (!selected?.table) return;
   selected.epoch++;
-  transport.cancelTable(
-    selected.session,
-    selected.descriptor.view,
-    selected.descriptor.generation,
-    "A newer query replaced this request.",
-  );
+  cancelQueryRequests(selected);
   const currentPage = selected.table.getPage();
   const reload = currentPage === 1
     ? selected.table.setData()
@@ -966,12 +1052,7 @@ function updateColumnWindow() {
   state.window = next;
   state.epoch++;
   updateRowColumnCompensation();
-  transport.cancelTable(
-    state.session,
-    state.descriptor.view,
-    state.descriptor.generation,
-    "A newer column window replaced this request.",
-  );
+  cancelQueryRequests(state);
   spacer.style.width = `${columnScrollExtent(next.totalWidth)}px`;
   windowElement.style.transform = `translateX(${next.offsetPx}px)`;
   windowElement.style.width = `${
@@ -1007,6 +1088,7 @@ function requestColumnWindowPage() {
 }
 
 function buildTableColumns(positions) {
+  const state = selected;
   const columns = [{
     title: "Row",
     field: "row_index",
@@ -1030,10 +1112,40 @@ function buildTableColumns(positions) {
       headerSort: false,
       resizable: false,
       tooltip: false,
-      formatter: textFormatter,
+      formatter: schema.drillable === true &&
+          selected.descriptor.capabilities.children === true
+        ? (cell) => cellFormatter(cell, schema, state)
+        : textFormatter,
     });
   }
   return columns;
+}
+
+function cellFormatter(cell, schema, state) {
+  const content = textNode(cell.getValue() ?? "");
+  const rowIndex = cell.getRow().getData().row_index;
+  if (!Number.isSafeInteger(rowIndex) || rowIndex < 1) return content;
+  content.className = "drillable-cell";
+  const open = document.createElement("button");
+  open.type = "button";
+  open.dataset.action = "open-cell";
+  open.dataset.rowIndex = String(rowIndex);
+  open.dataset.column = String(schema.position);
+  open.textContent = "Open";
+  open.setAttribute(
+    "aria-label",
+    `Open row ${rowIndex}, column ${schema.position}`,
+  );
+  open.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openChild(state, [{
+      kind: "cell",
+      row_index: rowIndex,
+      column: schema.position,
+    }]);
+  });
+  content.append(open);
+  return content;
 }
 
 function textFormatter(cell) {
@@ -1058,13 +1170,7 @@ async function requestRows(params) {
     : PAGE_SIZE;
   const offset = (pageNumber - 1) * pageSize;
   const epoch = ++state.epoch;
-  transport.cancelTable(
-    state.session,
-    state.descriptor.view,
-    state.descriptor.generation,
-    "A newer page request replaced this request.",
-  );
-  state.activeRequestIds.clear();
+  cancelQueryRequests(state);
   const sort = state.sort.map(({ col, desc }) => ({ col, desc }));
   const filter = state.filter;
   const cols = state.window.columns;
@@ -1156,9 +1262,15 @@ function sendPagedRequest(state, params) {
     60_000,
   );
   const id = promise.id;
-  if (id) state.activeRequestIds.add(id);
+  if (id) {
+    state.activeRequestIds.add(id);
+    state.queryRequestIds.add(id);
+  }
   return promise.finally(() => {
-    if (id) state.activeRequestIds.delete(id);
+    if (id) {
+      state.activeRequestIds.delete(id);
+      state.queryRequestIds.delete(id);
+    }
   });
 }
 

@@ -170,6 +170,32 @@
 }
 
 .jdv_transport_request <- function(message, epoch) {
+  response <- .jdv_transport_request_body(message, epoch)
+  if (
+    identical(.jdv_state$transport_epoch, epoch) &&
+      !isTRUE(.jdv_state$unloading) &&
+      !is.null(.jdv_state$transport) &&
+      length(.jdv_state$outbox)
+  ) {
+    notifications <- unname(unlist(.jdv_state$outbox, use.names = FALSE))
+    .jdv_state$outbox <- list()
+    # The native callback accepts one response; send lifecycle JSONL first.
+    failed <- function(error) {
+      if (identical(.jdv_state$transport_epoch, epoch)) {
+        try(.Call(C_jdv_transport_close), silent = TRUE)
+      }
+      stop(error)
+    }
+    tryCatch(
+      .jdv_transport_send(notifications),
+      error = failed,
+      interrupt = failed
+    )
+  }
+  response
+}
+
+.jdv_transport_request_body <- function(message, epoch) {
   if (isTRUE(.jdv_state$unloading)) {
     return(NULL)
   }

@@ -1616,3 +1616,117 @@ Deno.test("large ordinary frames stop at the 496 KiB byte budget", async () => {
     hub.close();
   }
 });
+
+Deno.test("grid cell opens validate original row selectors and tree suffixes", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-85-1", limits: { ...DEFAULT_LIMITS } },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  connection.inject(notification("view/open", {
+    view: "cells",
+    generation: 1,
+    kind: "grid",
+    nrow: 500,
+    ncol: 2,
+    columns: [
+      { position: 0, name: "duplicate", drillable: true },
+      { position: 1, name: "duplicate", drillable: false },
+    ],
+    capabilities: { children: true },
+  }));
+  await browser.nextMessage((message) => message.type === "view/open");
+  try {
+    const cell = { kind: "cell", row_index: 205, column: 0 };
+    const invalid = [
+      { method: "object/children", path: [cell] },
+      { method: "object/open", path: [] },
+      { method: "object/open", path: [{ ...cell, row_index: 0 }] },
+      { method: "object/open", path: [{ ...cell, row_index: 501 }] },
+      { method: "object/open", path: [{ ...cell, row_index: 1.5 }] },
+      { method: "object/open", path: [{ ...cell, row_index: "205" }] },
+      { method: "object/open", path: [{ ...cell, column: 1 }] },
+      { method: "object/open", path: [{ ...cell, column: 2 }] },
+      { method: "object/open", path: [{ ...cell, column: -1 }] },
+      { method: "object/open", path: [{ type: "index", index: 1 }] },
+      { method: "object/open", path: [cell, cell] },
+      { method: "object/open", path: [{ ...cell, type: "index", index: 1 }] },
+      {
+        method: "object/open",
+        path: [cell, { ...cell, type: "index", index: 1 }],
+      },
+      {
+        method: "object/open",
+        path: [cell, { type: "expression", value: "x" }],
+      },
+      {
+        method: "object/open",
+        path: [cell, ...Array(32).fill({ type: "index", index: 1 })],
+      },
+    ];
+    for (const [index, request] of invalid.entries()) {
+      const id = `invalid-cell-${index}`;
+      hub.handleBrowser(browser, {
+        type: "request",
+        id,
+        session: "r-85-1",
+        method: request.method,
+        params: { view: "cells", generation: 1, path: request.path },
+      });
+      assertEquals(
+        (await browser.nextMessage((message) => message.id === id)).code,
+        "invalid_request",
+      );
+    }
+    for (
+      const [index, path] of [
+        [cell],
+        [cell, { type: "index", index: 2 }, { type: "attr", name: "names" }],
+        [cell, ...Array(31).fill({ type: "index", index: 1 })],
+      ].entries()
+    ) {
+      const id = `valid-cell-${index}`;
+      const writes = connection.writes.length;
+      hub.handleBrowser(browser, {
+        type: "request",
+        id,
+        session: "r-85-1",
+        method: "object/open",
+        params: { view: "cells", generation: 1, path },
+      });
+      const forwarded = await connection.nextWrite(writes);
+      assertEquals((forwarded.params as JsonRecord).path, path);
+      connection.inject({ id: forwarded.id, result: { captured: true } });
+      await browser.nextMessage((message) =>
+        message.id === id && message.type === "response"
+      );
+    }
+    openTree(connection);
+    await browser.nextMessage((message) =>
+      message.type === "view/open" &&
+      ((message.message as JsonRecord)?.params as JsonRecord)?.view === "tree-1"
+    );
+    hub.handleBrowser(browser, {
+      type: "request",
+      id: "tree-cell",
+      session: "r-85-1",
+      method: "object/open",
+      params: {
+        view: "tree-1",
+        generation: 1,
+        path: [{ ...cell, type: "index", index: 1 }],
+      },
+    });
+    assertEquals(
+      (await browser.nextMessage((message) => message.id === "tree-cell")).code,
+      "invalid_request",
+    );
+  } finally {
+    hub.close();
+  }
+});

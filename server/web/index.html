@@ -20,13 +20,17 @@
       </section>
       <section id="sessions" aria-label="R sessions"></section>
       <section id="tables" aria-label="Open tables"></section>
+      <nav aria-label="View history">
+        <ol id="view-breadcrumb"></ol>
+      </nav>
+      <p id="child-open-status" aria-live="polite" hidden></p>
       <section id="viewer" aria-label="Table viewer" hidden>
         <div class="table-heading">
           <div>
             <h2 id="table-title"></h2>
             <p id="table-meta" class="muted"></p>
           </div>
-          <button id="tree-return" type="button" hidden>Back to object</button>
+          <button id="tree-return" type="button" hidden>Back to parent</button>
         </div>
         <div class="query-tools">
           <fieldset>

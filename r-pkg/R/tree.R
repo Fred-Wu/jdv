@@ -21,6 +21,12 @@
 }
 
 .jdv_tree_step <- function(step) {
+  if (is.list(step) && "kind" %in% names(step)) {
+    query_error(
+      "invalid_request",
+      "Cell steps are only allowed first in grid paths."
+    )
+  }
   .jdv_fields(step, c("type", "index", "name"), "type")
   type <- query_string(step$type, 16L)
   if (identical(type, "index")) {
@@ -446,7 +452,8 @@
     }
     child <- get(id, envir = .jdv_state$entries, inherits = FALSE)
     if (
-      !identical(child$parent_entry, entry) ||
+      isTRUE(child$closed) ||
+        !identical(child$parent_entry, entry) ||
         !identical(child$parent_generation, entry$generation)
     ) {
       next
@@ -504,7 +511,10 @@
     if (!.jdv_tree_entry_is_current(parent)) {
       query_error("view_not_found", "Parent view is no longer active.")
     }
-    if (.jdv_tree_descendant_count(parent) >= .jdv_tree_children_limit) {
+    if (
+      .jdv_tree_descendant_count(.jdv_tree_lineage_root(parent)) >=
+        .jdv_tree_children_limit
+    ) {
       query_error(
         "limit_exceeded",
         "Parent view already has the maximum number of children."
@@ -596,7 +606,8 @@
     if (
       !.jdv_tree_entry_is_current(parent) ||
         !identical(parent$generation, entry$parent_generation) ||
-        .jdv_tree_descendant_count(parent) >= .jdv_tree_children_limit
+        .jdv_tree_descendant_count(.jdv_tree_lineage_root(parent)) >=
+          .jdv_tree_children_limit
     ) {
       .jdv_close_internal(id, expected = entry)
       query_error(
@@ -624,7 +635,10 @@
   if (!.jdv_tree_entry_is_current(parent)) {
     query_error("view_not_found", "Parent view is no longer active.")
   }
-  if (.jdv_tree_descendant_count(parent) >= .jdv_tree_children_limit) {
+  if (
+    .jdv_tree_descendant_count(.jdv_tree_lineage_root(parent)) >=
+      .jdv_tree_children_limit
+  ) {
     query_error(
       "limit_exceeded",
       "Parent view already has the maximum number of children."
@@ -632,7 +646,8 @@
   }
   source <- jdv_source(x)
   if (identical(source$kind, "tree")) {
-    return(.jdv_tree_register(source$data, parent = parent))
+    registered <- .jdv_tree_register(source$data, parent = parent)
+    return(.jdv_tree_restore_notifications(registered))
   }
 
   old_pins <- .jdv_state$eviction_pins
@@ -642,7 +657,7 @@
     cursor <- cursor$parent_entry
   }
   on.exit(.jdv_state$eviction_pins <- old_pins, add = TRUE)
-  registered <- jdv_register(x)
+  registered <- .jdv_tree_restore_notifications(jdv_register(x))
   child <- get(registered$id, envir = .jdv_state$entries, inherits = FALSE)
   committed <- FALSE
   on.exit(
@@ -651,7 +666,8 @@
   )
   if (
     !.jdv_tree_entry_is_current(parent) ||
-      .jdv_tree_descendant_count(parent) >= .jdv_tree_children_limit
+      .jdv_tree_descendant_count(.jdv_tree_lineage_root(parent)) >=
+        .jdv_tree_children_limit
   ) {
     query_error(
       "view_not_found",
@@ -682,4 +698,28 @@
   parent$children <- c(parent$children, child$id)
   committed <- TRUE
   registered
+}
+
+# Child RPC responses carry descriptors separately from lifecycle notifications.
+.jdv_tree_restore_notifications <- function(registered) {
+  .jdv_state$outbox <- c(as.list(registered$notifications), .jdv_state$outbox)
+  registered$notifications <- character()
+  registered
+}
+
+.jdv_tree_lineage_root <- function(entry) {
+  cursor <- entry
+  repeat {
+    if (!.jdv_tree_entry_is_current(cursor)) {
+      query_error("view_not_found", "Parent lineage is no longer active.")
+    }
+    parent <- cursor$parent_entry
+    if (is.null(parent)) {
+      return(cursor)
+    }
+    if (!identical(cursor$parent_generation, parent$generation)) {
+      query_error("stale_generation", "Parent lineage generation changed.")
+    }
+    cursor <- parent
+  }
 }

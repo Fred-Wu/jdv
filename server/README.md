@@ -1,9 +1,9 @@
 # jdv reference server
 
-The Deno reference server connects to R over a local newline-delimited JSON
-transport and serves the browser viewer from `web/`. Project files are
-distributed under [LICENSE.md](LICENSE.md). The viewer also vendors Tabulator
-6.5.0 under its MIT license; see `web/vendor/TABULATOR-LICENSE.txt`.
+The Deno reference server connects to R over a local JSONL transport and serves
+the browser viewer from `web/`. Project files are distributed under
+[LICENSE.md](LICENSE.md). The viewer also vendors Tabulator 6.5.0 under its MIT
+license; see `web/vendor/TABULATOR-LICENSE.txt`.
 
 ## Start from a URL
 
@@ -66,12 +66,17 @@ Send requests with a unique string id per WebSocket client and session:
 ```
 
 The server accepts `table/rows`, `view/schema`, `object/children`,
-`object/open`, and `view/close`. Tree requests carry the view generation and a
-typed path rooted at that view. Object child pages are capped at 500 entries;
-paths are capped at 32 steps. Opening a child registers a captured value as a
-new view. Closing a child releases that view without closing its parent.
-Responses use `type: "response"` and carry the original client id. A `busy`
-event is informational and does not cancel the request. A client may send
+`object/open`, and `view/close`. Object requests carry the view generation and a
+typed path rooted at that view. `object/children` is tree-only. Grid
+`object/open` paths start with `{"kind":"cell","row_index":205,"column":2}`: the
+row is the original one-based R index and the column is its zero-based schema
+position. Optional suffix steps use tree path forms. The column must have
+`drillable: true`, and the grid's `capabilities.children` must be true. Object
+child pages are capped at 500 entries; paths are capped at 32 steps. Opening a
+child registers a captured value as a new view. Closing a child releases that
+view without closing its parent. Responses use `type: "response"` and carry the
+original client id. A `busy` event is informational and does not cancel the
+request. A client may send
 `{"type":"cancel","id":"page-1","session":"r-1234-1"}`; it is forwarded as an R
 `cancel` notification when the request was already sent. Unsent `table/rows` and
 `object/children` requests use separate coalescing rules. For the same client,
@@ -81,7 +86,7 @@ new request with the same full typed path; a different path stays in its own
 lane. A request already sent to R is allowed to finish; later requests in the
 same lane wait behind it.
 
-Browser WebSocket input frames are limited to 64 KiB. Incoming R NDJSON frames
+Browser WebSocket input frames are limited to 64 KiB. Incoming R JSONL frames
 are limited to 10 MiB.
 
 Each R hello must include positive integer limits for received frames and bytes,
@@ -112,7 +117,7 @@ when started by URL.
 
 ```sh
 deno fmt --check server
-deno lint --ignore=server/web/vendor/tabulator.min.js --ignore=server/web/vendor/tabulator.min.css server
+deno lint --ignore=server/web/vendor/tabulator.min.js,server/web/vendor/tabulator.min.css server
 deno check server/main.ts
 deno test -A server/tests
 ```
@@ -132,17 +137,29 @@ Select the installed package explicitly with
 The Unix socket, HTTP origin checks, discovery, and R relay tests run on Linux.
 The Windows named-pipe listener uses the built-in Node compatibility API but has
 not been exercised on a Windows host. The viewer lists active R sessions, grid
-views, and object trees. Tree child values can be opened as grid views; closing
-a child releases it while keeping its parent available. Snapshot queries run in
-the browser from the cached payload; Paged queries use the WebSocket request
-path. Sorting and filtering are translated to the shared query semantics, and
-remote pagination fills a requested page if R reduces an individual response to
-fit its output budget. Wide tables keep all schema entries but request only a
-fixed width viewport column window (up to 256 columns) as the user scrolls. The
-viewer requires datetime filter values to include `Z` or a numeric timezone
-offset in both modes. The R request contract can interpret offset-free datetimes
-using the session timezone, but the viewer applies the same explicit input rule
-to Snapshot and Paged tables because it cannot infer that timezone from a cached
+views, and object trees. Tree child values and drillable grid cells can be
+opened as independent grid or tree views; closing a child releases it while
+keeping its parent available. Grid Open buttons are shown only for columns
+marked `drillable`: unclassed, `AsIs`, or `vctrs_list_of` list columns,
+data-frame columns, and matrix columns. Record columns, `POSIXlt`, other classed
+lists, and atomic columns do not expose cell controls. The UI always sends the
+original R row index after sorting, filtering, or paging. The view breadcrumb
+restores the parent's query, page, and horizontal scroll, or its object path and
+child-page offset.
+
+A child open waiting for R is shown separately from page loading. Snapshot sort,
+filter, and page changes keep working without canceling that original cell
+request. Its child opens automatically when R handles it at the prompt, provided
+the same parent view and generation remain selected. Snapshot queries run in the
+browser from the cached payload; Paged queries use the WebSocket request path.
+Sorting and filtering are translated to the shared query semantics, and remote
+pagination fills a requested page if R reduces an individual response to fit its
+output budget. Wide tables keep all schema entries but request only a fixed
+width viewport column window (up to 256 columns) as the user scrolls. The viewer
+requires datetime filter values to include `Z` or a numeric timezone offset in
+both modes. The R request contract can interpret offset-free datetimes using the
+session timezone, but the viewer applies the same explicit input rule to
+Snapshot and Paged tables because it cannot infer that timezone from a cached
 Snapshot.
 
 ## Real R end-to-end tests

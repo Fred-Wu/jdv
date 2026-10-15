@@ -1505,3 +1505,289 @@ function gridCapabilities() {
     children: false,
   };
 }
+
+Deno.test({
+  name: "cell open survives Snapshot queries and restores its parent state",
+  ignore: !browserExecutable,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const playwrightModule = "npm:playwright@1.56.1";
+    const { chromium } = await import(playwrightModule);
+    const cacheDir = await Deno.makeTempDir({ prefix: "jdv-cell-browser-" });
+    const server = await startServer({ mode: "tcp", httpPort: 0, cacheDir });
+    const connection = await connectR(server.socketPath);
+    const values = Array.from({ length: 449 }, (_, index) => index + 1);
+    const columns = Array.from({ length: 12 }, (_, position) => ({
+      position,
+      name: position === 2
+        ? "<img src=x onerror=alert(1)>"
+        : `column-${position}`,
+      type: position === 2 || position === 3 ? "list" : "integer",
+      sortable: position === 0,
+      filterable: position === 0,
+      drillable: position === 2,
+    }));
+    await writeFrame(connection, {
+      method: "hello",
+      params: {
+        protocol: 1,
+        session: "r-86-1",
+        limits: {
+          max_receive_frames: 4096,
+          max_receive_bytes: 64 * 1024 * 1024,
+          queue_messages: 256,
+          queue_bytes: 16 * 1024 * 1024,
+          max_request_bytes: 1024 * 1024,
+        },
+      },
+    });
+    await writeFrame(connection, {
+      method: "view/open",
+      params: {
+        view: "cell-parent",
+        generation: 1,
+        kind: "grid",
+        access: "snapshot",
+        encoding: "r-json",
+        mode: "snapshot",
+        title: "Cell parent",
+        nrow: values.length,
+        ncol: columns.length,
+        columns,
+        capabilities: { ...gridCapabilities(), children: true },
+        data: {
+          row_index: values,
+          columns: columns.map((schema) => ({
+            ...(schema.type === "integer" ? { values } : {}),
+            display: values.map((value) =>
+              schema.type === "list"
+                ? `<img src=x> cell-${value}`
+                : String(value)
+            ),
+            ...(schema.sortable ? { sortKey: values } : {}),
+            na: values.map(() => false),
+          })),
+        },
+      },
+    });
+    const frames: Array<Record<string, unknown>> = [];
+    let resolveOpen!: (request: Record<string, unknown>) => void;
+    const opened = new Promise<Record<string, unknown>>((resolve) =>
+      resolveOpen = resolve
+    );
+    const responder = (async () => {
+      for await (const line of readFrames(connection)) {
+        const frame = JSON.parse(line) as Record<string, unknown>;
+        frames.push(frame);
+        if (frame.method === "object/open") resolveOpen(frame);
+        else if (frame.method === "object/children") {
+          const params = frame.params as Record<string, unknown>;
+          await writeFrame(connection, {
+            id: frame.id,
+            result: {
+              ...params,
+              total_children: 1,
+              children: [{
+                index: 1,
+                label: "<img src=x> child",
+                summary: "captured row 1",
+                class: ["list"],
+                has_children: false,
+                viewable: false,
+                path: [{ type: "index", index: 1 }],
+              }],
+            },
+          });
+        }
+      }
+    })();
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    try {
+      browser = await chromium.launch({
+        executablePath: browserExecutable,
+        headless: true,
+        args: ["--no-sandbox"],
+        ...(browserLibraryPath
+          ? {
+            env: {
+              ...Deno.env.toObject(),
+              LD_LIBRARY_PATH: browserLibraryPath,
+            },
+          }
+          : {}),
+      });
+      const page = await browser.newPage({
+        viewport: { width: 1280, height: 1000 },
+      });
+      const errors: string[] = [];
+      page.on("pageerror", (error: Error) => errors.push(error.message));
+      await page.goto(server.url, { waitUntil: "networkidle" });
+      await page.getByRole("button", { name: "Open view", exact: true })
+        .click();
+      await page.waitForSelector(
+        '[data-action="open-cell"][data-row-index="1"][data-column="2"]',
+      );
+      assertEquals(
+        await page.locator('[data-action="open-cell"][data-column="3"]')
+          .count(),
+        0,
+      );
+      assertEquals(await page.locator("#viewer img").count(), 0);
+      await page.locator(
+        '[data-action="open-cell"][data-row-index="1"][data-column="2"]',
+      ).click();
+      const open = await opened;
+      assertEquals((open.params as Record<string, unknown>).path, [{
+        kind: "cell",
+        row_index: 1,
+        column: 2,
+      }]);
+      await page.waitForSelector(
+        '#child-open-status[data-state="waiting"]:not([hidden])',
+      );
+      await page.selectOption("#sort-column", "0");
+      await page.selectOption("#sort-direction", "desc");
+      await page.locator("#sort-add").click();
+      await page.waitForFunction(() =>
+        (globalThis as unknown as { document: BrowserDocument }).document
+          .querySelector('.tabulator-row [tabulator-field="row_index"]')
+          ?.textContent === "449"
+      );
+      await page.selectOption("#filter-column", "0");
+      await page.selectOption("#filter-op", "gt");
+      await page.locator("#filter-value").fill("10");
+      await page.locator("#filter-apply").click();
+      await page.waitForFunction(() =>
+        (globalThis as unknown as { document: BrowserDocument }).document
+          .querySelector("#table-meta")?.textContent?.startsWith(
+            "439 of 449 rows",
+          )
+      );
+      await clickNextPage(page);
+      await page.waitForFunction(() =>
+        (globalThis as unknown as { document: BrowserDocument }).document
+          .querySelector('.tabulator-row [tabulator-field="row_index"]')
+          ?.textContent === "249"
+      );
+      await page.locator("#column-viewport").evaluate(
+        (element: BrowserElement) => {
+          element.scrollLeft = 540;
+        },
+      );
+      await page.waitForFunction(() =>
+        !(globalThis as unknown as { document: BrowserDocument }).document
+          .querySelector("#column-window")?.className.includes(
+            "is-loading-window",
+          )
+      );
+      const scrollLeft = await page.locator("#column-viewport").evaluate((
+        element: BrowserElement,
+      ) => element.scrollLeft);
+      assert(scrollLeft > 0);
+      assertEquals(
+        await page.locator(
+          '#child-open-status[data-state="waiting"]:not([hidden])',
+        ).count(),
+        1,
+      );
+      assertEquals(
+        frames.filter((frame) => frame.method === "table/rows").length,
+        0,
+      );
+      assertEquals(
+        frames.filter((frame) => frame.method === "cancel").length,
+        0,
+      );
+      await writeFrame(connection, {
+        id: open.id,
+        result: {
+          view: "cell-child",
+          generation: 1,
+          parent: "cell-parent",
+          kind: "tree",
+          access: "random",
+          encoding: "r-json",
+          title: "Captured row 1",
+          path: [],
+          capabilities: {
+            seek: true,
+            sort: false,
+            filter: false,
+            known_total: true,
+            next: false,
+            children: true,
+          },
+        },
+      });
+      await page.waitForFunction(() =>
+        (globalThis as unknown as { document: BrowserDocument }).document
+          .querySelector("#tree-title")?.textContent === "Captured row 1"
+      );
+      await page.waitForSelector("#tree-child-list li");
+      assertEquals(await page.locator("#tree-child-list img").count(), 0);
+      await page.locator('#view-breadcrumb [data-view-depth="0"]').click();
+      await page.waitForFunction(() =>
+        (globalThis as unknown as { document: BrowserDocument }).document
+          .querySelector('.tabulator-row [tabulator-field="row_index"]')
+          ?.textContent === "249"
+      );
+      assertEquals(await page.locator("#filter-value").inputValue(), "10");
+      assertEquals(await page.locator("#filter-op").inputValue(), "gt");
+      assert(
+        (await page.locator("#sort-list").textContent())?.includes(
+          "descending",
+        ),
+      );
+      assertEquals(
+        await page.locator("#column-viewport").evaluate((
+          element: BrowserElement,
+        ) => element.scrollLeft),
+        scrollLeft,
+      );
+      assertEquals(
+        frames.filter((frame) => frame.method === "object/open").length,
+        1,
+      );
+      assertEquals(
+        frames.filter((frame) => frame.method === "table/rows").length,
+        0,
+      );
+      const sortedOpen = new Promise<Record<string, unknown>>((resolve) =>
+        resolveOpen = resolve
+      );
+      await page.locator("#column-viewport").evaluate(
+        (element: BrowserElement) => {
+          element.scrollLeft = 0;
+        },
+      );
+      await page.waitForSelector(
+        '[data-action="open-cell"][data-row-index="249"][data-column="2"]',
+      );
+      await page.locator(
+        '[data-action="open-cell"][data-row-index="249"][data-column="2"]',
+      ).click();
+      const secondOpen = await sortedOpen;
+      assertEquals((secondOpen.params as Record<string, unknown>).path, [{
+        kind: "cell",
+        row_index: 249,
+        column: 2,
+      }]);
+      await writeFrame(connection, {
+        id: secondOpen.id,
+        error: { code: "unavailable", message: "<img src=x> unavailable cell" },
+      });
+      await page.waitForSelector(
+        '#child-open-status[data-state="error"]:not([hidden])',
+      );
+      assertEquals(await page.locator("#child-open-status img").count(), 0);
+      assertEquals(errors, []);
+    } finally {
+      await browser?.close();
+      await server.close();
+      connection.close();
+      await responder;
+      await Deno.remove(cacheDir, { recursive: true });
+    }
+  },
+});
