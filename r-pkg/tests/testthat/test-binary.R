@@ -113,6 +113,7 @@ test_that("native binary callbacks validate before sending and recover for the n
   skip_if(!nzchar(python), "python3 is required for the local binary peer")
   fixture_dir <- tempfile("jdv-binary-fixture-")
   dir.create(fixture_dir)
+  fixture_dir <- normalizePath(fixture_dir, winslash = "/", mustWork = TRUE)
   fixture_source <- file.path(fixture_dir, "binaryfixture.c")
   file.copy(test_path("fixtures", "binaryfixture.c"), fixture_source)
   fixture_path <- file.path(
@@ -303,98 +304,103 @@ test_that("native binary callbacks validate before sending and recover for the n
   expect_identical(lifetimes$collected, lifetimes$created)
 })
 
-test_that(
-  "partial binary sends close the connection without inserting a JSON error",
-  {
-    skip_if_not_installed("callr")
-    python <- Sys.which("python3")
-    skip_if(!nzchar(python), "python3 is required for the local binary peer")
-    for (mode in c("timeout", "disconnect")) {
-      ready <- tempfile("jdv-binary-send-ready-")
-      result <- tempfile("jdv-binary-send-result-")
-      host <- callr::r_bg(
-        function(python, script, ready, result, mode) {
-          output <- system2(
-            python,
-            c(shQuote(script), shQuote(ready), shQuote(result), mode),
-            stdout = TRUE,
-            stderr = TRUE
-          )
-          if (!is.null(attr(output, "status"))) {
-            stop(paste(output, collapse = "\n"))
-          }
-        },
-        args = list(
+test_that("bounded binary backpressure and peer disconnect terminate without JSON in the body", {
+  skip_if_not_installed("callr")
+  python <- Sys.which("python3")
+  skip_if(!nzchar(python), "python3 is required for the local binary peer")
+  for (mode in c("timeout", "disconnect")) {
+    ready <- tempfile("jdv-binary-send-ready-")
+    result <- tempfile("jdv-binary-send-result-")
+    host <- callr::r_bg(
+      function(python, script, ready, result, mode) {
+        output <- system2(
           python,
-          test_path("fixtures", "binary-send-failure.py"),
-          ready,
-          result,
-          mode
-        ),
-        supervise = TRUE
-      )
-      on.exit(
-        {
-          try(.Call(C_jdv_transport_close), silent = TRUE)
-          try(.Call(C_jdv_transport_cleanup), silent = TRUE)
-          if (host$is_alive()) {
-            host$kill()
-          }
-          unlink(c(ready, result))
-        },
-        add = TRUE
-      )
-      deadline <- Sys.time() + 10
-      while (!file.exists(ready) && Sys.time() < deadline) {
-        Sys.sleep(0.01)
-      }
-      expect_true(file.exists(ready))
-      payload <- raw(9 * 1024^2)
-      payload[] <- as.raw(120)
-      callback <- function(message) {
-        request <- .jdv_json_parse(message)
-        value <- .jdv_binary_result(
-          list(
-            view = request$params$view,
-            generation = request$params$generation
-          ),
-          payload
+          c(shQuote(script), shQuote(ready), shQuote(result), mode),
+          stdout = TRUE,
+          stderr = TRUE
         )
-        .jdv_binary_packet(value, request, request$id, character())
-      }
-      disconnected <- 0L
-      limits <- .jdv_transport_limits()
-      limits$send_timeout_ms <- 100L
-      .Call(
-        C_jdv_transport_connect,
-        readLines(ready, warn = FALSE),
-        callback,
-        function() disconnected <<- disconnected + 1L,
-        limits
-      )
-      deadline <- Sys.time() + 15
-      while (!file.exists(result) && Sys.time() < deadline) {
-        .Call(C_jdv_transport_poll)
-        Sys.sleep(0.01)
-      }
-      expect_true(file.exists(result))
-      .Call(C_jdv_transport_poll)
-      .Call(C_jdv_transport_cleanup)
-      expect_false(.Call(C_jdv_transport_status)$connected)
-      expect_identical(disconnected, 1L)
-      if (file.exists(result)) {
-        received <- jsonlite::fromJSON(result)
-        expect_true(received$partial)
-        expect_true(received$only_body)
-        expect_gt(received$received, 0)
-        expect_lt(received$received, received$declared)
-      }
-      host$wait(5000)
-      expect_no_error(host$get_result())
-      unlink(c(ready, result))
+        if (!is.null(attr(output, "status"))) {
+          stop(paste(output, collapse = "\n"))
+        }
+      },
+      args = list(
+        python,
+        test_path("fixtures", "binary-send-failure.py"),
+        ready,
+        result,
+        mode
+      ),
+      supervise = TRUE
+    )
+    on.exit(
+      {
+        try(.Call(C_jdv_transport_close), silent = TRUE)
+        try(.Call(C_jdv_transport_cleanup), silent = TRUE)
+        if (host$is_alive()) {
+          host$kill()
+        }
+        unlink(c(ready, result, paste0(result, ".sender-closed")))
+      },
+      add = TRUE
+    )
+    deadline <- Sys.time() + 10
+    while (!file.exists(ready) && Sys.time() < deadline) {
+      Sys.sleep(0.01)
     }
+    expect_true(file.exists(ready))
+    payload <- raw(9 * 1024^2)
+    payload[] <- as.raw(120)
+    callback <- function(message) {
+      request <- .jdv_json_parse(message)
+      value <- .jdv_binary_result(
+        list(
+          view = request$params$view,
+          generation = request$params$generation
+        ),
+        payload
+      )
+      .jdv_binary_packet(value, request, request$id, character())
+    }
+    disconnected <- 0L
+    limits <- .jdv_transport_limits()
+    limits$send_timeout_ms <- 100L
+    .Call(
+      C_jdv_transport_connect,
+      readLines(ready, warn = FALSE),
+      callback,
+      function() disconnected <<- disconnected + 1L,
+      limits
+    )
+    deadline <- Sys.time() + 15
+    while (!file.exists(result) && Sys.time() < deadline) {
+      .Call(C_jdv_transport_poll)
+      if (mode == "timeout" && !.Call(C_jdv_transport_status)$connected) {
+        writeLines("closed", paste0(result, ".sender-closed"))
+      }
+      Sys.sleep(0.01)
+    }
+    expect_true(file.exists(result))
+    .Call(C_jdv_transport_poll)
+    .Call(C_jdv_transport_cleanup)
+    expect_false(.Call(C_jdv_transport_status)$connected)
+    expect_identical(disconnected, 1L)
+    if (file.exists(result)) {
+      received <- jsonlite::fromJSON(result)
+      expect_true(received$only_body)
+      expect_gt(received$received, 0)
+      if (mode == "timeout") {
+        expect_true(received$sender_closed)
+        expect_lt(received$complete_frames, received$requested_frames)
+      } else {
+        expect_true(received$partial)
+        expect_identical(received$received, 1024L)
+      }
+    }
+    host$wait(5000)
+    expect_no_error(host$get_result())
+    unlink(c(ready, result, paste0(result, ".sender-closed")))
   }
-)
+})
 
 test_that(
   "the real R callback flushes lifecycle events before binary and later JSONL",

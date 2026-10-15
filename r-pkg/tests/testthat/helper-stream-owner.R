@@ -4,9 +4,14 @@ with_arrow_owner <- function(code) {
   skip_if_not_installed("nanoarrow")
   work <- tempfile("jdv-owner-fixture-")
   dir.create(work)
+  work <- normalizePath(work, winslash = "/", mustWork = TRUE)
   on.exit(unlink(work, recursive = TRUE), add = TRUE)
   file.copy(test_path("fixtures", "ownerfixture.c"), work)
-  include <- system.file("include", package = "nanoarrow")
+  include <- normalizePath(
+    system.file("include", package = "nanoarrow"),
+    winslash = "/",
+    mustWork = TRUE
+  )
   old <- Sys.getenv("PKG_CPPFLAGS", unset = NA_character_)
   on.exit(
     if (is.na(old)) {
