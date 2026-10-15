@@ -38,7 +38,7 @@ class ReadConnection implements ByteConnection {
   }
 }
 
-Deno.test("R peer parses NDJSON split across chunks and serializes writes", async () => {
+Deno.test("R peer parses JSON Lines (JSONL) frames split across chunks and serializes writes", async () => {
   const connection = new ReadConnection();
   const messages: JsonObject[] = [];
   let closes = 0;

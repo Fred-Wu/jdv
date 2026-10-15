@@ -709,7 +709,7 @@ async function forward(
             if (value && typeof value === "object") log.add(direction, value);
           } catch {
             throw new Error(
-              `Invalid NDJSON frame through the test proxy: ${
+              `Invalid JSONL frame through the test proxy: ${
                 line.slice(0, 120)
               }`,
             );

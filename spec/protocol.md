@@ -468,20 +468,20 @@ unsupported reason.
 
 ## Methods
 
-| Method            | Direction        | Kind         | Result                                                                              |
-| ----------------- | ---------------- | ------------ | ----------------------------------------------------------------------------------- |
-| `view/open`       | R/host to viewer | Notification | Descriptor and, for Snapshot, all column payloads. Returned by `jdv_register()`.    |
-| `view/schema`     | Host to R        | Request      | Current dimensions and schema.                                                      |
-| `stream/next`     | Host to R        | Request      | One forward-only Arrow IPC page and cursor metadata.                                |
-| `table/rows`      | Host to R        | Request      | One selected page from a Paged view.                                                |
-| `object/children` | Host to R        | Request      | One page of children at a typed object path.                                        |
-| `object/open`     | Host to R        | Request      | Registers the captured value at a typed path as a child view.                       |
-| `view/close`      | Host to R        | Request      | Closes one view generation.                                                         |
-| `view/closed`     | R to host        | Notification | Removes a closed, replaced, or evicted generation from the host cache.              |
-| `hello`           | R to host        | Notification | Announces protocol and runtime versions for a new connection.                       |
-| `wake`            | Host to R        | Notification | No result; asks the event loop to check its execution gate again.                   |
-| `cancel`          | Host to R        | Notification | Names pending work for the local queue to cancel.                                   |
-| `ack`             | R to host        | Notification | Cumulatively acknowledges complete host-to-R NDJSON frames read on this connection. |
+| Method            | Direction        | Kind         | Result                                                                             |
+| ----------------- | ---------------- | ------------ | ---------------------------------------------------------------------------------- |
+| `view/open`       | R/host to viewer | Notification | Descriptor and, for Snapshot, all column payloads. Returned by `jdv_register()`.   |
+| `view/schema`     | Host to R        | Request      | Current dimensions and schema.                                                     |
+| `stream/next`     | Host to R        | Request      | One forward-only Arrow IPC page and cursor metadata.                               |
+| `table/rows`      | Host to R        | Request      | One selected page from a Paged view.                                               |
+| `object/children` | Host to R        | Request      | One page of children at a typed object path.                                       |
+| `object/open`     | Host to R        | Request      | Registers the captured value at a typed path as a child view.                      |
+| `view/close`      | Host to R        | Request      | Closes one view generation.                                                        |
+| `view/closed`     | R to host        | Notification | Removes a closed, replaced, or evicted generation from the host cache.             |
+| `hello`           | R to host        | Notification | Announces protocol and runtime versions for a new connection.                      |
+| `wake`            | Host to R        | Notification | No result; asks the event loop to check its execution gate again.                  |
+| `cancel`          | Host to R        | Notification | Names pending work for the local queue to cancel.                                  |
+| `ack`             | R to host        | Notification | Cumulatively acknowledges complete host-to-R JSONL frames read on this connection. |
 
 ### `view/schema`
 
@@ -723,7 +723,7 @@ change pending work.
 
 The R transport sends `{"method":"ack","params":{"frames":N}}` at the end of a
 receive callback after it has read at least one complete frame. `N` is the
-cumulative number of complete host-to-R NDJSON frames read on that connection,
+cumulative number of complete host-to-R JSONL frames read on that connection,
 including `wake`, `cancel`, malformed, and rejected frames. It is a safe integer
 and never decreases. The host releases frame and byte credit through that
 cumulative frame boundary. The acknowledgement is sent after the receive loop,

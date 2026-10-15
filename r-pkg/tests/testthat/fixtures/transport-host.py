@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small Unix-domain NDJSON peer used by the R transport integration test."""
+"""Small Unix-domain JSON Lines (JSONL) peer used by the R transport integration test."""
 
 import argparse
 import json
@@ -38,7 +38,7 @@ def read_message_timeout(connection, stream, timeout):
     return json.loads(line.decode("utf-8"))
 
 
-class NDJSONStream:
+class JSONLStream:
     def __init__(self, connection):
         self.connection = connection
         self.buffer = bytearray()
@@ -114,7 +114,7 @@ def main():
     with server:
         connection, _ = server.accept()
         with connection:
-            stream = NDJSONStream(connection)
+            stream = JSONLStream(connection)
             if args.scenario == "silent":
                 time.sleep(2)
                 return

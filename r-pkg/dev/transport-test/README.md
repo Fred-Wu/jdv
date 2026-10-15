@@ -1,12 +1,12 @@
 # Local transport tests
 
 The transport integration tests run the package against a callr-managed local
-NDJSON mock host. The mock uses a Unix-domain socket to verify `hello`,
-`view/open`, host-initiated requests, partial and maximum-sized frames,
+JSON Lines (JSONL) mock host. The mock uses a Unix-domain socket to verify
+`hello`, `view/open`, host-initiated requests, partial and maximum-sized frames,
 multi-megabyte output, cancellation and deadline handling, invalid control
-messages, duplicate request ids, EOF cleanup, bounded sends, `view/closed`,
-and normal transport shutdown. The fixture lives under
-`tests/testthat/fixtures` so it is available in source and installed test runs.
+messages, duplicate request ids, EOF cleanup, bounded sends, `view/closed`, and
+normal transport shutdown. The fixture lives under `tests/testthat/fixtures` so
+it is available in source and installed test runs.
 
 Run the focused suite from the repository root with:
 

@@ -1,11 +1,11 @@
 # jdv reference server
 
-The Deno reference server connects to R over a local JSONL transport and serves
-the browser viewer from `web/`. Project files are distributed under
-[LICENSE.md](LICENSE.md). The viewer also vendors Tabulator 6.5.0 under its MIT
-license; see `web/vendor/TABULATOR-LICENSE.txt`. Apache Arrow JS 21.2.0 is
-vendored under Apache-2.0 for planned binary decoding, with notices and
-provenance in `web/vendor/`; it is not yet loaded by the viewer.
+The Deno reference server connects to R over a local JSON Lines (JSONL)
+transport and serves the browser viewer from `web/`. Project files are
+distributed under [LICENSE.md](LICENSE.md). The viewer also vendors Tabulator
+6.5.0 under its MIT license; see `web/vendor/TABULATOR-LICENSE.txt`. Apache
+Arrow JS 21.2.0 is vendored under Apache-2.0 for planned binary decoding, with
+notices and provenance in `web/vendor/`; it is not yet loaded by the viewer.
 
 ## Start from a URL
 

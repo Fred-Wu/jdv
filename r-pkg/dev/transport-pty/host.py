@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded local NDJSON host for the interactive transport PTY harness."""
+"""Bounded local JSON Lines (JSONL) host for the interactive transport PTY harness."""
 
 import argparse
 import json
