@@ -6,6 +6,14 @@ name: Test server
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
   test:
     name: Deno and R integration (${{ matrix.os }})
@@ -17,9 +25,6 @@ jobs:
           - ubuntu-latest
           - windows-latest
           - macos-latest
-    env:
-      JDV_TEST_R_LIB: ${{ runner.temp }}/jdv-r-library
-      R_LIBS_USER: ${{ runner.temp }}/jdv-r-library
     steps:
       - uses: actions/checkout@v6
 
@@ -33,11 +38,25 @@ jobs:
           use-public-rspm: true
           extra-repositories: https://community.r-multiverse.org
 
+      - name: Prepare temporary R library
+        run: |
+          library_path="$RUNNER_TEMP/jdv-r-library"
+          mkdir -p "$library_path"
+          {
+            printf 'JDV_TEST_R_LIB=%s\n' "$library_path"
+            printf 'R_LIBS_USER=%s\n' "$library_path"
+          } >> "$GITHUB_ENV"
+
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           working-directory: r-pkg
           needs: install
-          extra-packages: any::arrow, any::nanoarrow, any::jsonlite, any::bit64, any::polars
+          extra-packages: |
+            any::arrow
+            any::nanoarrow
+            any::jsonlite
+            any::bit64
+            any::polars
 
       - name: Install jdv into a temporary library
         shell: bash
