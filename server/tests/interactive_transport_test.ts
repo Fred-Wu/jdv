@@ -652,6 +652,10 @@ Deno.test({
             })
           }.`,
         );
+        // TODO: arf headless does not register a ReadConsole callback, so
+        // browser input returns EOF (confirmed in v0.6.0 through
+        // v0.7.0-alpha.1). Restore browser()-held verification on Windows
+        // once arf fixes this.
         heldKind = "sleep-frame";
         const sleepHoldMarkers = await markerPath();
         markerDirs.push(sleepHoldMarkers.directory);
