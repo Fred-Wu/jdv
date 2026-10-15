@@ -113,3 +113,81 @@ Deno.test("cleanup continues after a failure and preserves the original error", 
   assertEquals(caught instanceof AggregateError, true);
   assertEquals(visited, ["cache"]);
 });
+
+Deno.test("R cleanup escalates to SIGKILL and waits for confirmed exit", async () => {
+  const signals: Array<Deno.Signal | number | undefined> = [];
+  let complete!: (status: Deno.CommandStatus) => void;
+  const status = new Promise<Deno.CommandStatus>((resolve) => {
+    complete = resolve;
+  });
+  await stopRChild(
+    {
+      status,
+      kill(signal) {
+        signals.push(signal);
+        if (signal === "SIGKILL") {
+          complete({
+            code: 137,
+            success: false,
+            signal: "SIGKILL",
+          });
+        }
+      },
+    },
+    false,
+    1,
+  );
+  assertEquals(signals, ["SIGTERM", "SIGKILL"]);
+});
+
+Deno.test("R cleanup fails within a bound when forced termination remains unconfirmed", async () => {
+  const signals: Array<Deno.Signal | number | undefined> = [];
+  let caught: unknown;
+  try {
+    await stopRChild(
+      {
+        status: new Promise(() => {}),
+        kill(signal) {
+          signals.push(signal);
+        },
+      },
+      false,
+      1,
+    );
+  } catch (error) {
+    caught = error;
+  }
+  assertEquals(signals, ["SIGTERM", "SIGKILL"]);
+  assertEquals(caught instanceof AggregateError, true);
+  if (caught instanceof AggregateError) {
+    assertEquals(caught.errors.length, 2);
+    assertEquals(String(caught.errors[1]).includes("after SIGKILL"), true);
+  }
+});
+
+Deno.test("R cleanup retains an unexpected hard-kill error after confirming exit", async () => {
+  const denied = new Error("Unexpected hard-kill failure");
+  let complete!: (status: Deno.CommandStatus) => void;
+  const status = new Promise<Deno.CommandStatus>((resolve) => {
+    complete = resolve;
+  });
+  let caught: unknown;
+  try {
+    await stopRChild(
+      {
+        status,
+        kill(signal) {
+          if (signal === "SIGKILL") {
+            complete({ code: 0, success: true, signal: null });
+            throw denied;
+          }
+        },
+      },
+      false,
+      1,
+    );
+  } catch (error) {
+    caught = error;
+  }
+  assertEquals(caught === denied, true);
+});

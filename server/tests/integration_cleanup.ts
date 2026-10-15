@@ -91,19 +91,27 @@ function listenerClosed(address: string): Promise<boolean> {
   });
 }
 
+function exitRace(error: unknown): boolean {
+  return error instanceof Deno.errors.NotFound ||
+    (error instanceof TypeError &&
+      /already (terminated|exited)/i.test(error.message));
+}
+
+class CleanupTimeout extends Error {
+  override name = "IntegrationCleanupTimeout";
+}
+
 export async function stopRChild(
   child: Pick<Deno.ChildProcess, "kill" | "status">,
   exited: boolean,
   timeoutMs = 5_000,
 ): Promise<void> {
-  let killError: unknown;
-  let killFailed = false;
+  const killErrors: unknown[] = [];
   if (!exited) {
     try {
       child.kill("SIGTERM");
     } catch (error) {
-      killFailed = true;
-      killError = error;
+      killErrors.push(error);
     }
   }
   try {
@@ -113,22 +121,43 @@ export async function stopRChild(
       "R did not exit during integration cleanup.",
     );
   } catch (error) {
-    if (killFailed) {
+    if (!(error instanceof CleanupTimeout)) {
+      if (killErrors.length) {
+        throw new AggregateError(
+          [...killErrors, error],
+          "R termination and exit confirmation failed.",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+    // Do not proceed from an unconfirmed soft shutdown without attempting a hard stop.
+    try {
+      child.kill("SIGKILL");
+    } catch (killError) {
+      killErrors.push(killError);
+    }
+    try {
+      await cleanupDeadline(
+        child.status,
+        timeoutMs,
+        "R did not exit after SIGKILL during integration cleanup.",
+      );
+    } catch (hardError) {
       throw new AggregateError(
-        [killError, error],
-        "R termination and exit confirmation failed.",
-        { cause: killError },
+        [...killErrors, error, hardError],
+        "R remained unconfirmed after forced termination.",
+        { cause: error },
       );
     }
-    throw error;
   }
-  // A failed kill is benign only when exit is confirmed and the error denotes an exit race.
-  if (
-    killFailed && !(killError instanceof Deno.errors.NotFound) &&
-    !(killError instanceof TypeError &&
-      /already (terminated|exited)/i.test(killError.message))
-  ) {
-    throw killError;
+  // Exit-race errors are benign only after exit is confirmed; retain all other errors.
+  const unexpected = killErrors.filter((error) => !exitRace(error));
+  if (unexpected.length === 1) throw unexpected[0];
+  if (unexpected.length > 1) {
+    throw new AggregateError(unexpected, "R termination reported errors.", {
+      cause: unexpected[0],
+    });
   }
 }
 
@@ -163,7 +192,10 @@ export async function cleanupDeadline<T>(
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        timer = setTimeout(
+          () => reject(new CleanupTimeout(message)),
+          timeoutMs,
+        );
       }),
     ]);
   } finally {
