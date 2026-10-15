@@ -1,4 +1,9 @@
 const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_BINARY_HEADER_BYTES = 64 * 1024;
+const MAX_BINARY_FRAME_BYTES = 10 * 1024 * 1024;
+const MAX_BINARY_RAW_BYTES = MAX_BINARY_FRAME_BYTES -
+  MAX_BINARY_HEADER_BYTES - 4;
+const decoder = new TextDecoder("utf-8", { fatal: true });
 
 export function createBrowserTransport(socket, handlers = {}) {
   let nextId = 0;
@@ -10,11 +15,32 @@ export function createBrowserTransport(socket, handlers = {}) {
       return Promise.reject(new Error("The viewer is disconnected."));
     }
     const id = `viewer-${Date.now().toString(36)}-${(++nextId).toString(36)}`;
+    const requestedMaxBytes = params?.max_bytes;
+    if (
+      requestedMaxBytes !== undefined &&
+      (!Number.isSafeInteger(requestedMaxBytes) || requestedMaxBytes < 0)
+    ) {
+      return Promise.reject(
+        new Error("max_bytes must be a non-negative safe integer."),
+      );
+    }
+    const maxBytes = requestedMaxBytes === undefined
+      ? MAX_BINARY_RAW_BYTES
+      : Math.min(requestedMaxBytes, MAX_BINARY_RAW_BYTES);
     const operation = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         finish(id, new Error("The request timed out."), undefined, true);
       }, timeoutMs);
-      pending.set(id, { id, session, method, params, resolve, reject, timer });
+      pending.set(id, {
+        id,
+        session,
+        method,
+        params,
+        maxBytes,
+        resolve,
+        reject,
+        timer,
+      });
       try {
         socket.send(JSON.stringify({
           type: "request",
@@ -43,6 +69,13 @@ export function createBrowserTransport(socket, handlers = {}) {
         ? pending.get(message.id)
         : null;
       if (!item || item.session !== message.session) return;
+      if (message.result?.transfer !== undefined) {
+        finish(
+          item.id,
+          new Error("The binary response used a text WebSocket frame."),
+        );
+        return;
+      }
       if (message.error) {
         const error = new Error(
           message.error.message ?? "The R request failed.",
@@ -70,6 +103,65 @@ export function createBrowserTransport(socket, handlers = {}) {
         );
       finish(item.id, error);
     }
+  }
+
+  function handleBinary(data) {
+    const bytes = data instanceof ArrayBuffer
+      ? new Uint8Array(data)
+      : ArrayBuffer.isView(data)
+      ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+      : null;
+    if (
+      !bytes || bytes.byteLength < 4 ||
+      bytes.byteLength > MAX_BINARY_FRAME_BYTES
+    ) throw new Error("The binary WebSocket frame has an invalid size.");
+    const headerLength = new DataView(
+      bytes.buffer,
+      bytes.byteOffset,
+      4,
+    ).getUint32(0, true);
+    if (
+      headerLength < 1 || headerLength > MAX_BINARY_HEADER_BYTES ||
+      4 + headerLength > bytes.byteLength
+    ) throw new Error("The binary WebSocket header length is invalid.");
+    let message;
+    try {
+      message = JSON.parse(decoder.decode(bytes.subarray(4, 4 + headerLength)));
+    } catch {
+      throw new Error("The binary WebSocket header is invalid JSON or UTF-8.");
+    }
+    if (
+      !message || typeof message !== "object" || Array.isArray(message) ||
+      message.type !== "response" || typeof message.id !== "string" ||
+      typeof message.session !== "string" || !message.result ||
+      typeof message.result !== "object" || Array.isArray(message.result) ||
+      Object.hasOwn(message, "method") || Object.hasOwn(message, "error") ||
+      typeof message.result.view !== "string" ||
+      message.result.view.length === 0 ||
+      !Number.isSafeInteger(message.result.generation) ||
+      message.result.generation < 1 ||
+      message.result.transfer?.encoding !== "arrow-ipc" ||
+      !Number.isSafeInteger(message.result.transfer.byte_length) ||
+      message.result.transfer.byte_length < 0
+    ) throw new Error("The binary WebSocket envelope is invalid.");
+    const body = bytes.subarray(4 + headerLength);
+    if (body.byteLength !== message.result.transfer.byte_length) {
+      throw new Error(
+        "The binary WebSocket body length does not match its envelope.",
+      );
+    }
+    const item = pending.get(message.id);
+    if (!item || item.session !== message.session) return;
+    if (
+      message.result.view !== item.params?.view ||
+      message.result.generation !== item.params?.generation ||
+      body.byteLength > item.maxBytes
+    ) {
+      throw new Error(
+        "The binary response does not match its pending request.",
+      );
+    }
+    finish(item.id, null, { ...message, binary: body });
   }
 
   function cancel(id, reason = "The request is obsolete.") {
@@ -139,6 +231,7 @@ export function createBrowserTransport(socket, handlers = {}) {
   return {
     request,
     handleMessage,
+    handleBinary,
     cancel,
     cancelTable,
     cancelSession,

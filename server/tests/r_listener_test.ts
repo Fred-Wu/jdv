@@ -1,5 +1,10 @@
 import { assertEquals } from "./assert.ts";
-import { type JsonObject, startRPeer } from "../r_listener.ts";
+import { assertStringIncludes } from "./assert.ts";
+import {
+  type JsonObject,
+  MAX_R_BINARY_FRAME_BYTES,
+  startRPeer,
+} from "../r_listener.ts";
 import type { ByteConnection } from "../platform.ts";
 
 class ReadConnection implements ByteConnection {
@@ -84,3 +89,163 @@ Deno.test("a read resolved before peer close does not deliver after close", asyn
   assertEquals(messages, []);
   assertEquals(closes, 1);
 });
+
+Deno.test("R peer delivers opaque binary bodies before parsing the next JSONL frame", async () => {
+  const connection = new ReadConnection();
+  const messages: Array<{ message: JsonObject; body?: Uint8Array }> = [];
+  const peer = startRPeer(
+    connection,
+    (message, body) => messages.push({ message, body }),
+    () => {},
+  );
+  const header = new TextEncoder().encode(
+    `${
+      JSON.stringify({
+        id: "r-1",
+        result: {
+          view: "v-1",
+          generation: 1,
+          transfer: { encoding: "arrow-ipc", byte_length: 5 },
+        },
+        warnings: [],
+      })
+    }\n`,
+  );
+  const body = new Uint8Array([0x00, 0x0a, 0x0d, 0xff, 0x7f]);
+  const next = new TextEncoder().encode(
+    '{"method":"ack","params":{"frames":1}}\n',
+  );
+  connection.push(header);
+  connection.push(body.slice(0, 2));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertEquals(messages, []);
+  connection.push(concatBytes(body.slice(2), next));
+  for (let i = 0; i < 100 && messages.length < 2; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assertEquals(messages[0], {
+    message: {
+      id: "r-1",
+      result: {
+        view: "v-1",
+        generation: 1,
+        transfer: { encoding: "arrow-ipc", byte_length: 5 },
+      },
+      warnings: [],
+    },
+    body,
+  });
+  assertEquals(messages[1]?.message, { method: "ack", params: { frames: 1 } });
+  peer.close();
+});
+
+Deno.test("R peer rejects invalid and oversized binary transfer descriptors", async () => {
+  const validTransfer = { encoding: "arrow-ipc", byte_length: 1 };
+  const malformed = [
+    {
+      id: "r-1",
+      result: {
+        view: "v-1",
+        generation: 1,
+        transfer: { ...validTransfer, encoding: "unknown" },
+      },
+    },
+    {
+      id: "r-1",
+      result: {
+        view: "v-1",
+        generation: 1,
+        transfer: { ...validTransfer, byte_length: -1 },
+      },
+    },
+    {
+      id: "r-1",
+      result: {
+        view: "v-1",
+        generation: 1,
+        transfer: { ...validTransfer, byte_length: Number.MAX_SAFE_INTEGER },
+      },
+    },
+    {
+      id: "r-1",
+      method: "table/rows",
+      result: { view: "v-1", generation: 1, transfer: validTransfer },
+    },
+    {
+      id: "r-1",
+      error: { code: "bad" },
+      result: { view: "v-1", generation: 1, transfer: validTransfer },
+    },
+    { id: "r-1", result: { view: "", generation: 1, transfer: validTransfer } },
+    {
+      id: "r-1",
+      result: { view: "v-1", generation: 0, transfer: validTransfer },
+    },
+  ];
+  for (const message of malformed) {
+    const connection = new ReadConnection();
+    let closes = 0;
+    startRPeer(connection, () => {}, () => closes++);
+    connection.push(new TextEncoder().encode(`${JSON.stringify(message)}\n`));
+    for (let i = 0; i < 100 && !connection.closed; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assertEquals(connection.closed, true);
+    assertEquals(closes, 1);
+  }
+  assertEquals(MAX_R_BINARY_FRAME_BYTES, 10 * 1024 * 1024);
+});
+
+Deno.test("R peer closes on a partial binary body or its absolute timeout", async () => {
+  for (const options of [{ binaryBodyTimeoutMs: 10 }, {}]) {
+    const connection = new ReadConnection();
+    let closeReason: unknown;
+    startRPeer(
+      connection,
+      () => {},
+      (reason) => closeReason = reason,
+      options,
+    );
+    connection.push(new TextEncoder().encode(`${
+      JSON.stringify({
+        id: "r-1",
+        result: {
+          view: "v-1",
+          generation: 1,
+          transfer: { encoding: "arrow-ipc", byte_length: 2 },
+        },
+      })
+    }\n`));
+    connection.push(new Uint8Array([0x01]));
+    if (options.binaryBodyTimeoutMs) {
+      for (let i = 0; i < 100 && !connection.closed; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+    } else {
+      connection.push(null);
+      for (let i = 0; i < 100 && !connection.closed; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+    assertEquals(connection.closed, true);
+    if (!(closeReason instanceof Error)) {
+      throw new Error("Expected a binary close reason.");
+    }
+    assertStringIncludes(
+      closeReason.message,
+      options.binaryBodyTimeoutMs ? "absolute timeout" : "partial",
+    );
+  }
+});
+
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const bytes = new Uint8Array(
+    parts.reduce((total, part) => total + part.length, 0),
+  );
+  let offset = 0;
+  for (const part of parts) {
+    bytes.set(part, offset);
+    offset += part.length;
+  }
+  return bytes;
+}

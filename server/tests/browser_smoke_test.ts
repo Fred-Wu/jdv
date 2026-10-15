@@ -1,6 +1,13 @@
 import { assert, assertEquals } from "./assert.ts";
 import { startServer } from "../main.ts";
 
+type PlaywrightWebSocket = {
+  on(
+    event: "framesent" | "framereceived",
+    listener: (frame: { payload: string | Uint8Array }) => void,
+  ): unknown;
+};
+
 type BrowserElement = {
   clientWidth: number;
   clientHeight: number;
@@ -44,6 +51,8 @@ type BrowserRuntime = {
 
 const browserExecutable = Deno.env.get("JDV_TEST_BROWSER");
 const browserLibraryPath = Deno.env.get("JDV_TEST_BROWSER_LIBS");
+const binaryRLibrary = Deno.env.get("JDV_TEST_BINARY_R_LIB")?.trim() ||
+  Deno.env.get("JDV_TEST_R_LIB")?.trim() || "";
 
 Deno.test({
   name: "browser smoke loads Paged data, queries it, and reaches wide columns",
@@ -82,6 +91,7 @@ Deno.test({
           queue_messages: 256,
           queue_bytes: 16 * 1024 * 1024,
           max_request_bytes: 1024 * 1024,
+          max_message_bytes: 10 * 1024 * 1024,
         },
       },
     });
@@ -1165,6 +1175,57 @@ Deno.test({
       await unsupportedCard.getByRole("button", {
         name: "Unsupported view",
       }).waitFor();
+      await writeFrame(rConnection, {
+        method: "view/open",
+        params: {
+          view: "binary-app-probe",
+          generation: 1,
+          kind: "grid",
+          access: "random",
+          encoding: "r-json",
+          mode: "paged",
+          title: "Binary response probe",
+          nrow: 1,
+          ncol: 1,
+          columns: [{
+            position: 0,
+            name: "value",
+            type: "integer",
+            sortable: false,
+            filterable: false,
+          }],
+          capabilities: gridCapabilities(),
+        },
+      });
+      const binaryProbe = page.locator("#tables article").filter({
+        hasText: "Binary response probe",
+      });
+      await binaryProbe.getByRole("button", { name: "Open view" }).click();
+      const binaryRequestDeadline = Date.now() + 5_000;
+      while (
+        !requests.some((request) => request.view === "binary-app-probe") &&
+        Date.now() < binaryRequestDeadline
+      ) await new Promise((resolve) => setTimeout(resolve, 10));
+      if (!requests.some((request) => request.view === "binary-app-probe")) {
+        throw new Error("The app did not send its binary probe table request.");
+      }
+      await page.waitForTimeout(500);
+      const probeState = await page.evaluate(() => {
+        const document = (globalThis as unknown as {
+          document: BrowserDocument;
+        }).document;
+        return {
+          status: document.querySelector("#status")?.textContent,
+          state: document.querySelector("#status")?.getAttribute("data-state"),
+          warning: document.querySelector('#warnings li[data-state="error"]')
+            ?.textContent,
+        };
+      });
+      assert(
+        probeState.warning === "R returned an invalid table page.",
+        JSON.stringify(probeState),
+      );
+      assertEquals(probeState.state, "error");
       assertEquals(pageErrors, []);
     } finally {
       await browser?.close();
@@ -1172,6 +1233,241 @@ Deno.test({
       rConnection.close();
       await responder;
       await Deno.remove(cacheDir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name: "installed R binary responses reach the Chromium app transport",
+  ignore: !browserExecutable || !binaryRLibrary,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const playwrightModule = "npm:playwright@1.56.1";
+    const { chromium } = await import(playwrightModule);
+    const cacheRoot = await Deno.makeTempDir({
+      prefix: "jdv-r-binary-browser-",
+    });
+    const cacheDir = `${cacheRoot}/jdv`;
+    const scriptPath = `${cacheRoot}/binary-view.R`;
+    const donePath = `${cacheRoot}/finish-r-loop`;
+    const server = await startServer({ mode: "tcp", httpPort: 0, cacheDir });
+    const rEnv = Deno.env.toObject();
+    for (
+      const name of [
+        "JDV_DISCOVERY_PATH",
+        "JDV_CACHE_DIR",
+        "R_PROFILE_USER",
+        "R_ENVIRON_USER",
+      ]
+    ) delete rEnv[name];
+    rEnv.JDV_ADDRESS = server.socketPath;
+    rEnv.XDG_CACHE_HOME = cacheRoot;
+    rEnv.R_LIBS_USER = binaryRLibrary;
+    const source = [
+      "args <- commandArgs(trailingOnly = TRUE)",
+      "done_path <- args[[1L]]",
+      "library(jdv)",
+      "ns <- asNamespace('jdv')",
+      "original <- get('.jdv_process_request', envir = ns)",
+      "unlockBinding('.jdv_process_request', ns)",
+      "assign('.jdv_process_request', function(request, request_id) {",
+      "  if (identical(request$method, 'table/rows')) {",
+      "    return(jdv:::.jdv_binary_result(",
+      "      list(view = request$params$view, generation = request$params$generation),",
+      "      as.raw(c(0L, 10L, 255L))",
+      "    ))",
+      "  }",
+      "  original(request, request_id)",
+      "}, envir = ns)",
+      "lockBinding('.jdv_process_request', ns)",
+      "view_id <- jdv_view(data.frame(value = 1:3), title = 'Real R binary probe', mode = 'paged')",
+      'cat("READY\\t", view_id, "\\t", normalizePath(find.package("jdv")), "\\t", getLoadedDLLs()[["jdv"]][["path"]], "\\t", getNamespaceInfo(ns, "path"), "\\n", sep = "")',
+      "flush.console()",
+      "repeat {",
+      "  jdv_rpc(NULL)",
+      "  if (file.exists(done_path)) break",
+      "  Sys.sleep(0.01)",
+      "}",
+      "jdv_close(view_id)",
+      'cat("CLOSED\\n")',
+      "flush.console()",
+    ].join("\n");
+    await Deno.writeTextFile(scriptPath, source);
+    let rChild: Deno.ChildProcess | undefined;
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    let outputReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      rChild = new Deno.Command("Rscript", {
+        args: ["--vanilla", scriptPath, donePath],
+        env: rEnv,
+        stdout: "piped",
+        stderr: "piped",
+      }).spawn();
+      outputReader = rChild.stdout.getReader();
+      const readyLine = await readProcessLine(outputReader, 15_000);
+      if (!readyLine?.startsWith("READY\t")) {
+        throw new Error(
+          `R binary fixture did not start. Output: ${readyLine ?? "<timeout>"}`,
+        );
+      }
+      const readyParts = readyLine.split("\t");
+      if (readyParts.length !== 5) {
+        throw new Error(`Invalid R binary fixture ready line: ${readyLine}`);
+      }
+      const viewId = readyParts[1];
+      const packagePath = await Deno.realPath(readyParts[2]);
+      const libraryPath = await Deno.realPath(binaryRLibrary);
+      const packagePrefix = libraryPath.endsWith("/")
+        ? libraryPath
+        : `${libraryPath}/`;
+      if (!packagePath.startsWith(packagePrefix)) {
+        throw new Error(
+          `R loaded jdv from ${packagePath}, outside ${libraryPath}.`,
+        );
+      }
+      if (
+        !readyParts[3].startsWith(packagePath) ||
+        !readyParts[4].startsWith(packagePath)
+      ) {
+        throw new Error(
+          `R DLL or namespace path does not match ${packagePath}: ${readyLine}`,
+        );
+      }
+
+      browser = await chromium.launch({
+        executablePath: browserExecutable,
+        headless: true,
+        args: ["--no-sandbox"],
+        ...(browserLibraryPath
+          ? {
+            env: {
+              ...Deno.env.toObject(),
+              LD_LIBRARY_PATH: browserLibraryPath,
+            },
+          }
+          : {}),
+      });
+      const page = await browser.newPage({
+        viewport: { width: 1280, height: 1000 },
+      });
+      const pageErrors: string[] = [];
+      const websocketFrames: Array<{
+        direction: "sent" | "received";
+        payload: string | Uint8Array;
+      }> = [];
+      page.on("pageerror", (error: Error) => pageErrors.push(error.message));
+      page.on("websocket", (websocket: PlaywrightWebSocket) => {
+        websocket.on("framesent", (frame) => {
+          websocketFrames.push({
+            direction: "sent",
+            payload: typeof frame.payload === "string"
+              ? frame.payload
+              : new Uint8Array(frame.payload),
+          });
+        });
+        websocket.on("framereceived", (frame) => {
+          websocketFrames.push({
+            direction: "received",
+            payload: typeof frame.payload === "string"
+              ? frame.payload
+              : new Uint8Array(frame.payload),
+          });
+        });
+      });
+      await page.goto(server.url, { waitUntil: "networkidle" });
+      await page.waitForSelector('#status[data-state="connected"]');
+      const card = page.locator("#tables article").filter({
+        hasText: "Real R binary probe",
+      });
+      await card.getByRole("button", { name: "Open view" }).click();
+      await page.waitForFunction(
+        () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector('#warnings li[data-state="error"]')
+                ?.textContent === "R returned an invalid table page." &&
+            document.querySelector("#status")?.getAttribute("data-state") ===
+              "error";
+        },
+        { timeout: 15_000 },
+      );
+      const requestEntry = websocketFrames.find((frame) => {
+        if (frame.direction !== "sent" || typeof frame.payload !== "string") {
+          return false;
+        }
+        const message = JSON.parse(frame.payload) as Record<string, unknown>;
+        const params = message.params as Record<string, unknown> | undefined;
+        return message.type === "request" && params?.view === viewId;
+      });
+      assert(requestEntry, "Chromium did not send the expected table request.");
+      const requestMessage = JSON.parse(requestEntry.payload as string) as {
+        id: string;
+        session: string;
+      };
+      const responseFrame = websocketFrames.find((frame) =>
+        frame.direction === "received" && frame.payload instanceof Uint8Array
+      );
+      assert(responseFrame, "Chromium did not receive a binary response.");
+      const responseBytes = responseFrame.payload as Uint8Array;
+      assert(responseBytes.length >= 4, "Binary response prefix is truncated.");
+      const headerLength = new DataView(
+        responseBytes.buffer,
+        responseBytes.byteOffset,
+        4,
+      ).getUint32(0, true);
+      assert(
+        headerLength > 0 && 4 + headerLength <= responseBytes.length,
+        "Binary response header length is invalid.",
+      );
+      const binaryEnvelope = JSON.parse(
+        new TextDecoder().decode(responseBytes.subarray(4, 4 + headerLength)),
+      ) as Record<string, unknown>;
+      const result = binaryEnvelope.result as Record<string, unknown>;
+      const transfer = result.transfer as Record<string, unknown>;
+      assertEquals(binaryEnvelope.type, "response");
+      assertEquals(binaryEnvelope.id, requestMessage.id);
+      assertEquals(binaryEnvelope.session, requestMessage.session);
+      assertEquals(result.view, viewId);
+      assertEquals(result.generation, 1);
+      assertEquals(transfer, { encoding: "arrow-ipc", byte_length: 3 });
+      assertEquals(responseBytes.length - 4 - headerLength, 3);
+      assertEquals(
+        responseBytes.slice(4 + headerLength),
+        new Uint8Array([0, 10, 255]),
+      );
+      const terminalFrames = websocketFrames.filter((frame) => {
+        if (frame.direction !== "received") return false;
+        const message = typeof frame.payload === "string"
+          ? JSON.parse(frame.payload) as Record<string, unknown>
+          : binaryEnvelope;
+        return message.id === requestMessage.id &&
+          (message.type === "response" || message.type === "error" ||
+            message.type === "cancelled");
+      });
+      assertEquals(terminalFrames.length, 1);
+      assertEquals(pageErrors, []);
+    } finally {
+      await browser?.close();
+      await Deno.writeTextFile(donePath, "done\n").catch(() => undefined);
+      if (rChild) {
+        const timeout = new Promise<"timeout">((resolve) =>
+          setTimeout(() => resolve("timeout"), 5_000)
+        );
+        const result = await Promise.race([rChild.status, timeout]);
+        if (result === "timeout") {
+          try {
+            rChild.kill("SIGTERM");
+          } catch {
+            // The fixture process may already be exiting.
+          }
+          await rChild.status;
+        }
+      }
+      outputReader?.releaseLock();
+      await server.close();
+      await Deno.remove(cacheRoot, { recursive: true });
     }
   },
 });
@@ -1193,6 +1489,45 @@ async function writeFrame(
   while (offset < bytes.length) {
     offset += await connection.write(bytes.subarray(offset));
   }
+}
+
+async function writeRBinaryResponse(
+  connection: Deno.Conn,
+  header: Record<string, unknown>,
+  body: Uint8Array,
+): Promise<void> {
+  const prefix = new TextEncoder().encode(`${JSON.stringify(header)}\n`);
+  const frame = new Uint8Array(prefix.length + body.length);
+  frame.set(prefix);
+  frame.set(body, prefix.length);
+  let offset = 0;
+  while (offset < frame.length) {
+    offset += await connection.write(frame.subarray(offset));
+  }
+}
+
+async function readProcessLine(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  const decoder = new TextDecoder();
+  let text = "";
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    const result = await Promise.race([
+      reader.read(),
+      new Promise<undefined>((resolve) =>
+        setTimeout(() => resolve(undefined), remaining)
+      ),
+    ]);
+    if (!result) return undefined;
+    if (result.done) return text || undefined;
+    text += decoder.decode(result.value, { stream: true });
+    const newline = text.indexOf("\n");
+    if (newline >= 0) return text.slice(0, newline);
+  }
+  return undefined;
 }
 
 async function* readFrames(connection: Deno.Conn): AsyncGenerator<string> {
@@ -1226,6 +1561,23 @@ async function respondToR(
     const request = JSON.parse(line) as Record<string, unknown>;
     if (typeof request.id !== "string") continue;
     const params = request.params as Record<string, unknown>;
+    if (
+      request.method === "table/rows" &&
+      params.view === "binary-app-probe"
+    ) {
+      requests.push(params);
+      const body = new Uint8Array([0x00, 0x0a, 0xff]);
+      await writeRBinaryResponse(connection, {
+        id: request.id,
+        result: {
+          view: "binary-app-probe",
+          generation: 1,
+          transfer: { encoding: "arrow-ipc", byte_length: body.length },
+        },
+        warnings: [],
+      }, body);
+      continue;
+    }
     if (request.method === "object/children") {
       const path = params.path as Array<Record<string, unknown>>;
       const children = path.length === 0
@@ -1539,6 +1891,7 @@ Deno.test({
           queue_messages: 256,
           queue_bytes: 16 * 1024 * 1024,
           max_request_bytes: 1024 * 1024,
+          max_message_bytes: 10 * 1024 * 1024,
         },
       },
     });

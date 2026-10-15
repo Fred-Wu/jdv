@@ -192,6 +192,21 @@ Deno.test({
       if (!asset.headers.get("content-type")?.startsWith("text/javascript")) {
         throw new Error("Viewer JavaScript has the wrong content type.");
       }
+      for (
+        const [assetPath, expectedType] of [
+          ["/assets/vendor/arrow-21.2.0.min.js", "text/javascript"],
+          ["/assets/vendor/APACHE-ARROW-JS-LICENSE.txt", "text/plain"],
+          ["/assets/vendor/APACHE-ARROW-JS-NOTICE.txt", "text/plain"],
+        ]
+      ) {
+        const vendorAsset = await fetch(new URL(assetPath, server.url));
+        if (
+          vendorAsset.status !== 200 ||
+          !vendorAsset.headers.get("content-type")?.startsWith(expectedType)
+        ) {
+          throw new Error(`${assetPath} was not served as ${expectedType}.`);
+        }
+      }
       const favicon = await fetch(new URL("/favicon.ico", server.url));
       if (favicon.status !== 204) {
         throw new Error(`Favicon returned ${favicon.status}.`);
@@ -246,6 +261,7 @@ Deno.test({
             queue_messages: 128,
             queue_bytes: 16 * 1024 * 1024,
             max_request_bytes: 10 * 1024 * 1024,
+            max_message_bytes: 10 * 1024 * 1024,
           },
           pid: 4242,
           r_version: "4.6.1",
@@ -398,6 +414,7 @@ Deno.test({
             queue_messages: 128,
             queue_bytes: 16 * 1024 * 1024,
             max_request_bytes: 10 * 1024 * 1024,
+            max_message_bytes: 10 * 1024 * 1024,
           },
           pid: 4243,
           r_version: "4.6.1",
@@ -638,14 +655,24 @@ Deno.test({
       ) {
         throw new Error("URL-started viewer did not serve the bundled page.");
       }
-      for (const assetPath of ["/assets/app.js", "/assets/style.css"]) {
+      for (
+        const assetPath of [
+          "/assets/app.js",
+          "/assets/style.css",
+          "/assets/vendor/arrow-21.2.0.min.js",
+          "/assets/vendor/APACHE-ARROW-JS-LICENSE.txt",
+          "/assets/vendor/APACHE-ARROW-JS-NOTICE.txt",
+        ]
+      ) {
         const asset = await fetch(new URL(assetPath, ready.url));
         if (asset.status !== 200) {
           throw new Error(`${assetPath} returned ${asset.status}.`);
         }
         const expectedType = assetPath.endsWith(".js")
           ? "text/javascript"
-          : "text/css";
+          : assetPath.endsWith(".css")
+          ? "text/css"
+          : "text/plain";
         if (!asset.headers.get("content-type")?.startsWith(expectedType)) {
           throw new Error(`${assetPath} had an invalid content type.`);
         }

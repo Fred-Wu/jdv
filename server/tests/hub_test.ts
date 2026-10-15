@@ -56,14 +56,21 @@ const DEFAULT_LIMITS = {
   queue_messages: 128,
   queue_bytes: 16 * 1024 * 1024,
   max_request_bytes: 10 * 1024 * 1024,
+  max_message_bytes: 10 * 1024 * 1024,
 };
 
 class MemoryBrowser implements BrowserClient {
   readonly messages: JsonRecord[] = [];
+  readonly binaryMessages: Uint8Array[] = [];
   #waiters: Array<() => void> = [];
 
   send(value: JsonRecord): void {
     this.messages.push(value);
+    for (const wake of this.#waiters.splice(0)) wake();
+  }
+
+  sendBinary(bytes: Uint8Array): void {
+    this.binaryMessages.push(bytes.slice());
     for (const wake of this.#waiters.splice(0)) wake();
   }
 
@@ -153,6 +160,56 @@ async function waitFor(
   throw new Error("Condition was not reached in time.");
 }
 
+function encodeRBinaryResponse(
+  id: string,
+  byteLength: number,
+  body: Uint8Array,
+  view = "table-1",
+  generation = 1,
+): Uint8Array {
+  const header = new TextEncoder().encode(`${
+    JSON.stringify({
+      id,
+      result: {
+        view,
+        generation,
+        transfer: { encoding: "arrow-ipc", byte_length: byteLength },
+      },
+      warnings: [],
+    })
+  }\n`);
+  return concatBytes(header, body);
+}
+
+function decodeBrowserBinary(frame: Uint8Array): {
+  envelope: JsonRecord;
+  body: Uint8Array;
+} {
+  const headerLength = new DataView(
+    frame.buffer,
+    frame.byteOffset,
+    4,
+  ).getUint32(0, true);
+  return {
+    envelope: JSON.parse(
+      new TextDecoder().decode(frame.subarray(4, 4 + headerLength)),
+    ) as JsonRecord,
+    body: frame.subarray(4 + headerLength),
+  };
+}
+
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const result = new Uint8Array(
+    parts.reduce((length, part) => length + part.length, 0),
+  );
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.length;
+  }
+  return result;
+}
+
 Deno.test("invalid hello followed by valid hello in one chunk is terminal", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
@@ -165,7 +222,14 @@ Deno.test("invalid hello followed by valid hello in one chunk is terminal", asyn
   const valid = JSON.stringify({
     id: "good",
     method: "hello",
-    params: { protocol: 1, session: "r-1-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-1-1",
+      limits: (({ max_message_bytes: _unused, ...legacyLimits }) =>
+        legacyLimits)(
+          DEFAULT_LIMITS,
+        ),
+    },
   });
   connection.injectRaw(new TextEncoder().encode(`${invalid}\n${valid}\n`));
   await waitFor(() => connection.closed);
@@ -192,6 +256,283 @@ Deno.test("hello requires every positive integer receive and queue limit", async
   await waitFor(() => connection.closed);
   assertEquals(JSON.parse(connection.writes[0]).error.code, "unsupported");
   hub.close();
+});
+
+Deno.test("hello accepts an omitted max_message_bytes limit for older peers", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  const { max_message_bytes: _unused, ...legacyLimits } = DEFAULT_LIMITS;
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "r-5001-1",
+      limits: legacyLimits,
+    },
+  });
+  await browser.nextMessage((message) =>
+    message.type === "session/open" && message.session === "r-5001-1"
+  );
+  assertEquals(connection.closed, false);
+  hub.close();
+});
+
+Deno.test("Hub relays a bounded Arrow IPC body in one browser binary frame", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-6100-1", limits: { ...DEFAULT_LIMITS } },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "view/open");
+    hub.handleBrowser(browser, {
+      type: "request",
+      id: "binary-page",
+      session: "r-6100-1",
+      method: "table/rows",
+      params: { view: "table-1", generation: 1, max_bytes: 5 },
+    });
+    const request = await connection.nextWrite(0);
+    assertEquals((request.params as JsonRecord).max_bytes, 5);
+    const body = new Uint8Array([0x00, 0x0a, 0xff, 0x00, 0x7f]);
+    connection.injectRaw(
+      encodeRBinaryResponse(request.id as string, body.length, body),
+    );
+    await waitFor(() => browser.binaryMessages.length === 1);
+    const decoded = decodeBrowserBinary(browser.binaryMessages[0]);
+    assertEquals(decoded.envelope, {
+      type: "response",
+      session: "r-6100-1",
+      id: "binary-page",
+      result: {
+        view: "table-1",
+        generation: 1,
+        transfer: { encoding: "arrow-ipc", byte_length: body.length },
+      },
+      warnings: [],
+    });
+    assertEquals(decoded.body, body);
+    assertEquals(
+      browser.messages.some((message) => message.id === "binary-page"),
+      false,
+    );
+  } finally {
+    hub.close();
+  }
+});
+
+Deno.test("Hub relays an empty binary body for a zero-byte request budget", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-6102-1", limits: { ...DEFAULT_LIMITS } },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "view/open");
+    hub.handleBrowser(browser, {
+      type: "request",
+      id: "empty-binary",
+      session: "r-6102-1",
+      method: "table/rows",
+      params: { view: "table-1", generation: 1, max_bytes: 0 },
+    });
+    const request = await connection.nextWrite(0);
+    assertEquals((request.params as JsonRecord).max_bytes, 0);
+    connection.inject({
+      id: request.id,
+      result: {
+        view: "table-1",
+        generation: 1,
+        transfer: { encoding: "arrow-ipc", byte_length: 0 },
+      },
+      warnings: [],
+    });
+    await waitFor(() => browser.binaryMessages.length === 1);
+    const decoded = decodeBrowserBinary(browser.binaryMessages[0]);
+    assertEquals(decoded.body.length, 0);
+    assertEquals((decoded.envelope.result as JsonRecord).transfer, {
+      encoding: "arrow-ipc",
+      byte_length: 0,
+    });
+  } finally {
+    hub.close();
+  }
+});
+
+Deno.test("Hub rejects a binary response for a different view generation", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-6110-1", limits: { ...DEFAULT_LIMITS } },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "view/open");
+    hub.handleBrowser(browser, {
+      type: "request",
+      id: "wrong-generation",
+      session: "r-6110-1",
+      method: "table/rows",
+      params: { view: "table-1", generation: 1 },
+    });
+    const request = await connection.nextWrite(0);
+    const body = new Uint8Array([0x00, 0x0a]);
+    connection.injectRaw(
+      encodeRBinaryResponse(
+        request.id as string,
+        body.length,
+        body,
+        "table-1",
+        2,
+      ),
+    );
+    const error = await browser.nextMessage((message) =>
+      message.type === "error" && message.id === "wrong-generation"
+    );
+    assertEquals(error.code, "stale_generation");
+    assertEquals(browser.binaryMessages.length, 0);
+  } finally {
+    hub.close();
+  }
+});
+
+Deno.test("Hub drains a cancelled binary body before the next JSONL response", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-6111-1", limits: { ...DEFAULT_LIMITS } },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  await browser.nextMessage((message) => message.type === "view/open");
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "cancelled-binary",
+    session: "r-6111-1",
+    method: "table/rows",
+    params: { view: "table-1", generation: 1, max_bytes: 2 },
+  });
+  const binaryRequest = await connection.nextWrite(0);
+  hub.handleBrowser(browser, {
+    type: "cancel",
+    id: "cancelled-binary",
+    session: "r-6111-1",
+  });
+  assertEquals((await connection.nextWrite(1)).method, "cancel");
+  await browser.nextMessage((message) =>
+    message.type === "cancelled" && message.id === "cancelled-binary"
+  );
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "after-binary",
+    session: "r-6111-1",
+    method: "table/rows",
+    params: { view: "table-1", generation: 1, offset: 1, limit: 1 },
+  });
+  const nextRequest = await connection.nextWrite(2);
+  const body = new Uint8Array([0x00, 0x0a]);
+  connection.injectRaw(concatBytes(
+    encodeRBinaryResponse(binaryRequest.id as string, body.length, body),
+    new TextEncoder().encode(`${
+      JSON.stringify({
+        id: nextRequest.id,
+        result: { view: "table-1", generation: 1, rows: [] },
+      })
+    }\n`),
+  ));
+  const response = await browser.nextMessage((message) =>
+    message.type === "response" && message.id === "after-binary"
+  );
+  assertEquals((response.result as JsonRecord).rows, []);
+  assertEquals(browser.binaryMessages.length, 0);
+  assertEquals(
+    browser.messages.filter((message) =>
+      (message.type === "cancelled" || message.type === "error" ||
+        message.type === "response") && message.id === "cancelled-binary"
+    ).length,
+    1,
+  );
+  hub.close();
+});
+
+Deno.test("Hub rejects an over-budget binary response and continues with the next JSONL response", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-6101-1", limits: { ...DEFAULT_LIMITS } },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "view/open");
+    for (const [id, maxBytes] of [["too-small", 1], ["next-json", 10]]) {
+      hub.handleBrowser(browser, {
+        type: "request",
+        id,
+        session: "r-6101-1",
+        method: "view/schema",
+        params: { view: "table-1", generation: 1, max_bytes: maxBytes },
+      });
+    }
+    const first = await connection.nextWrite(0);
+    const second = await connection.nextWrite(1);
+    const body = new Uint8Array([0x00, 0x0a]);
+    const next = new TextEncoder().encode(`${
+      JSON.stringify({
+        id: second.id,
+        result: { columns: ["x"] },
+        warnings: [],
+      })
+    }\n`);
+    connection.injectRaw(concatBytes(
+      encodeRBinaryResponse(first.id as string, body.length, body),
+      next,
+    ));
+    const rejected = await browser.nextMessage((message) =>
+      message.type === "error" && message.id === "too-small"
+    );
+    assertEquals(rejected.code, "limit_exceeded");
+    const continued = await browser.nextMessage((message) =>
+      message.type === "response" && message.id === "next-json"
+    );
+    assertEquals(continued.result, { columns: ["x"] });
+    assertEquals(browser.binaryMessages.length, 0);
+    assertEquals(
+      browser.messages.filter((message) => message.id === "too-small").length,
+      1,
+    );
+  } finally {
+    hub.close();
+  }
 });
 
 Deno.test("R request ids are remapped and table close updates the Snapshot cache", async () => {

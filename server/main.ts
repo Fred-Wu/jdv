@@ -12,6 +12,15 @@ import tabulatorStyles from "./web/vendor/tabulator.min.css" with {
 import tabulatorLicense from "./web/vendor/TABULATOR-LICENSE.txt" with {
   type: "text",
 };
+import arrowScript from "./web/vendor/arrow-21.2.0.min.js" with {
+  type: "text",
+};
+import arrowLicense from "./web/vendor/APACHE-ARROW-JS-LICENSE.txt" with {
+  type: "text",
+};
+import arrowNotice from "./web/vendor/APACHE-ARROW-JS-NOTICE.txt" with {
+  type: "text",
+};
 import { type BrowserClient, Hub } from "./hub.ts";
 import { join } from "node:path";
 import {
@@ -189,11 +198,15 @@ function handleHttp(
       return new Response("WebSocket upgrade required", { status: 426 });
     }
     const { socket, response } = Deno.upgradeWebSocket(request);
+    socket.binaryType = "arraybuffer";
     const client: BrowserClient = {
       send(value) {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify(value));
         }
+      },
+      sendBinary(bytes) {
+        if (socket.readyState === WebSocket.OPEN) socket.send(bytes);
       },
       close() {
         if (
@@ -258,6 +271,18 @@ function handleHttp(
     },
     "/assets/vendor/TABULATOR-LICENSE.txt": {
       body: tabulatorLicense,
+      type: "text/plain; charset=utf-8",
+    },
+    "/assets/vendor/arrow-21.2.0.min.js": {
+      body: arrowScript,
+      type: "text/javascript; charset=utf-8",
+    },
+    "/assets/vendor/APACHE-ARROW-JS-LICENSE.txt": {
+      body: arrowLicense,
+      type: "text/plain; charset=utf-8",
+    },
+    "/assets/vendor/APACHE-ARROW-JS-NOTICE.txt": {
+      body: arrowNotice,
       type: "text/plain; charset=utf-8",
     },
   };

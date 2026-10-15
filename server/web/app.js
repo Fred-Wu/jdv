@@ -55,6 +55,7 @@ const socketUrl = new URL(`${scheme}//${location.host}/ws`);
 const token = new URL(location.href).searchParams.get("token");
 if (token) socketUrl.searchParams.set("token", token);
 const socket = new WebSocket(socketUrl);
+socket.binaryType = "arraybuffer";
 const transport = createBrowserTransport(socket, {
   onBusy(id, session, reason) {
     if (
@@ -81,6 +82,18 @@ socket.addEventListener("error", () => {
   setStatus("The local viewer connection failed.", "error");
 });
 socket.addEventListener("message", (event) => {
+  if (event.data instanceof ArrayBuffer) {
+    try {
+      transport.handleBinary(event.data);
+    } catch (error) {
+      setStatus(
+        error?.message ?? "The local viewer sent an invalid binary message.",
+        "error",
+      );
+      socket.close(1007, "Invalid binary message");
+    }
+    return;
+  }
   let message;
   try {
     message = JSON.parse(event.data);

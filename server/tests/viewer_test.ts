@@ -21,6 +21,18 @@ class FakeSocket {
   }
 }
 
+function binaryResponse(
+  envelope: Record<string, unknown>,
+  body: Uint8Array,
+): ArrayBuffer {
+  const header = new TextEncoder().encode(JSON.stringify(envelope));
+  const frame = new Uint8Array(4 + header.length + body.length);
+  new DataView(frame.buffer).setUint32(0, header.length, true);
+  frame.set(header, 4);
+  frame.set(body, 4 + header.length);
+  return frame.buffer;
+}
+
 type QueryColumn = {
   schema: Record<string, unknown>;
   data: Record<string, unknown>;
@@ -155,6 +167,107 @@ Deno.test("browser transport ignores stale responses after table replacement", a
   };
   transport.handleMessage(currentResponse);
   assertEquals(await currentRequest, currentResponse);
+});
+
+Deno.test("browser transport settles one exact matching binary response", async () => {
+  const socket = new FakeSocket();
+  const transport = createBrowserTransport(socket);
+  const body = new Uint8Array([0, 10, 13, 255]);
+  const request = transport.request("r-1-1", "table/rows", {
+    view: "v-1",
+    generation: 7,
+    max_bytes: body.length,
+  });
+  const frame = socket.take();
+  assertEquals((frame.params as Record<string, unknown>).max_bytes, 4);
+  const envelope = {
+    type: "response",
+    id: frame.id,
+    session: "r-1-1",
+    result: {
+      view: "v-1",
+      generation: 7,
+      transfer: { encoding: "arrow-ipc", byte_length: body.length },
+    },
+    warnings: [],
+  };
+  transport.handleBinary(binaryResponse(envelope, body));
+  transport.handleBinary(binaryResponse(envelope, body));
+  const response = await request as Record<string, unknown>;
+  assertEquals(response.type, "response");
+  assertEquals(response.id, frame.id);
+  assertEquals(response.binary, body);
+  assertEquals(socket.sent, []);
+});
+
+Deno.test("browser transport rejects malformed binary envelopes and ignores cancelled late bodies", async () => {
+  const socket = new FakeSocket();
+  const transport = createBrowserTransport(socket);
+  const request = transport.request("r-1-1", "table/rows", {
+    view: "v-1",
+    generation: 1,
+    max_bytes: 1,
+  });
+  const frame = socket.take();
+  const envelope = {
+    type: "response",
+    id: frame.id,
+    session: "r-1-1",
+    result: {
+      view: "v-1",
+      generation: 1,
+      transfer: { encoding: "arrow-ipc", byte_length: 2 },
+    },
+  };
+  for (
+    const invalidEnvelope of [
+      { ...envelope, method: "table/rows" },
+      { ...envelope, error: { code: "bad" } },
+      { ...envelope, result: { ...envelope.result, view: "" } },
+      { ...envelope, result: { ...envelope.result, generation: 0 } },
+    ]
+  ) {
+    let invalid = false;
+    try {
+      transport.handleBinary(
+        binaryResponse(invalidEnvelope, new Uint8Array([0, 1])),
+      );
+    } catch {
+      invalid = true;
+    }
+    assert(invalid, "Invalid binary response metadata should be rejected.");
+  }
+  let rejected = false;
+  try {
+    transport.handleBinary(binaryResponse(envelope, new Uint8Array([0, 1])));
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, "An over-budget binary envelope should be rejected.");
+  transport.close();
+  await assertRejectsAbort(request);
+
+  const secondSocket = new FakeSocket();
+  const secondTransport = createBrowserTransport(secondSocket);
+  const cancelled = secondTransport.request("r-2-1", "table/rows", {
+    view: "v-2",
+    generation: 2,
+  });
+  const cancelledFrame = secondSocket.take();
+  secondTransport.cancel(cancelledFrame.id as string);
+  await assertRejectsAbort(cancelled);
+  const late = {
+    type: "response",
+    id: cancelledFrame.id,
+    session: "r-2-1",
+    result: {
+      view: "v-2",
+      generation: 2,
+      transfer: { encoding: "arrow-ipc", byte_length: 1 },
+    },
+  };
+  secondTransport.handleBinary(binaryResponse(late, new Uint8Array([0])));
+  assertEquals(secondSocket.sent.length, 1);
 });
 
 Deno.test("transport settles pending requests on clear and disconnect", async () => {

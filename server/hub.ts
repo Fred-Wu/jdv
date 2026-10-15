@@ -1,4 +1,8 @@
 import { type JsonObject, type RPeer, startRPeer } from "./r_listener.ts";
+import {
+  MAX_R_BINARY_FRAME_BYTES,
+  MAX_R_BINARY_HEADER_BYTES,
+} from "./r_listener.ts";
 import type { ByteConnection } from "./platform.ts";
 
 export const MAX_LIVE_REQUESTS = 32;
@@ -16,6 +20,7 @@ const WIRE_MAX_BYTES = 512 * 1024;
 const CANCEL_RESERVE_FRAMES = 32;
 const CANCEL_RESERVE_BYTES = 16 * 1024;
 const MAX_RETAINED_REQUEST_BYTES = 16 * 1024 * 1024;
+const BINARY_PREFIX_BYTES = 4;
 const encoder = new TextEncoder();
 
 interface RLimits {
@@ -24,10 +29,12 @@ interface RLimits {
   queueMessages: number;
   queueBytes: number;
   maxRequestBytes: number;
+  maxMessageBytes: number;
 }
 
 export interface BrowserClient {
   send(value: JsonObject): void;
+  sendBinary(bytes: Uint8Array): void;
   close(): void;
 }
 
@@ -55,6 +62,7 @@ interface PendingRequest {
   timeoutTimer: ReturnType<typeof setTimeout> | undefined;
   busyTimer: ReturnType<typeof setTimeout> | undefined;
   cancelSent: boolean;
+  maxBytes: number;
 }
 
 interface OutboundFrame {
@@ -109,14 +117,14 @@ export class Hub {
     let rejectedHandshake = false;
     const peer = startRPeer(
       connection,
-      (message) => {
+      (message, body) => {
         if (!session) {
           if (rejectedHandshake) return;
           session = this.#acceptHello(peer, message);
           if (!session) rejectedHandshake = true;
           return;
         }
-        this.#handleRMessage(session, message);
+        this.#handleRMessage(session, message, body);
       },
       (reason) => {
         this.#peers.delete(peer);
@@ -280,6 +288,19 @@ export class Hub {
     const timeout = Number.isFinite(value.timeoutMs)
       ? Math.min(MAX_TIMEOUT_MS, Math.max(100, Number(value.timeoutMs)))
       : DEFAULT_TIMEOUT_MS;
+    const maxBytes = params.max_bytes === undefined
+      ? effectiveBinaryByteLimit(session)
+      : params.max_bytes;
+    if (!Number.isSafeInteger(maxBytes) || Number(maxBytes) < 0) {
+      client.send({
+        type: "error",
+        id: browserId,
+        session: session.id,
+        code: "invalid_request",
+        message: "params.max_bytes must be a non-negative safe integer.",
+      });
+      return;
+    }
     const id = `jdv-${crypto.randomUUID()}`;
     const pending: PendingRequest = {
       id,
@@ -299,6 +320,7 @@ export class Hub {
       timeoutTimer: undefined,
       busyTimer: undefined,
       cancelSent: false,
+      maxBytes: Math.min(Number(maxBytes), effectiveBinaryByteLimit(session)),
     };
     pending.requestFrame = {
       kind: "request",
@@ -438,7 +460,11 @@ export class Hub {
     return session;
   }
 
-  #handleRMessage(session: RSession, message: JsonObject): void {
+  #handleRMessage(
+    session: RSession,
+    message: JsonObject,
+    body?: Uint8Array,
+  ): void {
     if (session.closed) return;
     if (typeof message.method === "string") {
       if (message.method === "ack") {
@@ -461,6 +487,25 @@ export class Hub {
     const deliver = !pending.localEnded && pending.state === "live" &&
       currentGeneration && Date.now() < pending.deadline;
     if (
+      deliver && body && isObject(message.result) &&
+      (message.result.view !== pending.view ||
+        message.result.generation !== pending.generation)
+    ) {
+      pending.client?.send({
+        type: "error",
+        id: pending.browserId,
+        session: session.id,
+        code: message.result.view !== pending.view
+          ? "invalid_request"
+          : "stale_generation",
+        message:
+          "R returned a binary response for a different view generation.",
+      });
+      this.#finishPending(session, pending);
+      this.#scheduleDrain(session);
+      return;
+    }
+    if (
       pending.method === "object/open" && isObject(message.result) &&
       currentGeneration
     ) this.#registerChildView(session, pending.view, message.result);
@@ -470,12 +515,37 @@ export class Hub {
       message.result.view === pending.view &&
       message.result.generation === pending.generation;
     if (deliver) {
-      pending.client?.send({
+      const response: JsonObject = {
         type: "response",
         session: session.id,
         ...message,
         id: pending.browserId,
-      });
+      };
+      if (body) {
+        if (body.byteLength > pending.maxBytes) {
+          pending.client?.send({
+            type: "error",
+            id: pending.browserId,
+            session: session.id,
+            code: "limit_exceeded",
+            message: "R's binary response exceeds the requested max_bytes.",
+          });
+        } else {
+          const binaryFrame = encodeBrowserBinary(response, body);
+          if (binaryFrame) pending.client?.sendBinary(binaryFrame);
+          else {
+            pending.client?.send({
+              type: "error",
+              id: pending.browserId,
+              session: session.id,
+              code: "limit_exceeded",
+              message: "The binary response exceeds the browser frame limit.",
+            });
+          }
+        }
+      } else {
+        pending.client?.send(response);
+      }
     }
     this.#finishPending(session, pending);
     if (closedCurrentView) {
@@ -1260,13 +1330,49 @@ function parseLimits(value: JsonObject): RLimits | null {
       !Number.isSafeInteger(value[field]) || Number(value[field]) < 1
     )
   ) return null;
+  if (
+    value.max_message_bytes !== undefined &&
+    (!Number.isSafeInteger(value.max_message_bytes) ||
+      Number(value.max_message_bytes) < 1)
+  ) return null;
   return {
     receiveFrames: Number(value.max_receive_frames),
     receiveBytes: Number(value.max_receive_bytes),
     queueMessages: Number(value.queue_messages),
     queueBytes: Number(value.queue_bytes),
     maxRequestBytes: Number(value.max_request_bytes),
+    maxMessageBytes: value.max_message_bytes === undefined
+      ? MAX_R_BINARY_FRAME_BYTES
+      : Number(value.max_message_bytes),
   };
+}
+
+function effectiveBinaryByteLimit(session: RSession): number {
+  return Math.max(
+    0,
+    Math.min(session.limits.maxMessageBytes, MAX_R_BINARY_FRAME_BYTES) -
+      MAX_R_BINARY_HEADER_BYTES - BINARY_PREFIX_BYTES,
+  );
+}
+
+function encodeBrowserBinary(
+  envelope: JsonObject,
+  body: Uint8Array,
+): Uint8Array | null {
+  const header = encoder.encode(JSON.stringify(envelope));
+  if (
+    header.byteLength > MAX_R_BINARY_HEADER_BYTES ||
+    header.byteLength + BINARY_PREFIX_BYTES + body.byteLength >
+      MAX_R_BINARY_FRAME_BYTES
+  ) return null;
+  const result = new Uint8Array(
+    BINARY_PREFIX_BYTES + header.byteLength + body.byteLength,
+  );
+  new DataView(result.buffer, result.byteOffset, BINARY_PREFIX_BYTES)
+    .setUint32(0, header.byteLength, true);
+  result.set(header, BINARY_PREFIX_BYTES);
+  result.set(body, BINARY_PREFIX_BYTES + header.byteLength);
+  return result;
 }
 
 function isTerminalResponse(message: JsonObject): boolean {

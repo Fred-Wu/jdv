@@ -1,10 +1,10 @@
 # jdv Protocol v1
 
 This document defines the JSON protocol implemented by `jdv_register()`,
-`jdv_rpc()`, and the local transport. It describes the R view registry,
-newline-delimited JSON (NDJSON) messages, and request and response messages
-shared by the package, reference server, and viewer, including object-tree
-navigation.
+`jdv_rpc()`, and the local transport. It describes the R view registry, JSON
+Lines (JSONL) messages, optional Arrow IPC binary response bodies, and request
+and response messages shared by the package, reference server, and viewer,
+including object-tree navigation.
 
 The envelope is JSON-RPC-like, but it is not JSON-RPC 2.0: messages use a
 `method` and `params`, while successful responses use `id`, `result`, and
@@ -13,10 +13,10 @@ The envelope is JSON-RPC-like, but it is not JSON-RPC 2.0: messages use a
 
 ## Compatibility and encoding
 
-- Each transport message is one UTF-8 JSON value. The transport frames messages
-  as newline-delimited JSON (NDJSON), with one complete JSON value per line and
-  a trailing LF. A partial line is retained only up to the configured request
-  byte limit.
+- Each JSON transport message is one UTF-8 JSON value framed as one complete
+  JSON value per line with a trailing LF. A partial line is retained only up to
+  the configured request byte limit. An Arrow IPC response may be followed by an
+  opaque binary body as described below.
 - The only supported envelope encoding is `json`; the only supported compression
   is `none`. Both fields may be omitted to select those defaults. Unknown values
   produce an `unsupported` error.
@@ -309,6 +309,70 @@ no-op notifications and returns `NULL` for them; the transport queue matches
 cancellation ids to pending work before execution. `ack` is transport-owned and
 flows only from R to the host; it is not passed to `jdv_rpc()`.
 
+### Arrow IPC binary responses
+
+An Arrow IPC body is reserved for a successful, id-bearing response. Its JSONL
+header has the ordinary response envelope and a `result.transfer` descriptor:
+
+```json
+{
+  "id": "jdv-request-id",
+  "result": {
+    "view": "v-1",
+    "generation": 1,
+    "transfer": { "encoding": "arrow-ipc", "byte_length": 1234 }
+  },
+  "warnings": []
+}
+```
+
+The header line is followed immediately by exactly `byte_length` opaque bytes,
+then by the next JSONL message. The receiver must not decode the body as UTF-8,
+scan it for LF, or call the response handler before all bytes arrive. The
+descriptor is not valid on notifications, errors, or `ack`. `byte_length` is a
+non-negative safe integer. The response `id` is the host-issued request id and
+must be a string. The UTF-8 JSON header is limited to 64 KiB, and the header,
+its LF, and body together are limited to 10 MiB. The body has an absolute
+30-second receive timeout; fragments do not extend it. Invalid lengths,
+oversized frames, EOF, or timeout close the R connection and fail pending
+requests as disconnected. Cancellation, expiry, and stale or unknown response
+ids still drain a valid body before the next JSONL message is read.
+
+There is no checksum or delimiter after the raw body. A sender that declares a
+shorter length may be detected when the remaining bytes cannot form a valid
+JSONL frame, but framing alone cannot detect a remainder that happens to be a
+valid JSONL message.
+
+The host forwards a response to the browser as one WebSocket binary message:
+four bytes containing the UTF-8 JSON header length as an unsigned little-endian
+integer, followed by the JSON header, followed by the unchanged raw body. The
+header is rewritten with the browser request id and session. The rewritten
+header remains limited to 64 KiB, and the complete WebSocket message to 10 MiB.
+If either limit or the request's `max_bytes` is exceeded, the host returns one
+`limit_exceeded` error after draining the R body and continues with the next
+JSONL frame.
+
+For a request that can return a binary body, `params.max_bytes` is optional.
+When present it must be a non-negative safe integer; zero is valid. Its default
+is the effective binary body cap. R caps a response at
+`min(params.max_bytes, max(0, min(jdv.max_message_bytes, 10 MiB) - (64 KiB + 4)))`.
+The `max_message_bytes` member of the R hello limits is optional for
+compatibility with older peers; when omitted, the host uses 10 MiB. If present,
+it must be a positive safe integer. The host applies the negotiated R cap and
+checks the returned byte length against the request before forwarding it. After
+draining the body, the host checks that the response view and generation match
+the pending request; a mismatch returns one `invalid_request` or
+`stale_generation` terminal error.
+
+Internally, page encoding is isolated behind one private encoder boundary. It
+accepts an already-owned Arrow stream and the page budgets, and returns a
+self-contained IPC byte sequence with the metadata needed for the response.
+Codec-specific work stays inside this boundary; stream movement and release,
+view registration, binary framing and sending, and viewer behavior stay outside
+it. This keeps the codec replaceable without changing those surrounding
+responsibilities. The function signature and encoder implementation are
+specified separately.
+
 ## Methods
 
 | Method            | Direction        | Kind         | Result                                                                              |
@@ -503,7 +567,8 @@ notification with no request id:
       "max_receive_bytes": 1048577,
       "queue_messages": 256,
       "queue_bytes": 16777216,
-      "max_request_bytes": 1048576
+      "max_request_bytes": 1048576,
+      "max_message_bytes": 10485760
     }
   }
 }
@@ -526,8 +591,8 @@ disconnect as well.
 
 `params.limits` reports the effective limits captured for this connection: the
 maximum complete frames and bytes read in one receive callback, pending queue
-message and byte limits, and maximum request bytes. Hosts use the smaller of
-each reported value and their own configured bound.
+message and byte limits, and maximum request and response bytes. Hosts use the
+smaller of each reported value and their own configured bound.
 
 ### `wake` and `cancel`
 
@@ -702,12 +767,13 @@ Error codes are stable machine-readable values. The `error` object contains
 Per-column channel failures are represented in the page payload and do not
 necessarily fail the whole request. The request and response byte limits are
 `jdv.max_request_bytes` (default 1 MiB, minimum 128 bytes) and
-`jdv.max_message_bytes` (default 10 MiB, minimum 1,024 bytes). The output limit
-applies to final JSON text, not peak allocation. For finite doubles, the cJSON
-writer first tries a 15-significant-digit representation and accepts it only
-when its own double read-back is exactly equal to the source value; otherwise it
-falls back to 17 significant digits. It releases each completed column tree
-while appending it to the output.
+`jdv.max_message_bytes` (default 10 MiB, minimum 1,024 bytes). The JSON output
+limit applies to final JSON text, not peak allocation; Arrow IPC bodies use the
+separate binary-transfer limits above. For finite doubles, the cJSON writer
+first tries a 15-significant-digit representation and accepts it only when its
+own double read-back is exactly equal to the source value; otherwise it falls
+back to 17 significant digits. It releases each completed column tree while
+appending it to the output.
 
 If a Paged response exceeds the output limit, the already-computed result is
 retried as progressively shorter row prefixes; the R query and user methods are
