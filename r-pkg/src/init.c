@@ -155,6 +155,8 @@ JDV_WRAP_1(jdv_entry_arrow_close, C_jdv_arrow_close)
 JDV_WRAP_1(jdv_entry_arrow_info, C_jdv_arrow_info)
 JDV_WRAP_0(jdv_entry_arrow_cleanup, C_jdv_arrow_cleanup)
 JDV_WRAP_0(jdv_entry_arrow_status, C_jdv_arrow_status)
+JDV_WRAP_1(jdv_entry_arrow_open, C_jdv_arrow_open)
+JDV_WRAP_3(jdv_entry_arrow_page, C_jdv_arrow_page)
 
 static const R_CallMethodDef CallEntries[] = {
     {"C_jdv_arrow_move", (DL_FUNC)&jdv_entry_arrow_move, 1},
@@ -164,6 +166,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_jdv_arrow_info", (DL_FUNC)&jdv_entry_arrow_info, 1},
     {"C_jdv_arrow_cleanup", (DL_FUNC)&jdv_entry_arrow_cleanup, 0},
     {"C_jdv_arrow_status", (DL_FUNC)&jdv_entry_arrow_status, 0},
+    {"C_jdv_arrow_open", (DL_FUNC)&jdv_entry_arrow_open, 1},
+    {"C_jdv_arrow_page", (DL_FUNC)&jdv_entry_arrow_page, 3},
     {"C_jdv_int64_is_na", (DL_FUNC)&jdv_entry_int64_is_na, 1},
     {"C_jdv_int64_values", (DL_FUNC)&jdv_entry_int64_values, 1},
     {"C_jdv_int64_rank", (DL_FUNC)&jdv_entry_int64_rank, 1},

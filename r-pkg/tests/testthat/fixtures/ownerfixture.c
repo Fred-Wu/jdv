@@ -11,7 +11,7 @@ typedef struct {
     int mode;
     int position;
     int size;
-    int lengths[16];
+    int lengths[128];
     SEXP hook;
     char error[128];
 } owner_state;
@@ -62,9 +62,13 @@ static void schema_release(struct ArrowSchema *schema)
     owner_release release = {(owner_state *)schema->private_data, NULL, "schema_release"};
     counts[1]++;
     strcpy(release.state->error, "overwritten by schema release");
+    if (release.state->mode != 4) {
+        schema->release = NULL;
+        schema->private_data = NULL;
+    }
+    (void)R_ExecWithCleanup(release_callback, &release, release_cleanup, &release);
     schema->release = NULL;
     schema->private_data = NULL;
-    (void)R_ExecWithCleanup(release_callback, &release, release_cleanup, &release);
 }
 
 static void array_release(struct ArrowArray *array)
@@ -73,9 +77,13 @@ static void array_release(struct ArrowArray *array)
     owner_release release = {private_data->state, private_data, "array_release"};
     counts[2]++;
     strcpy(release.state->error, "overwritten by array release");
+    if (release.state->mode != 4) {
+        array->release = NULL;
+        array->private_data = NULL;
+    }
+    (void)R_ExecWithCleanup(release_callback, &release, release_cleanup, &release);
     array->release = NULL;
     array->private_data = NULL;
-    (void)R_ExecWithCleanup(release_callback, &release, release_cleanup, &release);
 }
 
 static void stream_release(struct ArrowArrayStream *stream)
@@ -108,7 +116,10 @@ static int get_next(struct ArrowArrayStream *stream, struct ArrowArray *array)
     owner_state *state = (owner_state *)stream->private_data;
     owner_array *private_data;
     memset(array, 0, sizeof(*array));
-    if (state->position == state->size && state->mode != 1) return 0;
+    if (state->position == state->size && state->mode != 1) {
+        if (state->mode == 3) array->length = 99;
+        return 0;
+    }
     private_data = (owner_array *)calloc(1, sizeof(*private_data));
     if (!private_data) Rf_error("fixture allocation failed");
     state->refs++;
@@ -119,7 +130,7 @@ static int get_next(struct ArrowArrayStream *stream, struct ArrowArray *array)
     array->release = array_release;
     array->private_data = private_data;
     call_hook(state, "next");
-    if (state->mode == 1) {
+    if (state->mode == 1 || state->mode == 4) {
         strcpy(state->error, "original array producer error");
         return 5;
     }
@@ -135,7 +146,7 @@ static SEXP owner_init(SEXP pointer, SEXP lengths, SEXP mode, SEXP hook)
 {
     struct ArrowArrayStream *stream;
     owner_state *state;
-    if (TYPEOF(pointer) != EXTPTRSXP || TYPEOF(lengths) != INTSXP || XLENGTH(lengths) > 16)
+    if (TYPEOF(pointer) != EXTPTRSXP || TYPEOF(lengths) != INTSXP || XLENGTH(lengths) > 128)
         Rf_error("invalid fixture arguments");
     stream = (struct ArrowArrayStream *)R_ExternalPtrAddr(pointer);
     if (!stream || stream->release) Rf_error("fixture destination must be empty");

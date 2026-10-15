@@ -44,6 +44,46 @@
   value
 }
 
+.jdv_stream_open <- function(token) {
+  .jdv_assert_active()
+  value <- .Call(C_jdv_arrow_open, token)
+  .jdv_assert_active()
+  if (!isTRUE(value$ok)) {
+    condition <- structure(
+      list(
+        message = value$message,
+        call = NULL,
+        code = value$code,
+        terminal = isTRUE(value$terminal)
+      ),
+      class = c("jdv_stream_error", "error", "condition")
+    )
+    stop(condition)
+  }
+  value["ok"] <- NULL
+  value
+}
+
+.jdv_stream_page <- function(token, max_rows, max_bytes) {
+  .jdv_assert_active()
+  value <- .Call(C_jdv_arrow_page, token, max_rows, max_bytes)
+  .jdv_assert_active()
+  if (!isTRUE(value$ok)) {
+    condition <- structure(
+      list(
+        message = value$message,
+        call = NULL,
+        code = value$code,
+        terminal = isTRUE(value$terminal)
+      ),
+      class = c("jdv_stream_error", "error", "condition")
+    )
+    stop(condition)
+  }
+  value["ok"] <- NULL
+  value
+}
+
 .jdv_stream_close <- function(token) {
   .jdv_assert_active()
   value <- .Call(C_jdv_arrow_close, token)
