@@ -3,13 +3,11 @@ test_that(
   {
     skip_if_not_installed("arrow")
     skip_if_not_installed("nanoarrow")
-    table <- getExportedValue("arrow", "Table")$create(x = 1:3)
+    table <- arrow::arrow_table(x = 1:3)
     objects <- list(
       table,
-      getExportedValue("arrow", "as_record_batch_reader")(table),
-      getExportedValue("nanoarrow", "as_nanoarrow_array_stream")(data.frame(
-        x = 1:3
-      ))
+      arrow::as_record_batch_reader(table),
+      nanoarrow::as_nanoarrow_array_stream(data.frame(x = 1:3))
     )
     seen <- list()
     local_mocked_bindings(
@@ -35,10 +33,7 @@ test_that(
   {
     skip_if_not_installed("polars")
     skip_if_not_installed("nanoarrow")
-    frame <- getExportedValue("polars", "pl")$DataFrame(
-      id = 1:3,
-      label = c("a", "b", "c")
-    )
+    frame <- polars::pl$DataFrame(id = 1:3, label = c("a", "b", "c"))
     expect_true(inherits(frame, "polars_data_frame"))
     expect_identical(jdv_source(frame)$access, "sequential")
     view <- jdv_register(frame)
@@ -57,11 +52,8 @@ test_that(
     )
     expect_s3_class(response, "jdv_binary_packet")
     expect_identical(.jdv_json_parse(response$header)$result$rows_fetched, 2)
-    stream <- getExportedValue("nanoarrow", "read_nanoarrow")(
-      response$payload,
-      lazy = TRUE
-    )
-    output <- getExportedValue("nanoarrow", "convert_array_stream")(stream)
+    stream <- nanoarrow::read_nanoarrow(response$payload, lazy = TRUE)
+    output <- nanoarrow::convert_array_stream(stream)
     expect_identical(output$id, 1:2)
     expect_identical(output$label, c("a", "b"))
   }

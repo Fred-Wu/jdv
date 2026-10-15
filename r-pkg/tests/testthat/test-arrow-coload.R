@@ -4,7 +4,7 @@ test_that("Arrow and nanoarrow coexist with the table registry", {
   skip_if_not_installed("nanoarrow")
   loadNamespace("arrow")
   loadNamespace("nanoarrow")
-  table <- getExportedValue("arrow", "Table")$create(x = 1:3)
+  table <- arrow::arrow_table(x = 1:3)
   expect_equal(as.data.frame(table), data.frame(x = 1:3))
   registered <- jdv_register(data.frame(x = 1:3), mode = "snapshot")
   on.exit(.jdv_close_internal(registered$id, notify = FALSE), add = TRUE)

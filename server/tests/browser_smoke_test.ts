@@ -285,7 +285,7 @@ Deno.test({
         });
         assertEquals(await count(page, "#warnings img"), 0);
         await Deno.writeFile(
-          `${cacheDir}/jdv-phase7-browser-smoke.png`,
+          `${cacheDir}/jdv-browser-smoke.png`,
           await screenshot(page),
         );
 
@@ -556,7 +556,7 @@ Deno.test({
           ),
         );
         await Deno.writeFile(
-          `${cacheDir}/jdv-phase7-browser-scroll.png`,
+          `${cacheDir}/jdv-browser-scroll.png`,
           await screenshot(page),
         );
         await waitForSelector(

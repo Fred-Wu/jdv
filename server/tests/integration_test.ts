@@ -487,7 +487,7 @@ Deno.test({
         "done_path <- args[[1L]]",
         "library(jdv)",
         'cat("JDV_PACKAGE\\t", find.package("jdv"), "\\n", sep = "", file = stderr())',
-        'id <- jdv_view(data.frame(value = c(2L, 4L, 8L)), title = "Phase 6 integration", mode = "paged")',
+        'id <- jdv_view(data.frame(value = c(2L, 4L, 8L)), title = "integration", mode = "paged")',
         'cat("READY\\t", id, "\\t", Sys.getpid(), "\\n", sep = "")',
         "flush.console()",
         "repeat {",

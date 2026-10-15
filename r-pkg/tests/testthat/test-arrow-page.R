@@ -1,10 +1,10 @@
 page_roundtrip <- function(stream, max_rows = 200L, max_bytes = 1048576) {
-  token <- jdv:::.jdv_stream_move(stream)
-  on.exit(jdv:::.jdv_stream_close(token), add = TRUE)
-  descriptor <- jdv:::.jdv_stream_open(token)
+  token <- .jdv_stream_move(stream)
+  on.exit(.jdv_stream_close(token), add = TRUE)
+  descriptor <- .jdv_stream_open(token)
   pages <- list()
   repeat {
-    page <- jdv:::.jdv_stream_page(token, max_rows, max_bytes)
+    page <- .jdv_stream_page(token, max_rows, max_bytes)
     pages[[length(pages) + 1L]] <- page
     if (isTRUE(page$done)) {
       break
@@ -81,7 +81,7 @@ test_that("page slicing adds the parent struct offset to unoffset children", {
   on.exit(
     {
       if (!is.null(token)) {
-        try(jdv:::.jdv_stream_close(token), silent = TRUE)
+        try(.jdv_stream_close(token), silent = TRUE)
       }
       if (!is.null(dll)) {
         dyn.unload(output)
@@ -107,12 +107,12 @@ test_that("page slicing adds the parent struct offset to unoffset children", {
   expect_null(attr(log, "status"), info = paste(log, collapse = "\n"))
   expect_true(file.exists(output), info = paste(log, collapse = "\n"))
   dll <- dyn.load(output)
-  pointer <- getExportedValue("nanoarrow", "nanoarrow_allocate_array_stream")()
+  pointer <- nanoarrow::nanoarrow_allocate_array_stream()
   init <- getDLLRegisteredRoutines(dll)[[".Call"]][["pagefixture_init"]]
   .Call(init, pointer, 0L)
-  token <- jdv:::.jdv_stream_move(pointer)
-  jdv:::.jdv_stream_open(token)
-  page <- jdv:::.jdv_stream_page(token, 10L, 100000L)
+  token <- .jdv_stream_move(pointer)
+  .jdv_stream_open(token)
+  page <- .jdv_stream_page(token, 10L, 100000L)
   observed <- as.data.frame(decode_page(page$payload))
   expect_identical(observed$value, c(20L, 30L))
   expect_identical(page$rows_seen, 2)
@@ -131,7 +131,7 @@ test_that("unsupported top-level fields are mapped out without losing rows", {
   on.exit(
     {
       if (!is.null(token)) {
-        try(jdv:::.jdv_stream_close(token), silent = TRUE)
+        try(.jdv_stream_close(token), silent = TRUE)
       }
       if (!is.null(dll)) {
         dyn.unload(output)
@@ -156,11 +156,11 @@ test_that("unsupported top-level fields are mapped out without losing rows", {
   expect_null(attr(log, "status"), info = paste(log, collapse = "\n"))
   expect_true(file.exists(output), info = paste(log, collapse = "\n"))
   dll <- dyn.load(output)
-  pointer <- getExportedValue("nanoarrow", "nanoarrow_allocate_array_stream")()
+  pointer <- nanoarrow::nanoarrow_allocate_array_stream()
   init <- getDLLRegisteredRoutines(dll)[[".Call"]][["pagefixture_init"]]
   .Call(init, pointer, 1L)
-  token <- jdv:::.jdv_stream_move(pointer)
-  descriptor <- jdv:::.jdv_stream_open(token)
+  token <- .jdv_stream_move(pointer)
+  descriptor <- .jdv_stream_open(token)
   expect_length(descriptor$columns, 1L)
   expect_identical(
     descriptor$columns[[1]]$unsupported,
@@ -168,36 +168,33 @@ test_that("unsupported top-level fields are mapped out without losing rows", {
   )
   expect_null(descriptor$columns[[1]]$ipc_index)
   expect_null(descriptor$mapping[[1]])
-  page <- jdv:::.jdv_stream_page(token, 10L, 512L)
+  page <- .jdv_stream_page(token, 10L, 512L)
   expect_false(page$done)
   expect_gt(length(page$payload), 0L)
   expect_identical(page$rows_fetched, 1)
   expect_equal(ncol(as.data.frame(decode_page(page$payload))), 0L)
-  eof <- jdv:::.jdv_stream_page(token, 10L, 512L)
+  eof <- .jdv_stream_page(token, 10L, 512L)
   expect_true(eof$done)
   expect_identical(eof$rows_fetched, 0)
 
-  expect_true(jdv:::.jdv_stream_close(token))
-  pointer <- getExportedValue("nanoarrow", "nanoarrow_allocate_array_stream")()
+  expect_true(.jdv_stream_close(token))
+  pointer <- nanoarrow::nanoarrow_allocate_array_stream()
   .Call(init, pointer, 2L)
-  token <- jdv:::.jdv_stream_move(pointer)
-  jdv:::.jdv_stream_open(token)
-  nested_page <- jdv:::.jdv_stream_page(token, 10L, 100000L)
+  token <- .jdv_stream_move(pointer)
+  .jdv_stream_open(token)
+  nested_page <- .jdv_stream_page(token, 10L, 100000L)
   nested_table <- decode_page(nested_page$payload)
   nested_values <- as.data.frame(nested_table)$items[[1]]
   expect_identical(as.character(nested_values), c("alpha", "beta"))
 
-  expect_true(jdv:::.jdv_stream_close(token))
+  expect_true(.jdv_stream_close(token))
   token <- NULL
   for (mode in 3:5) {
-    pointer <- getExportedValue(
-      "nanoarrow",
-      "nanoarrow_allocate_array_stream"
-    )()
+    pointer <- nanoarrow::nanoarrow_allocate_array_stream()
     .Call(init, pointer, as.integer(mode))
-    token <- jdv:::.jdv_stream_move(pointer)
-    descriptor <- jdv:::.jdv_stream_open(token)
-    page <- jdv:::.jdv_stream_page(token, 1L, 1024L)
+    token <- .jdv_stream_move(pointer)
+    descriptor <- .jdv_stream_open(token)
+    page <- .jdv_stream_page(token, 1L, 1024L)
     expect_identical(page$rows_fetched, 1)
     expect_lte(length(page$payload), 1024L)
     decoded <- decode_page(page$payload)
@@ -213,7 +210,7 @@ test_that("unsupported top-level fields are mapped out without losing rows", {
         "vu"
       )
     }
-    expect_true(jdv:::.jdv_stream_close(token))
+    expect_true(.jdv_stream_close(token))
     token <- NULL
   }
 })
@@ -225,8 +222,9 @@ test_that("dictionary and nested list pages are self-contained", {
     c(0L, 1L, 0L),
     dict = c("alpha", "beta")
   )
-  dictionary_reader <- arrow::as_record_batch_reader(arrow::Table$create(
-    category = dictionary
+  dictionary_reader <- arrow::as_record_batch_reader(do.call(
+    arrow::arrow_table,
+    list(category = dictionary)
   ))
   dict_result <- page_roundtrip(
     nanoarrow::as_nanoarrow_array_stream(dictionary_reader),
@@ -242,8 +240,9 @@ test_that("dictionary and nested list pages are self-contained", {
   expect_identical(as.character(dict_values), c("alpha", "beta", "alpha"))
 
   items <- arrow::Array$create(list(c(1L, 2L), integer(), c(3L)))
-  list_reader <- arrow::as_record_batch_reader(arrow::Table$create(
-    items = items
+  list_reader <- arrow::as_record_batch_reader(do.call(
+    arrow::arrow_table,
+    list(items = items)
   ))
   list_result <- page_roundtrip(
     nanoarrow::as_nanoarrow_array_stream(list_reader),
@@ -265,34 +264,37 @@ test_that(
     skip_if_not_installed("nanoarrow")
     skip_if_not_installed("arrow")
     skip_if_not_installed("bit64")
-    wide <- arrow::Table$create(
-      int64 = arrow::Array$create(
-        bit64::as.integer64(c("9007199254740993", "-9007199254740995")),
-        type = arrow::int64()
-      ),
-      uint64 = arrow::Array$create(c(
-        "9007199254740993",
-        "18446744073709551615"
-      ))$cast(arrow::uint64()),
-      decimal128 = arrow::Array$create(c(
-        "12345678901234567890.1234567890",
-        "-0.0000000123"
-      ))$cast(arrow::decimal128(30, 10)),
-      decimal256 = arrow::Array$create(c(
-        "1234567890123456789012345678901234567890.1234567890",
-        "-1234567890123456789012345678901234567890.1234567890"
-      ))$cast(arrow::decimal256(50, 10)),
-      timestamp_ns_utc = arrow::Array$create(
-        bit64::as.integer64(c("1791981296123456789", "-1")),
-        type = arrow::int64()
-      )$cast(arrow::timestamp("ns", "UTC")),
-      duration_ns = arrow::Array$create(
-        bit64::as.integer64(c("1", "-123456789")),
-        type = arrow::int64()
-      )$cast(arrow::duration("ns")),
-      binary = arrow::Array$create(
-        list(as.raw(c(0, 1, 255)), as.raw(c(65, 0, 66))),
-        type = arrow::binary()
+    wide <- do.call(
+      arrow::arrow_table,
+      list(
+        int64 = arrow::Array$create(
+          bit64::as.integer64(c("9007199254740993", "-9007199254740995")),
+          type = arrow::int64()
+        ),
+        uint64 = arrow::Array$create(c(
+          "9007199254740993",
+          "18446744073709551615"
+        ))$cast(arrow::uint64()),
+        decimal128 = arrow::Array$create(c(
+          "12345678901234567890.1234567890",
+          "-0.0000000123"
+        ))$cast(arrow::decimal128(30, 10)),
+        decimal256 = arrow::Array$create(c(
+          "1234567890123456789012345678901234567890.1234567890",
+          "-1234567890123456789012345678901234567890.1234567890"
+        ))$cast(arrow::decimal256(50, 10)),
+        timestamp_ns_utc = arrow::Array$create(
+          bit64::as.integer64(c("1791981296123456789", "-1")),
+          type = arrow::int64()
+        )$cast(arrow::timestamp("ns", "UTC")),
+        duration_ns = arrow::Array$create(
+          bit64::as.integer64(c("1", "-123456789")),
+          type = arrow::int64()
+        )$cast(arrow::duration("ns")),
+        binary = arrow::Array$create(
+          list(as.raw(c(0, 1, 255)), as.raw(c(65, 0, 66))),
+          type = arrow::binary()
+        )
       )
     )
     result <- page_roundtrip(
@@ -353,8 +355,9 @@ test_that(
       type = arrow::map_of(arrow::utf8(), arrow::int32())
     )
     map_result <- page_roundtrip(
-      nanoarrow::as_nanoarrow_array_stream(arrow::Table$create(
-        entries = map_array
+      nanoarrow::as_nanoarrow_array_stream(do.call(
+        arrow::arrow_table,
+        list(entries = map_array)
       )),
       max_rows = 2L
     )
@@ -397,11 +400,11 @@ test_that("dictionary replacement remains batch scoped and is recopied", {
     arrow::RecordBatch$create(category = first),
     arrow::RecordBatch$create(category = second)
   )
-  token <- jdv:::.jdv_stream_move(nanoarrow::as_nanoarrow_array_stream(reader))
-  on.exit(jdv:::.jdv_stream_close(token), add = TRUE)
-  jdv:::.jdv_stream_open(token)
-  page1 <- jdv:::.jdv_stream_page(token, 10L, 100000L)
-  page2 <- jdv:::.jdv_stream_page(token, 10L, 100000L)
+  token <- .jdv_stream_move(nanoarrow::as_nanoarrow_array_stream(reader))
+  on.exit(.jdv_stream_close(token), add = TRUE)
+  .jdv_stream_open(token)
+  page1 <- .jdv_stream_page(token, 10L, 100000L)
+  page2 <- .jdv_stream_page(token, 10L, 100000L)
   expect_identical(page1$rows_fetched, 2)
   expect_identical(page2$first_row, 2)
   expect_identical(page2$rows_fetched, 2)
@@ -421,7 +424,10 @@ test_that("dictionary replacement remains batch scoped and is recopied", {
     score = c(1L, 2L, 3L)
   )
   nested_result <- page_roundtrip(
-    nanoarrow::as_nanoarrow_array_stream(arrow::Table$create(group = nested)),
+    nanoarrow::as_nanoarrow_array_stream(do.call(
+      arrow::arrow_table,
+      list(group = nested)
+    )),
     max_rows = 2L
   )
   nested_values <- do.call(
@@ -443,28 +449,28 @@ test_that("byte budget splits batches and empty batches do not imply EOF", {
   stream <- nanoarrow::as_nanoarrow_array_stream(data.frame(
     value = rep(strrep("x", 100L), 5L)
   ))
-  token <- jdv:::.jdv_stream_move(stream)
-  on.exit(jdv:::.jdv_stream_close(token), add = TRUE)
-  jdv:::.jdv_stream_open(token)
-  first <- jdv:::.jdv_stream_page(token, 5L, 700L)
+  token <- .jdv_stream_move(stream)
+  on.exit(.jdv_stream_close(token), add = TRUE)
+  .jdv_stream_open(token)
+  first <- .jdv_stream_page(token, 5L, 700L)
   expect_gt(first$rows_fetched, 0)
   expect_lt(first$rows_fetched, 5)
   expect_lte(length(first$payload), 700L)
   rest <- list(first)
   while (rest[[length(rest)]]$rows_fetched > 0) {
-    rest[[length(rest) + 1L]] <- jdv:::.jdv_stream_page(token, 5L, 700L)
+    rest[[length(rest) + 1L]] <- .jdv_stream_page(token, 5L, 700L)
   }
   expect_identical(sum(vapply(rest, `[[`, numeric(1), "rows_fetched")), 5)
 
   with_arrow_owner(function(owner) {
-    empty_token <- jdv:::.jdv_stream_move(owner$stream(lengths = rep(0L, 64L)))
-    on.exit(jdv:::.jdv_stream_close(empty_token), add = TRUE)
-    jdv:::.jdv_stream_open(empty_token)
-    empty_page <- jdv:::.jdv_stream_page(empty_token, 1L, 100000L)
+    empty_token <- .jdv_stream_move(owner$stream(lengths = rep(0L, 64L)))
+    on.exit(.jdv_stream_close(empty_token), add = TRUE)
+    .jdv_stream_open(empty_token)
+    empty_page <- .jdv_stream_page(empty_token, 1L, 100000L)
     expect_identical(empty_page$rows_fetched, 0)
     expect_false(empty_page$done)
     expect_gt(length(empty_page$payload), 0L)
-    eof_page <- jdv:::.jdv_stream_page(empty_token, 1L, 100000L)
+    eof_page <- .jdv_stream_page(empty_token, 1L, 100000L)
     expect_true(eof_page$done)
     expect_gt(length(eof_page$payload), 0L)
     expect_equal(owner$counts(), c(0, 0, 64, 1))
@@ -499,30 +505,30 @@ test_that("encoder interrupts unwind cleanly and preserve the page cursor", {
   expect_true(file.exists(output), info = paste(compile_log, collapse = "\n"))
   fixture <- dyn.load(output)
   init <- getDLLRegisteredRoutines(fixture)[[".Call"]][["pagefixture_init"]]
-  pointer <- getExportedValue("nanoarrow", "nanoarrow_allocate_array_stream")()
+  pointer <- nanoarrow::nanoarrow_allocate_array_stream()
   .Call(init, pointer, 6L)
-  token <- jdv:::.jdv_stream_move(pointer)
+  token <- .jdv_stream_move(pointer)
   on.exit(
     {
-      jdv:::.jdv_stream_close(token)
+      .jdv_stream_close(token)
       dyn.unload(output)
       unlink(work, recursive = TRUE)
     },
     add = TRUE
   )
-  jdv:::.jdv_stream_open(token)
-  first <- jdv:::.jdv_stream_page(token, 1L, 100000L)
+  .jdv_stream_open(token)
+  first <- .jdv_stream_page(token, 1L, 100000L)
   expect_identical(first$first_row, 0)
   expect_identical(first$rows_fetched, 1)
   expect_identical(as.data.frame(decode_page(first$payload))$value, 101L)
 
   interrupted <- tryCatch(
-    jdv:::.jdv_stream_page(token, 1L, 100000L),
+    .jdv_stream_page(token, 1L, 100000L),
     interrupt = identity
   )
   expect_s3_class(interrupted, "interrupt")
 
-  retry <- jdv:::.jdv_stream_page(token, 1L, 100000L)
+  retry <- .jdv_stream_page(token, 1L, 100000L)
   expect_identical(retry$first_row, 1)
   expect_identical(retry$rows_fetched, 1)
   expect_identical(retry$rows_seen, 2)
@@ -531,13 +537,10 @@ test_that("encoder interrupts unwind cleanly and preserve the page cursor", {
 
 test_that("only a null release callback marks producer EOF", {
   with_arrow_owner(function(owner) {
-    token <- jdv:::.jdv_stream_move(owner$stream(
-      lengths = integer(),
-      mode = 3L
-    ))
-    on.exit(jdv:::.jdv_stream_close(token), add = TRUE)
-    jdv:::.jdv_stream_open(token)
-    page <- jdv:::.jdv_stream_page(token, 1L, 100000L)
+    token <- .jdv_stream_move(owner$stream(lengths = integer(), mode = 3L))
+    on.exit(.jdv_stream_close(token), add = TRUE)
+    .jdv_stream_open(token)
+    page <- .jdv_stream_page(token, 1L, 100000L)
     expect_true(page$done)
     expect_identical(page$rows_fetched, 0)
     expect_gt(length(page$payload), 0L)
@@ -556,7 +559,9 @@ test_that("Polars string_view is normalized to large_string in page IPC", {
   expect_identical(result$descriptor$schema$children[[1]]$format, "vu")
   observed <- as.data.frame(decode_page(result$pages[[1]]$payload))
   expect_identical(observed$label, c("alpha", "beta"))
-  nested <- polars::pl$DataFrame(items = list(c("a", "b"), character()))
+  nested <- polars::pl$DataFrame(
+    items = polars::pl$Series("items", list(c("a", "b"), character()))
+  )
   nested_stream <- nanoarrow::as_nanoarrow_array_stream(nested)
   nested_schema <- nested_stream$get_schema()
   expect_identical(nested_schema$children[[1]]$format, "+L")
@@ -571,24 +576,24 @@ test_that("Polars string_view is normalized to large_string in page IPC", {
 
 test_that("a single row over max_bytes fails the cursor explicitly", {
   skip_if_not_installed("nanoarrow")
-  token <- jdv:::.jdv_stream_move(nanoarrow::as_nanoarrow_array_stream(data.frame(
+  token <- .jdv_stream_move(nanoarrow::as_nanoarrow_array_stream(data.frame(
     value = strrep("x", 1024L)
   )))
-  on.exit(jdv:::.jdv_stream_close(token), add = TRUE)
-  jdv:::.jdv_stream_open(token)
+  on.exit(.jdv_stream_close(token), add = TRUE)
+  .jdv_stream_open(token)
   condition <- tryCatch(
-    jdv:::.jdv_stream_page(token, 1L, 64L),
+    .jdv_stream_page(token, 1L, 64L),
     jdv_stream_error = identity
   )
   expect_s3_class(condition, "jdv_stream_error")
   expect_identical(condition$code, "limit_exceeded")
   expect_true(condition$terminal)
   failed <- tryCatch(
-    jdv:::.jdv_stream_page(token, 1L, 1024L),
+    .jdv_stream_page(token, 1L, 1024L),
     jdv_stream_error = identity
   )
   expect_identical(failed$code, "limit_exceeded")
-  expect_error(jdv:::.jdv_stream_page(token, 1L, 2^63))
+  expect_error(.jdv_stream_page(token, 1L, 2^63))
 })
 
 test_that("null fixed-width values count toward copy budgets", {
@@ -606,26 +611,27 @@ test_that("null fixed-width values count toward copy budgets", {
     list(NULL, strrep("x", 4096L)),
     type = arrow::fixed_size_list_of(arrow::utf8(), 1L)
   )
-  token <- jdv:::.jdv_stream_move(nanoarrow::as_nanoarrow_array_stream(arrow::Table$create(
-    fixed_binary = fixed_binary,
-    fixed_list = fixed_list
+  token <- .jdv_stream_move(nanoarrow::as_nanoarrow_array_stream(do.call(
+    arrow::arrow_table,
+    list(fixed_binary = fixed_binary, fixed_list = fixed_list)
   )))
-  on.exit(jdv:::.jdv_stream_close(token), add = TRUE)
-  jdv:::.jdv_stream_open(token)
+  on.exit(.jdv_stream_close(token), add = TRUE)
+  .jdv_stream_open(token)
   condition <- tryCatch(
-    jdv:::.jdv_stream_page(token, 1L, 512L),
+    .jdv_stream_page(token, 1L, 512L),
     jdv_stream_error = identity
   )
   expect_s3_class(condition, "jdv_stream_error")
   expect_identical(condition$code, "limit_exceeded")
   expect_true(condition$terminal)
 
-  hidden_token <- jdv:::.jdv_stream_move(nanoarrow::as_nanoarrow_array_stream(arrow::Table$create(
-    hidden = hidden_variable_child
+  hidden_token <- .jdv_stream_move(nanoarrow::as_nanoarrow_array_stream(do.call(
+    arrow::arrow_table,
+    list(hidden = hidden_variable_child)
   )))
-  on.exit(jdv:::.jdv_stream_close(hidden_token), add = TRUE)
-  jdv:::.jdv_stream_open(hidden_token)
-  hidden_page <- jdv:::.jdv_stream_page(hidden_token, 1L, 512L)
+  on.exit(.jdv_stream_close(hidden_token), add = TRUE)
+  .jdv_stream_open(hidden_token)
+  hidden_page <- .jdv_stream_page(hidden_token, 1L, 512L)
   expect_identical(hidden_page$rows_fetched, 1)
   expect_lte(length(hidden_page$payload), 512L)
   hidden_value <- as.data.frame(decode_page(hidden_page$payload))$hidden[[1]]
@@ -634,66 +640,66 @@ test_that("null fixed-width values count toward copy budgets", {
 
 test_that("producer callback errors terminally release page resources", {
   with_arrow_owner(function(owner) {
-    schema_token <- jdv:::.jdv_stream_move(owner$stream(
+    schema_token <- .jdv_stream_move(owner$stream(
       hook = function(event) {
         if (event == "schema") stop("schema callback failure")
       }
     ))
     schema_error <- tryCatch(
-      jdv:::.jdv_stream_open(schema_token),
+      .jdv_stream_open(schema_token),
       jdv_stream_error = identity
     )
     expect_s3_class(schema_error, "jdv_stream_error")
     expect_identical(schema_error$code, "producer_error")
     expect_true(schema_error$terminal)
     expect_equal(owner$counts(), c(1, 1, 0, 0))
-    expect_true(jdv:::.jdv_stream_close(schema_token))
+    expect_true(.jdv_stream_close(schema_token))
 
-    next_token <- jdv:::.jdv_stream_move(owner$stream(
+    next_token <- .jdv_stream_move(owner$stream(
       hook = function(event) if (event == "next") stop("next callback failure")
     ))
-    jdv:::.jdv_stream_open(next_token)
+    .jdv_stream_open(next_token)
     next_error <- tryCatch(
-      jdv:::.jdv_stream_page(next_token, 10L, 100000L),
+      .jdv_stream_page(next_token, 10L, 100000L),
       jdv_stream_error = identity
     )
     expect_s3_class(next_error, "jdv_stream_error")
     expect_identical(next_error$code, "producer_error")
     expect_true(next_error$terminal)
     expect_equal(owner$counts(), c(2, 2, 1, 0))
-    expect_true(jdv:::.jdv_stream_close(next_token))
+    expect_true(.jdv_stream_close(next_token))
 
-    return_token <- jdv:::.jdv_stream_move(owner$stream(mode = 1L))
-    jdv:::.jdv_stream_open(return_token)
+    return_token <- .jdv_stream_move(owner$stream(mode = 1L))
+    .jdv_stream_open(return_token)
     return_error <- tryCatch(
-      jdv:::.jdv_stream_page(return_token, 10L, 100000L),
+      .jdv_stream_page(return_token, 10L, 100000L),
       jdv_stream_error = identity
     )
     expect_s3_class(return_error, "jdv_stream_error")
     expect_identical(return_error$code, "producer_error")
     expect_true(return_error$terminal)
     expect_equal(owner$counts(), c(3, 3, 2, 0))
-    expect_true(jdv:::.jdv_stream_close(return_token))
+    expect_true(.jdv_stream_close(return_token))
 
-    schema_return_token <- jdv:::.jdv_stream_move(owner$stream(mode = 2L))
+    schema_return_token <- .jdv_stream_move(owner$stream(mode = 2L))
     schema_return_error <- tryCatch(
-      jdv:::.jdv_stream_open(schema_return_token),
+      .jdv_stream_open(schema_return_token),
       jdv_stream_error = identity
     )
     expect_s3_class(schema_return_error, "jdv_stream_error")
     expect_identical(schema_return_error$code, "producer_error")
     expect_true(schema_return_error$terminal)
     expect_equal(owner$counts(), c(4, 4, 2, 0))
-    expect_true(jdv:::.jdv_stream_close(schema_return_token))
+    expect_true(.jdv_stream_close(schema_return_token))
 
     reentrant_token <- NULL
     reentry_error <- NULL
-    release_token <- jdv:::.jdv_stream_move(owner$stream(
+    release_token <- .jdv_stream_move(owner$stream(
       mode = 4L,
       hook = function(event) {
         if (event == "array_release") {
           reentry_error <<- tryCatch(
-            jdv:::.jdv_stream_close(reentrant_token),
+            .jdv_stream_close(reentrant_token),
             error = identity
           )
           stop("release callback interrupted before clearing release")
@@ -701,9 +707,9 @@ test_that("producer callback errors terminally release page resources", {
       }
     ))
     reentrant_token <- release_token
-    jdv:::.jdv_stream_open(release_token)
+    .jdv_stream_open(release_token)
     release_error <- tryCatch(
-      jdv:::.jdv_stream_page(release_token, 1L, 100000L),
+      .jdv_stream_page(release_token, 1L, 100000L),
       jdv_stream_error = identity
     )
     expect_s3_class(release_error, "jdv_stream_error")
@@ -711,22 +717,22 @@ test_that("producer callback errors terminally release page resources", {
     expect_true(release_error$terminal)
     expect_s3_class(reentry_error, "error")
     expect_equal(owner$counts(), c(5, 5, 3, 0))
-    expect_true(jdv:::.jdv_stream_close(release_token))
+    expect_true(.jdv_stream_close(release_token))
     expect_equal(owner$counts(), c(5, 5, 3, 0))
 
-    interrupt_token <- jdv:::.jdv_stream_move(owner$stream(
+    interrupt_token <- .jdv_stream_move(owner$stream(
       hook = function(event) if (event == "next") interrupt()
     ))
-    jdv:::.jdv_stream_open(interrupt_token)
+    .jdv_stream_open(interrupt_token)
     interrupt_error <- tryCatch(
-      jdv:::.jdv_stream_page(interrupt_token, 1L, 100000L),
+      .jdv_stream_page(interrupt_token, 1L, 100000L),
       jdv_stream_error = identity
     )
     expect_s3_class(interrupt_error, "jdv_stream_error")
     expect_identical(interrupt_error$code, "producer_error")
     expect_true(interrupt_error$terminal)
     expect_equal(owner$counts(), c(6, 6, 4, 0))
-    expect_true(jdv:::.jdv_stream_close(interrupt_token))
+    expect_true(.jdv_stream_close(interrupt_token))
   })
 })
 
@@ -734,42 +740,42 @@ test_that("legacy stream callbacks reject page-owned cursors in every state", {
   with_arrow_owner(function(owner) {
     expect_legacy_rejection <- function(token) {
       before <- owner$counts()
-      expect_error(jdv:::.jdv_stream_schema(token), "sequential page cursor")
-      expect_error(jdv:::.jdv_stream_next(token), "sequential page cursor")
+      expect_error(.jdv_stream_schema(token), "sequential page cursor")
+      expect_error(.jdv_stream_next(token), "sequential page cursor")
       expect_identical(owner$counts(), before)
     }
 
-    opened <- jdv:::.jdv_stream_move(owner$stream(lengths = integer()))
-    on.exit(jdv:::.jdv_stream_close(opened), add = TRUE)
-    jdv:::.jdv_stream_open(opened)
+    opened <- .jdv_stream_move(owner$stream(lengths = integer()))
+    on.exit(.jdv_stream_close(opened), add = TRUE)
+    .jdv_stream_open(opened)
     expect_legacy_rejection(opened)
 
-    failed_open <- jdv:::.jdv_stream_move(owner$stream(mode = 2L))
-    on.exit(jdv:::.jdv_stream_close(failed_open), add = TRUE)
+    failed_open <- .jdv_stream_move(owner$stream(mode = 2L))
+    on.exit(.jdv_stream_close(failed_open), add = TRUE)
     schema_error <- tryCatch(
-      jdv:::.jdv_stream_open(failed_open),
+      .jdv_stream_open(failed_open),
       jdv_stream_error = identity
     )
     expect_identical(schema_error$code, "producer_error")
     expect_true(schema_error$terminal)
     expect_legacy_rejection(failed_open)
 
-    failed_page <- jdv:::.jdv_stream_move(owner$stream(mode = 1L))
-    on.exit(jdv:::.jdv_stream_close(failed_page), add = TRUE)
-    jdv:::.jdv_stream_open(failed_page)
+    failed_page <- .jdv_stream_move(owner$stream(mode = 1L))
+    on.exit(.jdv_stream_close(failed_page), add = TRUE)
+    .jdv_stream_open(failed_page)
     producer_error <- tryCatch(
-      jdv:::.jdv_stream_page(failed_page, 1L, 100000L),
+      .jdv_stream_page(failed_page, 1L, 100000L),
       jdv_stream_error = identity
     )
     expect_identical(producer_error$code, "producer_error")
     expect_true(producer_error$terminal)
     expect_legacy_rejection(failed_page)
 
-    over_budget <- jdv:::.jdv_stream_move(owner$stream(lengths = 1L))
-    on.exit(jdv:::.jdv_stream_close(over_budget), add = TRUE)
-    jdv:::.jdv_stream_open(over_budget)
+    over_budget <- .jdv_stream_move(owner$stream(lengths = 1L))
+    on.exit(.jdv_stream_close(over_budget), add = TRUE)
+    .jdv_stream_open(over_budget)
     budget_error <- tryCatch(
-      jdv:::.jdv_stream_page(over_budget, 1L, 1L),
+      .jdv_stream_page(over_budget, 1L, 1L),
       jdv_stream_error = identity
     )
     expect_identical(budget_error$code, "limit_exceeded")

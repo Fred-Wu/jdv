@@ -2,7 +2,7 @@ local({
   socket_directory <- jdv_test_uds_directory()
   on.exit(unlink(socket_directory, recursive = TRUE), add = TRUE)
   # Restore file-owned notification state even when a test fails.
-  state <- jdv:::.jdv_state
+  state <- .jdv_state
   initial_outbox <- state$outbox
   on.exit(state$outbox <- initial_outbox, add = TRUE)
 

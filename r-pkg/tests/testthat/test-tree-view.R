@@ -1,6 +1,6 @@
 local({
   # Restore file-owned notification state even when a test fails.
-  state <- jdv:::.jdv_state
+  state <- .jdv_state
   initial_outbox <- state$outbox
   on.exit(state$outbox <- initial_outbox, add = TRUE)
 
@@ -8,7 +8,7 @@ local({
 
   tree_rpc <- function(method, params, id = 1) {
     request <- list(id = id, method = method, params = params)
-    jdv:::.jdv_json_parse(jdv_rpc(jdv:::.jdv_json_encode(request)))
+    .jdv_json_parse(jdv_rpc(.jdv_json_encode(request)))
   }
 
   tree_call <- function(view, method, params = list(), id = 1) {
@@ -21,8 +21,8 @@ local({
     "tree descriptors expose bounded typed children and captured values",
     {
       root <- jdv_register(list(items = list(answer = 42L)))
-      on.exit(jdv:::.jdv_close_internal(root$id), add = TRUE)
-      descriptor <- jdv:::.jdv_json_parse(root$open)$params
+      on.exit(.jdv_close_internal(root$id), add = TRUE)
+      descriptor <- .jdv_json_parse(root$open)$params
       expect_identical(descriptor$kind, "tree")
       expect_identical(descriptor$access, "random")
       expect_length(descriptor$path, 0)
@@ -73,7 +73,7 @@ local({
       function_value = identity,
       null = NULL
     ))
-    on.exit(jdv:::.jdv_close_internal(root$id), add = TRUE)
+    on.exit(.jdv_close_internal(root$id), add = TRUE)
 
     page <- tree_call(root, "object/children", list(path = list(), limit = 10))
     children <- stats::setNames(
@@ -98,7 +98,7 @@ local({
       format.jdvExplosive <- function(x, ...) stop("format dispatched")
       value <- structure(list(child = 1:2), class = "jdvExplosive")
       root <- jdv_register(value)
-      on.exit(jdv:::.jdv_close_internal(root$id), add = TRUE)
+      on.exit(.jdv_close_internal(root$id), add = TRUE)
       page <- tree_call(
         root,
         "object/children",
@@ -143,7 +143,7 @@ local({
         env
       )
       env_view <- jdv_register(env)
-      on.exit(jdv:::.jdv_close_internal(env_view$id), add = TRUE)
+      on.exit(.jdv_close_internal(env_view$id), add = TRUE)
       env_page <- tree_call(
         env_view,
         "object/children",
@@ -178,7 +178,7 @@ local({
       } else {
         expect_identical(forced$error$code, "unavailable")
         for (name in c("lazy", "forced")) {
-          found <- .Call(jdv:::C_jdv_tree_child, env, "binding", 0, name)
+          found <- .Call(C_jdv_tree_child, env, "binding", 0, name)
           expect_identical(found$status, "opaque")
           expect_null(found$value)
         }
@@ -190,7 +190,7 @@ local({
 
   test_that("tree paging reads bounded ALTREP prefixes and distinguishes aliases from cycles", {
     root <- jdv_register(as.integer(seq_len(100000000L)))
-    on.exit(jdv:::.jdv_close_internal(root$id), add = TRUE)
+    on.exit(.jdv_close_internal(root$id), add = TRUE)
     page <- tree_call(
       root,
       "object/children",
@@ -208,7 +208,7 @@ local({
     cyclic$right <- shared
     cyclic$self <- cyclic
     env_view <- jdv_register(cyclic)
-    on.exit(jdv:::.jdv_close_internal(env_view$id), add = TRUE)
+    on.exit(.jdv_close_internal(env_view$id), add = TRUE)
     children <- tree_call(
       env_view,
       "object/children",
@@ -245,15 +245,13 @@ local({
         list(path = list(list(type = "index", index = 1)))
       )
       child_id <- opened$view
-      response <- jdv:::.jdv_json_parse(jdv::jdv_rpc(jdv:::.jdv_json_encode(list(
+      response <- .jdv_json_parse(jdv_rpc(.jdv_json_encode(list(
         id = 9,
         method = "view/close",
         params = list(view = root$id, generation = 1)
       ))))
       expect_true(response$result$closed)
-      notification <- jdv:::.jdv_json_parse(tail(jdv:::.jdv_state$outbox, 1)[[
-        1
-      ]])
+      notification <- .jdv_json_parse(tail(.jdv_state$outbox, 1)[[1]])
       expect_identical(notification$method, "view/closed")
       expect_identical(notification$params$view, child_id)
       expect_identical(notification$params$reason, "parent_closed")
@@ -270,7 +268,7 @@ local({
       expect_identical(stale$error$code, "view_not_found")
 
       active_root <- jdv_register(list(value = 1L))
-      on.exit(jdv:::.jdv_close_internal(active_root$id), add = TRUE)
+      on.exit(.jdv_close_internal(active_root$id), add = TRUE)
       too_deep <- rep(list(list(type = "index", index = 1)), 33)
       request <- list(
         id = 10,
@@ -284,9 +282,7 @@ local({
         )
       )
       expect_match(
-        jdv:::.jdv_json_parse(jdv::jdv_rpc(jdv:::.jdv_json_encode(
-          request
-        )))$error$message,
+        .jdv_json_parse(jdv_rpc(.jdv_json_encode(request)))$error$message,
         "bounded array"
       )
     }
@@ -295,7 +291,7 @@ local({
   test_that("tree child labels preserve duplicate, empty, and absent names", {
     named <- structure(list(1L, 2L, 3L), names = c("same", "", "same"))
     root <- jdv_register(named)
-    on.exit(jdv:::.jdv_close_internal(root$id), add = TRUE)
+    on.exit(.jdv_close_internal(root$id), add = TRUE)
     page <- tree_call(
       root,
       "object/children",
@@ -311,7 +307,7 @@ local({
     )
 
     unnamed <- jdv_register(list(1L, 2L))
-    on.exit(jdv:::.jdv_close_internal(unnamed$id), add = TRUE)
+    on.exit(.jdv_close_internal(unnamed$id), add = TRUE)
     unnamed_page <- tree_call(
       unnamed,
       "object/children",
@@ -331,7 +327,7 @@ local({
       assign(long_name, 1L, envir = env)
       env$ordinary <- 2L
       root <- jdv_register(env)
-      on.exit(jdv:::.jdv_close_internal(root$id), add = TRUE)
+      on.exit(.jdv_close_internal(root$id), add = TRUE)
 
       page <- tree_call(
         root,
@@ -358,7 +354,7 @@ local({
     {
       pairs <- pairlist(NULL, 2L, named = 3L)
       root <- jdv_register(pairs)
-      on.exit(jdv:::.jdv_close_internal(root$id), add = TRUE)
+      on.exit(.jdv_close_internal(root$id), add = TRUE)
       page <- tree_call(
         root,
         "object/children",
@@ -378,18 +374,18 @@ local({
         .Data = list(first = 11L),
         note = "safe"
       )
-      info <- .Call(jdv:::C_jdv_tree_info, object)
+      info <- .Call(C_jdv_tree_info, object)
       expect_identical(info$type, "s4")
       expect_identical(info$storage_type, "list")
-      indexed <- .Call(jdv:::C_jdv_tree_child, object, "index", 1, "")
+      indexed <- .Call(C_jdv_tree_child, object, "index", 1, "")
       expect_identical(indexed$status, "value")
-      data_slot <- .Call(jdv:::C_jdv_tree_child, object, "slot", 0, ".Data")
+      data_slot <- .Call(C_jdv_tree_child, object, "slot", 0, ".Data")
       expect_identical(data_slot$status, "s4_data_opaque")
-      note_slot <- .Call(jdv:::C_jdv_tree_child, object, "slot", 0, "note")
+      note_slot <- .Call(C_jdv_tree_child, object, "slot", 0, "note")
       expect_identical(note_slot$status, "value")
       expect_identical(note_slot$value, "safe")
       s4_root <- jdv_register(object)
-      on.exit(jdv:::.jdv_close_internal(s4_root$id), add = TRUE)
+      on.exit(.jdv_close_internal(s4_root$id), add = TRUE)
       s4_page <- tree_call(
         s4_root,
         "object/children",
@@ -403,7 +399,7 @@ local({
 
       methods::setClass("jdvTreeNullSlotFixture", slots = c(value = "ANY"))
       null_slot <- methods::new("jdvTreeNullSlotFixture", value = NULL)
-      result <- .Call(jdv:::C_jdv_tree_child, null_slot, "slot", 0, "value")
+      result <- .Call(C_jdv_tree_child, null_slot, "slot", 0, "value")
       expect_identical(result$status, "value")
       expect_null(result$value)
     }
@@ -413,7 +409,7 @@ local({
     env <- new.env(parent = emptyenv())
     env$item <- 1L
     root <- jdv_register(env)
-    on.exit(jdv:::.jdv_close_internal(root$id), add = TRUE)
+    on.exit(.jdv_close_internal(root$id), add = TRUE)
     rm("item", envir = env)
     missing <- tree_rpc(
       "object/open",
@@ -426,7 +422,7 @@ local({
     expect_identical(missing$error$code, "unavailable")
 
     old <- jdv_register(list(value = 1L), title = "tree-generation")
-    on.exit(jdv:::.jdv_close_internal(old$id), add = TRUE)
+    on.exit(.jdv_close_internal(old$id), add = TRUE)
     current <- jdv_register(list(value = 2L), title = "tree-generation")
     expect_identical(current$id, old$id)
     stale <- tree_rpc(
@@ -438,11 +434,11 @@ local({
 
   test_that("object-open uses the output limit instead of the request limit", {
     root <- jdv_register(list(child = list(value = 1L)))
-    on.exit(jdv:::.jdv_close_internal(root$id), add = TRUE)
+    on.exit(.jdv_close_internal(root$id), add = TRUE)
     old_options <- options(jdv.max_request_bytes = 128)
     on.exit(options(old_options), add = TRUE)
 
-    request <- jdv:::.jdv_json_encode(list(
+    request <- .jdv_json_encode(list(
       id = 1,
       method = "object/open",
       params = list(
@@ -456,14 +452,14 @@ local({
     expect_gt(nchar(raw_response, type = "bytes"), 128)
 
     options(jdv.max_request_bytes = old_options$jdv.max_request_bytes)
-    response <- jdv:::.jdv_json_parse(raw_response)
+    response <- .jdv_json_parse(raw_response)
     expect_identical(response$result$parent, root$id)
-    expect_true(exists(response$result$view, envir = jdv:::.jdv_state$entries))
+    expect_true(exists(response$result$view, envir = .jdv_state$entries))
   })
 
   test_that("failed final object-open encoding rolls back the child", {
     root <- jdv_register(list(child = list(value = 1L)))
-    on.exit(jdv:::.jdv_close_internal(root$id), add = TRUE)
+    on.exit(.jdv_close_internal(root$id), add = TRUE)
     namespace <- asNamespace("jdv")
     original <- get(".jdv_json_encode", namespace)
     unlockBinding(".jdv_json_encode", namespace)
@@ -497,9 +493,9 @@ local({
     )
 
     expect_true(!is.null(response$error))
-    root_entry <- get(root$id, jdv:::.jdv_state$entries)
+    root_entry <- get(root$id, .jdv_state$entries)
     expect_length(root_entry$children, 0)
-    expect_length(ls(jdv:::.jdv_state$entries, all.names = TRUE), 1)
+    expect_length(ls(.jdv_state$entries, all.names = TRUE), 1)
   })
 
   test_that(
@@ -509,7 +505,7 @@ local({
         nested = list(value = 1L),
         table = data.frame(x = 1L)
       ))
-      on.exit(jdv:::.jdv_close_internal(root$id), add = TRUE)
+      on.exit(.jdv_close_internal(root$id), add = TRUE)
       nested <- tree_call(
         root,
         "object/open",
@@ -552,7 +548,7 @@ local({
       expect_true(closed$result$closed)
       expect_false(exists(
         grid$view,
-        envir = jdv:::.jdv_state$entries,
+        envir = .jdv_state$entries,
         inherits = FALSE
       ))
     }

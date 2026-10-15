@@ -50,7 +50,7 @@ with_arrow_owner <- function(code) {
         ]]
         if (!is.null(cleanup)) try(.Call(cleanup), silent = TRUE)
       }
-      valid <- getExportedValue("nanoarrow", "nanoarrow_pointer_is_valid")
+      valid <- nanoarrow::nanoarrow_pointer_is_valid
       for (pointer in producers) {
         if (isTRUE(valid(pointer))) try(pointer$release(), silent = TRUE)
       }
@@ -61,7 +61,7 @@ with_arrow_owner <- function(code) {
   )
   symbols <- getDLLRegisteredRoutines(dll)[[".Call"]]
   stream <- function(lengths = c(0L, 3L), mode = 0L, hook = NULL) {
-    allocate <- getExportedValue("nanoarrow", "nanoarrow_allocate_array_stream")
+    allocate <- nanoarrow::nanoarrow_allocate_array_stream
     pointer <- allocate()
     .Call(
       symbols$owner_init,

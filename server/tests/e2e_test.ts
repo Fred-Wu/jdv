@@ -985,7 +985,7 @@ Deno.test({
         assertEquals(responseRowIndex(reopenedPage), [1, 2]);
         for (const extra of extraBrowsers) extra.close();
         console.log(
-          "Phase 8 real R/arf E2E passed: Snapshot offline queries, busy-loop wake/resume, bounded Paged wire output, shared Paged semantics, Snapshot/Paged agreement, and reconnect cleanup.",
+          "Real R/arf E2E passed: Snapshot offline queries, busy-loop wake/resume, bounded Paged wire output, shared Paged semantics, Snapshot/Paged agreement, and reconnect cleanup.",
         );
       }, 300_000);
     } catch (error) {

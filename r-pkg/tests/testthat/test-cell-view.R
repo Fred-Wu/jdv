@@ -1,7 +1,7 @@
 local({
   socket_directory <- jdv_test_uds_directory()
   on.exit(unlink(socket_directory, recursive = TRUE), add = TRUE)
-  state <- jdv:::.jdv_state
+  state <- .jdv_state
   saved_outbox <- state$outbox
   on.exit(state$outbox <- saved_outbox, add = TRUE)
   rpc <- function(view, path, method = "object/open") {
@@ -14,7 +14,7 @@ local({
         path = path
       )
     )
-    jdv:::.jdv_json_parse(jdv_rpc(jdv:::.jdv_json_encode(request)))
+    .jdv_json_parse(jdv_rpc(.jdv_json_encode(request)))
   }
   cell <- function(row = 1, column = 0) {
     list(kind = "cell", row_index = row, column = column)
@@ -27,7 +27,7 @@ local({
       row.names = .set_row_names(column_size(column))
     )
   }
-  close <- function(view) jdv:::.jdv_close_internal(view$id %||% view$view)
+  close <- function(view) .jdv_close_internal(view$id %||% view$view)
 
   test_that("drillable schemas use an explicit class allowlist", {
     skip_if_not_installed("vctrs")
@@ -50,7 +50,7 @@ local({
     expect_false(any(vapply(denied, column_drillable, logical(1))))
     for (mode in c("snapshot", "paged")) {
       root <- jdv_register(frame(list(1)), mode = mode)
-      descriptor <- jdv:::.jdv_json_parse(root$open)$params
+      descriptor <- .jdv_json_parse(root$open)$params
       expect_true(descriptor$columns[[1]]$drillable)
       expect_true(descriptor$capabilities$children)
       close(root)
@@ -81,15 +81,15 @@ local({
     expect_null(entry$source)
     expect_null(entry$holder)
     expect_null(entry$fingerprint)
-    expect_false(jdv:::.jdv_json_parse(plain$open)$params$capabilities$children)
+    expect_false(.jdv_json_parse(plain$open)$params$capabilities$children)
     source <- frame(list(list(a = 1), list(b = 2)))
     root <- jdv_register(source, mode = "snapshot")
     on.exit(close(root), add = TRUE)
     entry <- get(root$id, state$entries)
     expect_identical(entry$source, source)
-    expect_true(.Call(jdv:::C_jdv_tree_same, entry$source, source))
+    expect_true(.Call(C_jdv_tree_same, entry$source, source))
     expect_null(entry$holder)
-    expect_identical(entry$fingerprint, jdv:::.jdv_fingerprint(source))
+    expect_identical(entry$fingerprint, .jdv_fingerprint(source))
     expect_null(rpc(root, list(), "view/schema")$error)
     opened <- rpc(root, list(cell(2)))$result
     expect_identical(opened$parent, root$id)
@@ -110,7 +110,7 @@ local({
       root <- jdv_register(source, mode = mode)
       on.exit(close(root), add = TRUE)
       if (mode == "paged") {
-        response <- jdv_rpc(jdv:::.jdv_json_encode(list(
+        response <- jdv_rpc(.jdv_json_encode(list(
           id = 2,
           method = "table/rows",
           params = list(
@@ -121,7 +121,7 @@ local({
             limit = 3
           )
         )))
-        expect_null(jdv:::.jdv_json_parse(response)$error)
+        expect_null(.jdv_json_parse(response)$error)
       } else {
         expect_equal(
           snapshot_indices(
@@ -301,17 +301,11 @@ local({
         opened <- rpc(branch, list(index(2)))
         expect_null(opened$error)
       }
-      expect_equal(
-        jdv:::.jdv_tree_descendant_count(get(root$id, state$entries)),
-        32
-      )
+      expect_equal(.jdv_tree_descendant_count(get(root$id, state$entries)), 32)
       expect_identical(rpc(branch, list(index(2)))$error$code, "limit_exceeded")
       close(grid)
       expect_null(rpc(branch, list(index(2)))$error)
-      expect_equal(
-        jdv:::.jdv_tree_descendant_count(get(root$id, state$entries)),
-        32
-      )
+      expect_equal(.jdv_tree_descendant_count(get(root$id, state$entries)), 32)
       parent <- get(root$id, state$entries)
       child <- get(branch$view, state$entries)
       child$parent_generation <- 99
@@ -350,7 +344,7 @@ local({
           lockBinding(".jdv_json_encode", namespace)
         })
         expect_identical(!is.null(response$error), fail)
-        messages <- lapply(state$outbox, jdv:::.jdv_json_parse)
+        messages <- lapply(state$outbox, .jdv_json_parse)
         expect_equal(
           sum(vapply(
             messages,
@@ -476,10 +470,7 @@ local({
             parent_entry <- get(parent, state$entries)
             if (scenario == "success") {
               # Replacing the child queues an eviction for a notification-only RPC.
-              replacement <- jdv:::.jdv_tree_register_child(
-                list(2),
-                parent_entry
-              )
+              replacement <- .jdv_tree_register_child(list(2), parent_entry)
             } else if (scenario == "send_failure") {
               state$outbox <- list(original(
                 list(
@@ -492,7 +483,7 @@ local({
             file.create(control)
             wait(result, TRUE)
             host$wait()
-            jdv:::.jdv_transport_housekeeping()
+            .jdv_transport_housekeeping()
             expect_null(host$get_result())
             messages <- jsonlite::fromJSON(
               result,
@@ -500,7 +491,10 @@ local({
             )$messages
             file.copy(
               result,
-              paste0("/tmp/jdv-cell-wire-", scenario, "-", grid_child, ".json"),
+              file.path(
+                tempdir(),
+                paste0("jdv-cell-wire-", scenario, "-", grid_child, ".json")
+              ),
               overwrite = TRUE
             )
             methods <- vapply(
@@ -544,7 +538,7 @@ local({
               )[[1]]$result$closed)
               expect_length(state$outbox, 0)
             } else if (scenario %in% c("send_failure", "disconnect")) {
-              expect_false(isTRUE(jdv:::.jdv_transport_status()$connected))
+              expect_false(isTRUE(.jdv_transport_status()$connected))
               expect_length(ls(state$entries), 0)
               expect_length(state$outbox, 0)
             }

@@ -260,8 +260,8 @@ async function sequentialBrowser(
     "jdv_view(data.frame(x=1:2), title='Ordinary table')",
     ...(polarsOnly
       ? [
-        "pl <- getExportedValue('polars','pl')",
-        "jdv_view(pl$DataFrame(label=c('polars-alpha','polars-beta'), values=pl$Series('values',list(c('x','y'),character()))), title='Polars newest stream')",
+        "frame <- polars::pl$DataFrame(label=c('polars-alpha','polars-beta'),values=polars::pl$Series('values',list(c('x','y'),character())))",
+        "jdv_view(frame, title='Polars newest stream')",
       ]
       : []),
     "cat('READY\\t', Sys.getpid(), '\\n', sep=''); flush.console()",

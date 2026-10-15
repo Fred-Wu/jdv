@@ -1,32 +1,32 @@
 test_that("export moves once and output ownership is independent", {
   with_arrow_owner(function(owner) {
     source <- owner$stream()
-    token <- jdv:::.jdv_stream_move(source)
+    token <- .jdv_stream_move(source)
     expect_type(token, "environment")
     expect_identical(parent.env(token), emptyenv())
     expect_error(source$get_schema(), "released|NULL")
-    expect_error(jdv:::.jdv_stream_move(source), "released|valid|NULL")
-    schema <- jdv:::.jdv_stream_schema(token)
-    empty <- jdv:::.jdv_stream_next(token)
-    array <- jdv:::.jdv_stream_next(token)
-    expect_identical(jdv:::.jdv_stream_info(empty)$value, "0")
-    expect_identical(jdv:::.jdv_stream_info(array)$value, "3")
-    expect_null(jdv:::.jdv_stream_next(token))
+    expect_error(.jdv_stream_move(source), "released|valid|NULL")
+    schema <- .jdv_stream_schema(token)
+    empty <- .jdv_stream_next(token)
+    array <- .jdv_stream_next(token)
+    expect_identical(.jdv_stream_info(empty)$value, "0")
+    expect_identical(.jdv_stream_info(array)$value, "3")
+    expect_null(.jdv_stream_next(token))
     expect_equal(owner$counts(), c(0, 0, 0, 1))
-    expect_true(jdv:::.jdv_stream_close(token))
-    expect_false(jdv:::.jdv_stream_close(token))
-    expect_identical(jdv:::.jdv_stream_info(schema)$value, "+s")
-    expect_identical(jdv:::.jdv_stream_info(array)$value, "3")
+    expect_true(.jdv_stream_close(token))
+    expect_false(.jdv_stream_close(token))
+    expect_identical(.jdv_stream_info(schema)$value, "+s")
+    expect_identical(.jdv_stream_info(array)$value, "3")
     expect_equal(owner$counts(), c(1, 0, 0, 1))
-    expect_true(jdv:::.jdv_stream_close(schema))
-    expect_true(jdv:::.jdv_stream_close(empty))
-    expect_true(jdv:::.jdv_stream_close(array))
+    expect_true(.jdv_stream_close(schema))
+    expect_true(.jdv_stream_close(empty))
+    expect_true(.jdv_stream_close(array))
     expect_equal(owner$counts(), c(1, 1, 2, 0))
-    expect_false(jdv:::.jdv_stream_close(array))
-    expect_error(jdv:::.jdv_stream_info(token), "closed|stale")
-    expect_error(jdv:::.jdv_stream_schema(array), "closed|wrong kind")
-    expect_error(jdv:::.jdv_stream_close(1L), "token")
-    expect_equal(unname(jdv:::.jdv_stream_status()), c(0L, 0L, 0L, 0L))
+    expect_false(.jdv_stream_close(array))
+    expect_error(.jdv_stream_info(token), "closed|stale")
+    expect_error(.jdv_stream_schema(array), "closed|wrong kind")
+    expect_error(.jdv_stream_close(1L), "token")
+    expect_equal(unname(.jdv_stream_status()), c(0L, 0L, 0L, 0L))
   })
 })
 
@@ -34,22 +34,19 @@ test_that("releaseable error outputs release once after copying error text", {
   with_arrow_owner(function(owner) {
     for (mode in 1:2) {
       source <- owner$stream(mode = mode)
-      token <- jdv:::.jdv_stream_move(source)
+      token <- .jdv_stream_move(source)
       before <- owner$counts()
       if (mode == 1) {
-        expect_error(
-          jdv:::.jdv_stream_next(token),
-          "original array producer error"
-        )
+        expect_error(.jdv_stream_next(token), "original array producer error")
       } else {
         expect_error(
-          jdv:::.jdv_stream_schema(token),
+          .jdv_stream_schema(token),
           "original schema producer error"
         )
       }
       expected <- if (mode == 1) c(0, 0, 1, 0) else c(0, 1, 0, 0)
       expect_equal(owner$counts() - before, expected)
-      expect_true(jdv:::.jdv_stream_close(token))
+      expect_true(.jdv_stream_close(token))
     }
     expect_equal(owner$counts(), c(2, 1, 1, 0))
   })
@@ -64,14 +61,14 @@ test_that(
           if (event == "next") stop("intentional producer callback jump")
         }
       )
-      token <- jdv:::.jdv_stream_move(source)
+      token <- .jdv_stream_move(source)
       expect_error(
-        jdv:::.jdv_stream_next(token),
+        .jdv_stream_next(token),
         "intentional producer callback jump"
       )
       expect_equal(owner$counts(), c(0, 0, 1, 1))
-      expect_identical(jdv:::.jdv_stream_status()[["busy"]], 0L)
-      expect_true(jdv:::.jdv_stream_close(token))
+      expect_identical(.jdv_stream_status()[["busy"]], 0L)
+      expect_true(.jdv_stream_close(token))
       expect_equal(owner$counts(), c(1, 0, 1, 0))
     })
   }
@@ -84,21 +81,18 @@ test_that("release reentry is idempotent and cannot register another stream", {
     source <- owner$stream(
       hook = function(event) {
         if (event == "stream_release") {
-          expect_false(jdv:::.jdv_stream_close(state$token))
-          expect_error(jdv:::.jdv_stream_move(spare), "producer callback")
-          expect_true(getExportedValue(
-            "nanoarrow",
-            "nanoarrow_pointer_is_valid"
-          )(spare))
+          expect_false(.jdv_stream_close(state$token))
+          expect_error(.jdv_stream_move(spare), "producer callback")
+          expect_true(nanoarrow::nanoarrow_pointer_is_valid(spare))
         }
       }
     )
-    state$token <- jdv:::.jdv_stream_move(source)
-    expect_true(jdv:::.jdv_stream_close(state$token))
+    state$token <- .jdv_stream_move(source)
+    expect_true(.jdv_stream_close(state$token))
     expect_equal(owner$counts(), c(1, 0, 0, 1))
-    expect_identical(jdv:::.jdv_stream_status()[["busy"]], 0L)
-    second <- jdv:::.jdv_stream_move(spare)
-    expect_true(jdv:::.jdv_stream_close(second))
+    expect_identical(.jdv_stream_status()[["busy"]], 0L)
+    second <- .jdv_stream_move(spare)
+    expect_true(.jdv_stream_close(second))
     expect_equal(owner$counts(), c(2, 0, 0, 0))
   })
 })
@@ -112,13 +106,13 @@ test_that(
           if (event == "stream_release") stop("intentional release jump")
         }
       )
-      token <- jdv:::.jdv_stream_move(source)
-      expect_error(jdv:::.jdv_stream_close(token), "intentional release jump")
-      expect_false(jdv:::.jdv_stream_close(token))
+      token <- .jdv_stream_move(source)
+      expect_error(.jdv_stream_close(token), "intentional release jump")
+      expect_false(.jdv_stream_close(token))
       expect_equal(owner$counts(), c(1, 0, 0, 0))
-      expect_identical(jdv:::.jdv_stream_status()[["busy"]], 0L)
-      second <- jdv:::.jdv_stream_move(owner$stream())
-      expect_true(jdv:::.jdv_stream_close(second))
+      expect_identical(.jdv_stream_status()[["busy"]], 0L)
+      second <- .jdv_stream_move(owner$stream())
+      expect_true(.jdv_stream_close(second))
       expect_equal(owner$counts(), c(2, 0, 0, 0))
     })
   }
@@ -129,28 +123,28 @@ test_that("a nanoarrow producer and its export dependency survive GC", {
   counter <- new.env(parent = emptyenv())
   counter$n <- 0L
   token <- local({
-    producer <- getExportedValue(
-      "nanoarrow",
-      "as_nanoarrow_array_stream"
-    )(data.frame(x = 1:3, y = c("a", "b", "c")))
-    producer <- getExportedValue("nanoarrow", "array_stream_set_finalizer")(
+    producer <- nanoarrow::as_nanoarrow_array_stream(data.frame(
+      x = 1:3,
+      y = c("a", "b", "c")
+    ))
+    producer <- nanoarrow::array_stream_set_finalizer(
       producer,
       function() counter$n <- counter$n + 1L
     )
-    jdv:::.jdv_stream_move(producer)
+    .jdv_stream_move(producer)
   })
-  on.exit(jdv:::.jdv_stream_cleanup(), add = TRUE)
+  on.exit(.jdv_stream_cleanup(), add = TRUE)
   invisible(gc())
   expect_identical(counter$n, 0L)
-  schema <- jdv:::.jdv_stream_schema(token)
-  array <- jdv:::.jdv_stream_next(token)
-  expect_identical(jdv:::.jdv_stream_info(schema)$value, "+s")
-  expect_identical(jdv:::.jdv_stream_info(array)$value, "3")
-  expect_true(jdv:::.jdv_stream_close(token))
+  schema <- .jdv_stream_schema(token)
+  array <- .jdv_stream_next(token)
+  expect_identical(.jdv_stream_info(schema)$value, "+s")
+  expect_identical(.jdv_stream_info(array)$value, "3")
+  expect_true(.jdv_stream_close(token))
   expect_identical(counter$n, 1L)
-  expect_identical(jdv:::.jdv_stream_info(array)$value, "3")
-  expect_true(jdv:::.jdv_stream_close(schema))
-  expect_true(jdv:::.jdv_stream_close(array))
+  expect_identical(.jdv_stream_info(array)$value, "3")
+  expect_true(.jdv_stream_close(schema))
+  expect_true(.jdv_stream_close(array))
   invisible(gc())
   expect_identical(counter$n, 1L)
 })
@@ -163,28 +157,26 @@ test_that(
     counter <- new.env(parent = emptyenv())
     counter$n <- 0L
     token <- local({
-      table <- getExportedValue("arrow", "Table")$create(x = 1:3)
-      reader <- getExportedValue("arrow", "as_record_batch_reader")(table)
-      producer <- getExportedValue("nanoarrow", "as_nanoarrow_array_stream")(
-        reader
-      )
-      producer <- getExportedValue("nanoarrow", "array_stream_set_finalizer")(
+      table <- arrow::arrow_table(x = 1:3)
+      reader <- arrow::as_record_batch_reader(table)
+      producer <- nanoarrow::as_nanoarrow_array_stream(reader)
+      producer <- nanoarrow::array_stream_set_finalizer(
         producer,
         function() counter$n <- counter$n + 1L
       )
-      jdv:::.jdv_stream_move(producer)
+      .jdv_stream_move(producer)
     })
-    on.exit(jdv:::.jdv_stream_cleanup(), add = TRUE)
+    on.exit(.jdv_stream_cleanup(), add = TRUE)
     invisible(gc())
-    schema <- jdv:::.jdv_stream_schema(token)
-    array <- jdv:::.jdv_stream_next(token)
+    schema <- .jdv_stream_schema(token)
+    array <- .jdv_stream_next(token)
     expect_identical(counter$n, 0L)
-    expect_true(jdv:::.jdv_stream_close(token))
+    expect_true(.jdv_stream_close(token))
     expect_identical(counter$n, 1L)
-    expect_identical(jdv:::.jdv_stream_info(schema)$value, "+s")
-    expect_identical(jdv:::.jdv_stream_info(array)$value, "3")
-    expect_true(jdv:::.jdv_stream_close(schema))
-    expect_true(jdv:::.jdv_stream_close(array))
+    expect_identical(.jdv_stream_info(schema)$value, "+s")
+    expect_identical(.jdv_stream_info(array)$value, "3")
+    expect_true(.jdv_stream_close(schema))
+    expect_true(.jdv_stream_close(array))
     invisible(gc())
     expect_identical(counter$n, 1L)
   }
@@ -196,20 +188,14 @@ test_that(
     skip_if_not_installed("nanoarrow")
     counter <- new.env(parent = emptyenv())
     counter$n <- 0L
-    producer <- getExportedValue(
-      "nanoarrow",
-      "as_nanoarrow_array_stream"
-    )(data.frame(x = 1))
-    producer <- getExportedValue("nanoarrow", "array_stream_set_finalizer")(
-      producer,
-      function() {
-        counter$n <- counter$n + 1L
-        stop("intentional R producer finalizer error")
-      }
-    )
-    token <- jdv:::.jdv_stream_move(producer)
-    expect_true(jdv:::.jdv_stream_close(token))
-    expect_false(jdv:::.jdv_stream_close(token))
+    producer <- nanoarrow::as_nanoarrow_array_stream(data.frame(x = 1))
+    producer <- nanoarrow::array_stream_set_finalizer(producer, function() {
+      counter$n <- counter$n + 1L
+      stop("intentional R producer finalizer error")
+    })
+    token <- .jdv_stream_move(producer)
+    expect_true(.jdv_stream_close(token))
+    expect_false(.jdv_stream_close(token))
     invisible(gc())
     expect_identical(counter$n, 1L)
   }
@@ -222,17 +208,17 @@ test_that(
       source <- owner$stream(
         hook = function(event) {
           if (event == "next") {
-            expect_identical(.Call(jdv:::C_jdv_arrow_cleanup), -1L)
+            expect_identical(.Call(C_jdv_arrow_cleanup), -1L)
           }
         }
       )
-      token <- jdv:::.jdv_stream_move(source)
-      other <- jdv:::.jdv_stream_move(owner$stream())
-      expect_error(jdv:::.jdv_stream_next(token), "cleanup was requested")
-      expect_false(jdv:::.jdv_stream_close(token))
-      expect_false(jdv:::.jdv_stream_close(other))
+      token <- .jdv_stream_move(source)
+      other <- .jdv_stream_move(owner$stream())
+      expect_error(.jdv_stream_next(token), "cleanup was requested")
+      expect_false(.jdv_stream_close(token))
+      expect_false(.jdv_stream_close(other))
       expect_equal(owner$counts(), c(2, 0, 1, 0))
-      expect_identical(jdv:::.jdv_stream_status()[["busy"]], 0L)
+      expect_identical(.jdv_stream_status()[["busy"]], 0L)
     })
   }
 )
@@ -253,10 +239,7 @@ test_that(
             ns <- loadNamespace("jdv")
             dll <- dyn.load(path)
             methods <- getDLLRegisteredRoutines(dll)[[".Call"]]
-            allocate <- getExportedValue(
-              "nanoarrow",
-              "nanoarrow_allocate_array_stream"
-            )
+            allocate <- nanoarrow::nanoarrow_allocate_array_stream
             source <- allocate()
             .Call(methods$owner_init, source, 3L, 0L, NULL)
             token <- get(".jdv_stream_move", ns)(source)
@@ -339,10 +322,7 @@ test_that(
           ns <- loadNamespace("jdv")
           dll <- dyn.load(path)
           methods <- getDLLRegisteredRoutines(dll)[[".Call"]]
-          source <- getExportedValue(
-            "nanoarrow",
-            "nanoarrow_allocate_array_stream"
-          )()
+          source <- nanoarrow::nanoarrow_allocate_array_stream()
           seen <- new.env(parent = emptyenv())
           hook <- function(event) {
             if (event == "next") {
@@ -384,12 +364,8 @@ test_that(
       observed <- new.env(parent = emptyenv())
       observed$n <- 0L
       tokens <- local({
-        stream <- jdv:::.jdv_stream_move(owner$stream(lengths = 3L))
-        list(
-          stream,
-          jdv:::.jdv_stream_schema(stream),
-          jdv:::.jdv_stream_next(stream)
-        )
+        stream <- .jdv_stream_move(owner$stream(lengths = 3L))
+        list(stream, .jdv_stream_schema(stream), .jdv_stream_next(stream))
       })
       for (token in tokens) {
         reg.finalizer(token, function(x) observed$n <- observed$n + 1L)
@@ -398,11 +374,11 @@ test_that(
       invisible(gc())
       expect_identical(observed$n, 0L)
       expect_equal(owner$counts(), c(0, 0, 0, 1))
-      expect_identical(.Call(jdv:::C_jdv_arrow_cleanup), 0L)
+      expect_identical(.Call(C_jdv_arrow_cleanup), 0L)
       invisible(gc())
       expect_identical(observed$n, 3L)
       expect_equal(owner$counts(), c(1, 1, 1, 0))
-      expect_identical(.Call(jdv:::C_jdv_arrow_cleanup), 0L)
+      expect_identical(.Call(C_jdv_arrow_cleanup), 0L)
     })
   }
 )
@@ -422,10 +398,7 @@ test_that(
           ns <- loadNamespace("jdv")
           dll <- dyn.load(path)
           methods <- getDLLRegisteredRoutines(dll)[[".Call"]]
-          source <- getExportedValue(
-            "nanoarrow",
-            "nanoarrow_allocate_array_stream"
-          )()
+          source <- nanoarrow::nanoarrow_allocate_array_stream()
           hook <- function(event) {
             if (event == "next") suppressWarnings(unloadNamespace("jdv"))
           }
@@ -469,10 +442,7 @@ test_that("raw unload blocks new native work from foreign release callbacks", {
         ns <- loadNamespace("jdv")
         dll <- dyn.load(path)
         methods <- getDLLRegisteredRoutines(dll)[[".Call"]]
-        allocate <- getExportedValue(
-          "nanoarrow",
-          "nanoarrow_allocate_array_stream"
-        )
+        allocate <- nanoarrow::nanoarrow_allocate_array_stream
         spare <- allocate()
         .Call(methods$owner_init, spare, 1L, 0L, NULL)
         seen <- new.env(parent = emptyenv())
@@ -497,9 +467,7 @@ test_that("raw unload blocks new native work from foreign release callbacks", {
           grepl("being unloaded", seen$transport)
         )
         stopifnot(identical(.Call(methods$owner_counts), c(1L, 0L, 0L, 1L)))
-        stopifnot(getExportedValue("nanoarrow", "nanoarrow_pointer_is_valid")(
-          spare
-        ))
+        stopifnot(nanoarrow::nanoarrow_pointer_is_valid(spare))
         spare$release()
         invisible(gc())
         stopifnot(identical(.Call(methods$owner_counts), c(2L, 0L, 0L, 0L)))

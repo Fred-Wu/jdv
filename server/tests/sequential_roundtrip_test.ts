@@ -57,12 +57,11 @@ async function roundtrip(polarsOnly = false) {
     "fields <- Map(function(name,column) arrow::field(name,column$type), names(columns), columns)",
     "fields[[5]] <- arrow::field('payload',arrow::int32(),metadata=c('ARROW:extension:name'='org.example.jdv.test','ARROW:extension:metadata'='v1'))",
     "logical_schema <- do.call(arrow::schema,fields)$WithMetadata(list(origin='sequential-roundtrip'))",
-    "value <- do.call(arrow::Table$create,c(columns,list(schema=logical_schema)))",
+    "value <- do.call(arrow::arrow_table,c(columns,list(schema=logical_schema)))",
     "write_page(value,'nested')",
   ];
   const polarsSource = [
-    "pl <- getExportedValue('polars','pl')",
-    "frame <- pl$DataFrame(label=c('alpha','beta'), values=pl$Series('values',list(c('x','y'),character())))",
+    "frame <- polars::pl$DataFrame(label=c('alpha','beta'),values=polars::pl$Series('values',list(c('x','y'),character())))",
     "write_page(frame,'polars')",
   ];
   await Deno.writeTextFile(

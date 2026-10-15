@@ -64,7 +64,7 @@ test_that("wide packed data-frame missingness fails before slicing cells", {
     )
     registered <- jdv_register(source, mode = "paged")
     expect_identical(registered$open != "", TRUE)
-    entry <- get(".jdv_state", asNamespace("jdv"))$entries[[registered$id]]
+    entry <- .jdv_state$entries[[registered$id]]
     expect_identical(entry$holder$limits$work_bytes, as.integer(7 * 1024^2))
 
     counter$slices <- 0L
@@ -400,7 +400,7 @@ test_that("compound filter masks fail before full columns are materialized", {
     data.frame(value = seq_len(10000L)),
     mode = "paged"
   )
-  entry <- get(".jdv_state", asNamespace("jdv"))$entries[[registered$id]]
+  entry <- .jdv_state$entries[[registered$id]]
   filter <- list(
     op = "and",
     args = lapply(

@@ -139,10 +139,7 @@ test_that("public RPC round-trips every shared query fixture", {
           )),
           seq_len(nrow(x))
         )
-        wire_snapshot <- rpc_fixture_snapshot(
-          open_message,
-          jdv:::snapshot_table(x)
-        )
+        wire_snapshot <- rpc_fixture_snapshot(open_message, snapshot_table(x))
 
         for (query in case$queries) {
           expected <- as.integer(unlist(query$expected, use.names = FALSE))
@@ -152,7 +149,7 @@ test_that("public RPC round-trips every shared query fixture", {
             paged_response$result$data$row_index,
             use.names = FALSE
           ))
-          snapshot_rows <- jdv:::snapshot_indices(
+          snapshot_rows <- snapshot_indices(
             wire_snapshot,
             sort = if (is.null(query$sort)) list() else query$sort,
             filter = query$filter
