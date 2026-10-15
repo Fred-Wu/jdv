@@ -1,4 +1,6 @@
 local({
+  socket_directory <- jdv_test_uds_directory()
+  on.exit(unlink(socket_directory, recursive = TRUE), add = TRUE)
   # Restore file-owned notification state even when a test fails.
   state <- jdv:::.jdv_state
   initial_outbox <- state$outbox
@@ -176,7 +178,7 @@ local({
     python <- Sys.which("python3")
     skip_if(!nzchar(python), "python3 is required for the local mock host")
 
-    socket_path <- tempfile("jdv-transport-")
+    socket_path <- tempfile("jdv-transport-", tmpdir = socket_directory)
     ready_path <- tempfile("jdv-transport-ready-")
     result_path <- tempfile("jdv-transport-result-")
     host <- run_mock_host(
@@ -573,11 +575,11 @@ local({
       python <- Sys.which("python3")
       skip_if(!nzchar(python), "python3 is required for the local mock host")
 
-      old_socket <- tempfile("jdv-reconnect-old-")
+      old_socket <- tempfile("jdv-reconnect-old-", tmpdir = socket_directory)
       old_ready <- tempfile("jdv-reconnect-old-ready-")
       old_result <- tempfile("jdv-reconnect-old-result-")
       close_command <- tempfile("jdv-reconnect-close-command-")
-      new_socket <- tempfile("jdv-reconnect-new-")
+      new_socket <- tempfile("jdv-reconnect-new-", tmpdir = socket_directory)
       new_ready <- tempfile("jdv-reconnect-new-ready-")
       new_result <- tempfile("jdv-reconnect-new-result-")
       old_host <- run_mock_host(
@@ -698,7 +700,7 @@ local({
     )
     python <- Sys.which("python3")
     skip_if(!nzchar(python), "python3 is required for the local mock host")
-    socket_path <- tempfile("jdv-active-unload-")
+    socket_path <- tempfile("jdv-active-unload-", tmpdir = socket_directory)
     ready_path <- tempfile("jdv-active-unload-ready-")
     result_path <- tempfile("jdv-active-unload-result-")
     host <- run_mock_host(
@@ -1014,7 +1016,10 @@ local({
       skip_if_not_installed("callr")
       python <- Sys.which("python3")
       skip_if(!nzchar(python), "python3 is required for the local mock host")
-      socket_path <- tempfile("jdv-transport-silent-")
+      socket_path <- tempfile(
+        "jdv-transport-silent-",
+        tmpdir = socket_directory
+      )
       ready_path <- tempfile("jdv-transport-ready-")
       result_path <- tempfile("jdv-transport-result-")
       host <- run_mock_host(
@@ -1293,7 +1298,7 @@ local({
         "python3 is required for the local mock host"
       )
       jdv_close()
-      socket_path <- tempfile("jdv-notifications-")
+      socket_path <- tempfile("jdv-notifications-", tmpdir = socket_directory)
       ready_path <- tempfile("jdv-notifications-ready-")
       result_path <- tempfile("jdv-notifications-result-")
       host <- run_mock_host(
@@ -1372,6 +1377,30 @@ local({
         vapply(opened, function(message) message$params$view, ""),
         c(anchor, root, victim, replacement)
       )
+    }
+  )
+  test_that(
+    "overlong Unix socket paths report byte limits and clean setup state",
+    {
+      skip_on_os("windows")
+      for (path in c(
+        paste0("/", strrep("x", 110)),
+        paste0("/", strrep("é", 60))
+      )) {
+        bytes <- nchar(enc2utf8(path), type = "bytes")
+        expect_error(
+          .jdv_transport_connect(path),
+          paste0(
+            "Unix socket path is too long ",
+            "\\(",
+            bytes,
+            " bytes; maximum [0-9]+ bytes"
+          )
+        )
+        expect_null(.jdv_state$transport)
+        expect_true(.Call(C_jdv_transport_can_unload))
+        expect_false(.Call(C_jdv_transport_status)$connected)
+      }
     }
   )
 })

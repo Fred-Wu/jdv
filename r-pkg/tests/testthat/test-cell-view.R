@@ -1,4 +1,6 @@
 local({
+  socket_directory <- jdv_test_uds_directory()
+  on.exit(unlink(socket_directory, recursive = TRUE), add = TRUE)
   state <- jdv:::.jdv_state
   saved_outbox <- state$outbox
   on.exit(state$outbox <- saved_outbox, add = TRUE)
@@ -376,7 +378,7 @@ local({
       "disconnect"
     )) {
       for (grid_child in c(FALSE, TRUE)) {
-        directory <- tempfile("jdv-cell-host-")
+        directory <- tempfile("cell-", tmpdir = socket_directory)
         dir.create(directory)
         socket <- file.path(directory, "socket")
         ready <- file.path(directory, "ready")

@@ -13,6 +13,19 @@ export interface ByteListener extends AsyncIterable<ByteConnection> {
   close(): void;
 }
 
+export function validateUnixSocketPath(
+  path: string,
+  os: string = Deno.build.os,
+): void {
+  const maximum = os === "darwin" ? 103 : 107;
+  const bytes = new TextEncoder().encode(path).byteLength;
+  if (bytes > maximum) {
+    throw new Error(
+      `Unix socket path is too long (${bytes} UTF-8 bytes; maximum ${maximum} on ${os}). Use a shorter --cache-dir or --tcp.`,
+    );
+  }
+}
+
 class DenoByteConnection implements ByteConnection {
   readonly #connection: Deno.Conn;
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>;
@@ -205,6 +218,7 @@ export async function listenR(options: {
   }
 
   const path = join(options.cacheDir, `jdv-${crypto.randomUUID()}.sock`);
+  validateUnixSocketPath(path);
   const listener = Deno.listen({ transport: "unix", path });
   try {
     Deno.chmodSync(path, 0o600);

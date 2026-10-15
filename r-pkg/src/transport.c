@@ -545,7 +545,10 @@ static int connect_unix(jdv_transport_state *state, const char *address)
     else if (strncmp(path, "unix://", 7) == 0) return 0;
     if (*path != '/') return 0;
     length = strlen(path);
-    if (length >= sizeof(endpoint.sun_path)) return 0;
+    if (length >= sizeof(endpoint.sun_path))
+        Rf_error("The Unix socket path is too long (%llu bytes; maximum %llu bytes on this platform). Use a shorter viewer cache directory or socket path.",
+                 (unsigned long long)length,
+                 (unsigned long long)(sizeof(endpoint.sun_path) - 1));
     memset(&endpoint, 0, sizeof(endpoint));
     endpoint.sun_family = AF_UNIX;
     memcpy(endpoint.sun_path, path, length + 1);

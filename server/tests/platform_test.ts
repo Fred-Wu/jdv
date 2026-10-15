@@ -1,7 +1,39 @@
-import { assertEquals } from "./assert.ts";
+import { assertEquals, assertStringIncludes } from "./assert.ts";
 import { connect } from "node:net";
 import { join } from "node:path";
-import { cacheDirectory, NodePipeListener } from "../platform.ts";
+import {
+  cacheDirectory,
+  NodePipeListener,
+  validateUnixSocketPath,
+} from "../platform.ts";
+
+Deno.test("Unix socket path validation counts UTF-8 bytes at platform boundaries", () => {
+  for (const [os, maximum] of [["darwin", 103], ["linux", 107]] as const) {
+    validateUnixSocketPath("/" + "x".repeat(maximum - 1), os);
+    validateUnixSocketPath("/" + "é".repeat((maximum - 1) / 2), os);
+    for (
+      const path of [
+        "/" + "x".repeat(maximum),
+        "/" + "é".repeat((maximum + 1) / 2),
+        "/" + "😀".repeat(Math.ceil(maximum / 4)),
+      ]
+    ) {
+      let message = "";
+      try {
+        validateUnixSocketPath(path, os);
+      } catch (error) {
+        message = String(error);
+      }
+      assertStringIncludes(message, "Unix socket path is too long");
+      assertStringIncludes(
+        message,
+        `${new TextEncoder().encode(path).byteLength} UTF-8 bytes`,
+      );
+      assertStringIncludes(message, `maximum ${maximum} on ${os}`);
+      assertStringIncludes(message, "--cache-dir or --tcp");
+    }
+  }
+});
 
 Deno.test("empty XDG_CACHE_HOME uses the HOME cache fallback", () => {
   const previous = Deno.env.get("XDG_CACHE_HOME");
