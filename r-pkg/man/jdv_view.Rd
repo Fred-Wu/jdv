@@ -12,8 +12,9 @@ jdv_view(
 )
 }
 \arguments{
-\item{x}{A data frame or matrix for grid views, or an R object whose children
-and attributes can be explored in a tree view.}
+\item{x}{A data frame or matrix for grid views; an Arrow Table or
+RecordBatchReader, nanoarrow array stream, or Polars DataFrame for a
+sequential grid; or an R object to explore in a tree view.}
 
 \item{title}{Display title. When omitted, the expression passed as \code{x} is
 used; explicitly passing \code{NULL} creates an independent table slot.}

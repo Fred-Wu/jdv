@@ -12,8 +12,9 @@ jdv_register(
 )
 }
 \arguments{
-\item{x}{A data frame or matrix for grid views, or an R object whose children
-and attributes can be explored in a tree view.}
+\item{x}{A data frame or matrix for grid views; an Arrow Table or
+RecordBatchReader, nanoarrow array stream, or Polars DataFrame for a
+sequential grid; or an R object to explore in a tree view.}
 
 \item{title}{Optional title. Reusing a non-NULL title replaces its table
 generation; NULL titles always create independent tables.}
@@ -33,6 +34,14 @@ transport notifications as JSON strings in \code{notifications} (for example, a
 Register an object for a transport-independent viewer
 }
 \details{
+Sequential sources are exported through the optional nanoarrow package and
+moved into the viewer without fetching a record batch. Their total row count
+is unknown. They support forward-only pages, not Snapshot/Paged modes, random
+access, sorting, or filtering. The mode and collation arguments apply to
+ordinary R tables. Closing or replacing a view releases its stream and any
+retained batch. A string call to \code{jdv_rpc()} cannot consume a sequential
+page; those pages require the viewer binary transport.
+
 Re-registering a title that is still active reuses its view ID and increments
 its generation. Closing that view removes the title association, so a later
 registration starts with a new ID and generation one. Re-register after

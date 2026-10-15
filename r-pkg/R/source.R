@@ -21,6 +21,25 @@ jdv_source.data.frame <- function(x, ...) .jdv_grid_source(x)
 #' @exportS3Method jdv_source matrix
 jdv_source.matrix <- function(x, ...) .jdv_grid_source(x)
 
+.jdv_stream_source <- function(x) {
+  structure(
+    list(kind = "grid", access = "sequential", data = x),
+    class = "jdv_sequential_source"
+  )
+}
+
+#' @exportS3Method jdv_source Table
+jdv_source.Table <- function(x, ...) .jdv_stream_source(x)
+
+#' @exportS3Method jdv_source RecordBatchReader
+jdv_source.RecordBatchReader <- function(x, ...) .jdv_stream_source(x)
+
+#' @exportS3Method jdv_source nanoarrow_array_stream
+jdv_source.nanoarrow_array_stream <- function(x, ...) .jdv_stream_source(x)
+
+#' @exportS3Method jdv_source polars_data_frame
+jdv_source.polars_data_frame <- function(x, ...) .jdv_stream_source(x)
+
 #' @exportS3Method jdv_source default
 jdv_source.default <- function(x, ...) {
   structure(list(kind = "tree", data = x), class = "jdv_tree_source")
