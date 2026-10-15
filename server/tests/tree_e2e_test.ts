@@ -1,4 +1,5 @@
 import { assert, assertEquals } from "./assert.ts";
+import type { Page } from "@astral/astral";
 import { join } from "node:path";
 import { ArfSession } from "./helpers/arf_session.ts";
 import {
@@ -12,6 +13,7 @@ import {
   clickButton,
   collectPageErrors,
   count,
+  evaluate,
   text,
   texts,
   waitFor,
@@ -23,11 +25,31 @@ const browserLibraryPath = Deno.env.get("JDV_TEST_BROWSER_LIBS");
 
 interface E2EDomElement {
   textContent: string | null;
+  tagName: string;
+  disabled: boolean;
+  getAttribute(name: string): string | null;
+  hasAttribute(name: string): boolean;
+  contains(other: E2EDomElement | null): boolean;
+  querySelector(selector: string): E2EDomElement | null;
+  querySelectorAll(selector: string): E2EDomElement[];
+  getBoundingClientRect(): {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
 }
 
 declare const document: {
   querySelector(selector: string): E2EDomElement | null;
-  querySelectorAll(selector: string): { length: number };
+  querySelectorAll(selector: string): E2EDomElement[];
+  elementFromPoint(x: number, y: number): E2EDomElement | null;
+};
+declare function getComputedStyle(element: E2EDomElement): {
+  display: string;
+  visibility: string;
+  pointerEvents: string;
+  opacity: string;
 };
 
 let rEvaluationSequence = 0;
@@ -70,6 +92,165 @@ function asArray(value: unknown): unknown[] {
 
 function rQuote(value: string): string {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+interface TreeActionExpectation {
+  breadcrumbButtons: number;
+  breadcrumbTextIncludes?: string;
+  childIndex: number;
+  rowTextIncludes?: string;
+  pageLabelIncludes?: string;
+  childCount?: number;
+}
+
+function treeActionReady(
+  args: { selector: string; expected: TreeActionExpectation },
+): boolean {
+  const status = document.querySelector("#status");
+  const tree = document.querySelector("#tree-viewer");
+  const row = document.querySelector(
+    `#tree-child-list li[data-child-index="${args.expected.childIndex}"]`,
+  );
+  const target = document.querySelector(args.selector);
+  const style = target ? getComputedStyle(target) : undefined;
+  const rect = target?.getBoundingClientRect();
+  const children = document.querySelectorAll("#tree-child-list > li");
+  const breadcrumbButtons = document.querySelectorAll(
+    "#tree-breadcrumb [data-tree-depth]",
+  );
+  const breadcrumbText = document.querySelector("#tree-breadcrumb")
+    ?.textContent ?? "";
+  return status?.getAttribute("data-state") === "connected" &&
+    tree?.hasAttribute("hidden") === false &&
+    breadcrumbButtons.length === args.expected.breadcrumbButtons &&
+    (args.expected.breadcrumbTextIncludes === undefined ||
+      breadcrumbText.includes(args.expected.breadcrumbTextIncludes)) &&
+    (args.expected.childCount === undefined ||
+      children.length === args.expected.childCount) &&
+    (args.expected.pageLabelIncludes === undefined ||
+      document.querySelector("#tree-page-label")?.textContent?.includes(
+          args.expected.pageLabelIncludes,
+        ) === true) &&
+    row !== null &&
+    (args.expected.rowTextIncludes === undefined ||
+      row.textContent?.includes(args.expected.rowTextIncludes) === true) &&
+    target !== null && target.disabled === false &&
+    target.hasAttribute("hidden") === false && style?.display !== "none" &&
+    style?.visibility !== "hidden" && style?.visibility !== "collapse" &&
+    style?.pointerEvents !== "none" && style?.opacity !== "0" &&
+    rect !== undefined && rect.width > 0 && rect.height > 0;
+}
+
+async function treeActionSnapshot(
+  page: Page,
+  selector: string,
+) {
+  return await evaluate(
+    page,
+    (targetSelector) => {
+      const status = document.querySelector("#status");
+      const tree = document.querySelector("#tree-viewer");
+      const list = document.querySelector("#tree-child-list");
+      const pageLabel = document.querySelector("#tree-page-label");
+      const breadcrumb = document.querySelector("#tree-breadcrumb");
+      const target = document.querySelector(targetSelector);
+      const rect = target?.getBoundingClientRect();
+      const style = target ? getComputedStyle(target) : undefined;
+      const hit = rect && rect.width > 0 && rect.height > 0
+        ? document.elementFromPoint(
+          rect.left + rect.width / 2,
+          rect.top + rect.height / 2,
+        )
+        : null;
+      const describe = (element: E2EDomElement | null) =>
+        element
+          ? {
+            tag: element.tagName,
+            id: element.getAttribute("id"),
+            action: element.getAttribute("data-action"),
+            childIndex: element.getAttribute("data-child-index"),
+            text: (element.textContent ?? "").slice(0, 120),
+          }
+          : null;
+      return {
+        status: {
+          state: status?.getAttribute("data-state"),
+          text: (status?.textContent ?? "").slice(0, 160),
+        },
+        treeHidden: tree?.hasAttribute("hidden") ?? null,
+        breadcrumb: {
+          text: (breadcrumb?.textContent ?? "").slice(0, 240),
+          buttons: document.querySelectorAll(
+            "#tree-breadcrumb [data-tree-depth]",
+          ).length,
+        },
+        pageLabel: (pageLabel?.textContent ?? "").slice(0, 120),
+        childCount: document.querySelectorAll("#tree-child-list > li").length,
+        children: Array.from(
+          document.querySelectorAll("#tree-child-list > li"),
+        )
+          .slice(0, 20)
+          .map((row) => ({
+            index: row.getAttribute("data-child-index"),
+            text: (row.textContent ?? "").slice(0, 120),
+            actions: Array.from(row.querySelectorAll("[data-action]")).map(
+              describe,
+            ),
+          })),
+        targetCount: document.querySelectorAll(targetSelector).length,
+        target: target
+          ? {
+            ...describe(target),
+            disabled: target.disabled,
+            hidden: target.hasAttribute("hidden"),
+            display: style?.display,
+            visibility: style?.visibility,
+            pointerEvents: style?.pointerEvents,
+            opacity: style?.opacity,
+            rect: rect
+              ? {
+                left: rect.left,
+                top: rect.top,
+                width: rect.width,
+                height: rect.height,
+              }
+              : null,
+            hit: describe(hit),
+            hitWithinTarget: target.contains(hit),
+          }
+          : null,
+        listText: (list?.textContent ?? "").slice(0, 400),
+      };
+    },
+    { args: [selector] },
+  );
+}
+
+async function clickReadyTreeAction(
+  page: Page,
+  selector: string,
+  expected: TreeActionExpectation,
+) {
+  try {
+    await waitFor(page, treeActionReady, { selector, expected }, {
+      timeout: 8_000,
+    });
+    await click(page, selector);
+  } catch (error) {
+    let snapshot: unknown;
+    try {
+      snapshot = await treeActionSnapshot(page, selector);
+    } catch (diagnosticError) {
+      snapshot = { diagnosticError: String(diagnosticError) };
+    }
+    throw new Error(
+      `Tree action ${selector} did not become ready or complete its click. ` +
+        `Original failure: ${String(error)}. DOM snapshot: ${
+          JSON.stringify(snapshot)
+        }`,
+      { cause: error },
+    );
+  }
 }
 
 async function nextMessage(
@@ -667,21 +848,16 @@ Deno.test({
               page,
               '#tree-child-list li[data-child-index="14"] [data-action="expand-child"]',
             );
-            await waitFor(
-              page,
-              () =>
-                document.querySelector(
-                  '#tree-child-list li[data-child-index="1"]',
-                )?.textContent?.includes("df") === true,
-            );
-            assert(
-              (await text(page, "#tree-breadcrumb"))
-                ?.includes("capture environment"),
-              "The expanded environment should appear in the breadcrumb.",
-            );
-            await click(
+            await clickReadyTreeAction(
               page,
               '#tree-child-list li[data-child-index="1"] [data-action="open-child"]',
+              {
+                breadcrumbButtons: 1,
+                breadcrumbTextIncludes: "capture environment",
+                childIndex: 1,
+                rowTextIncludes: "df",
+                childCount: 1,
+              },
             );
             await page.waitForSelector("#viewer:not([hidden]) .tabulator-row");
             const capturedCells = await texts(page, "#viewer .tabulator-cell");
@@ -706,16 +882,16 @@ Deno.test({
             );
             await click(page, "#tree-return");
             await page.waitForSelector("#tree-viewer:not([hidden])");
-            await waitFor(
-              page,
-              () =>
-                document.querySelector(
-                  '#tree-child-list li[data-child-index="1"]',
-                )?.textContent?.includes("df") === true,
-            );
-            await click(
+            await clickReadyTreeAction(
               page,
               '#tree-child-list li[data-child-index="1"] [data-action="open-child"]',
+              {
+                breadcrumbButtons: 1,
+                breadcrumbTextIncludes: "capture environment",
+                childIndex: 1,
+                rowTextIncludes: "df",
+                childCount: 1,
+              },
             );
             await page.waitForSelector("#viewer:not([hidden]) .tabulator-row");
             const reopenedCells = await texts(page, "#viewer .tabulator-cell");
@@ -744,16 +920,17 @@ Deno.test({
                   ?.includes("unnamed") === true,
             );
             await click(page, '#tree-breadcrumb [data-tree-depth="0"]');
-            await waitFor(
-              page,
-              () =>
-                document.querySelectorAll(
-                  '#tree-breadcrumb [data-tree-depth="1"]',
-                ).length === 0,
-            );
-            await click(
+            await clickReadyTreeAction(
               page,
               '#tree-child-list li[data-child-index="5"] [data-action="open-child"]',
+              {
+                breadcrumbButtons: 0,
+                breadcrumbTextIncludes: "Tree E2E fixture",
+                childIndex: 5,
+                rowTextIncludes: "nested frame",
+                childCount: 16,
+                pageLabelIncludes: "of 16 children",
+              },
             );
             await page.waitForSelector("#viewer:not([hidden]) .tabulator-row");
             await Deno.writeFile(
