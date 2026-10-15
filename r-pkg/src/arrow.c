@@ -388,6 +388,8 @@ static SEXP schema_body(void *data)
 {
     jdv_arrow_call *call = (jdv_arrow_call *)data;
     jdv_arrow_record *source = require_record(call->argument, JDV_ARROW_STREAM);
+    if (source->page)
+        Rf_error("Arrow stream is owned by the sequential page cursor.");
     jdv_arrow_record *record = new_record(call, JDV_ARROW_SCHEMA);
     char error_copy[1024];
     int code = source->value.stream.get_schema(&source->value.stream, &record->value.schema);
@@ -404,10 +406,10 @@ static SEXP next_body(void *data)
 {
     jdv_arrow_call *call = (jdv_arrow_call *)data;
     jdv_arrow_record *source = require_record(call->argument, JDV_ARROW_STREAM);
+    if (source->page)
+        Rf_error("Arrow stream is owned by the sequential page cursor.");
     jdv_arrow_record *record = new_record(call, JDV_ARROW_ARRAY);
     char error_copy[1024];
-    if (source->page && source->page->opened)
-        Rf_error("Arrow stream is owned by the sequential page cursor.");
     int code = source->value.stream.get_next(&source->value.stream, &record->value.array);
     if (code) {
         copy_stream_error(&source->value.stream, error_copy, sizeof(error_copy));

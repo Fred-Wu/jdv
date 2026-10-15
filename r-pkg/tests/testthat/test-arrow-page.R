@@ -695,3 +695,51 @@ test_that("producer callback errors terminally release page resources", {
     expect_true(jdv:::.jdv_stream_close(interrupt_token))
   })
 })
+
+test_that("legacy stream callbacks reject page-owned cursors in every state", {
+  with_arrow_owner(function(owner) {
+    expect_legacy_rejection <- function(token) {
+      before <- owner$counts()
+      expect_error(jdv:::.jdv_stream_schema(token), "sequential page cursor")
+      expect_error(jdv:::.jdv_stream_next(token), "sequential page cursor")
+      expect_identical(owner$counts(), before)
+    }
+
+    opened <- jdv:::.jdv_stream_move(owner$stream(lengths = integer()))
+    on.exit(jdv:::.jdv_stream_close(opened), add = TRUE)
+    jdv:::.jdv_stream_open(opened)
+    expect_legacy_rejection(opened)
+
+    failed_open <- jdv:::.jdv_stream_move(owner$stream(mode = 2L))
+    on.exit(jdv:::.jdv_stream_close(failed_open), add = TRUE)
+    schema_error <- tryCatch(
+      jdv:::.jdv_stream_open(failed_open),
+      jdv_stream_error = identity
+    )
+    expect_identical(schema_error$code, "producer_error")
+    expect_true(schema_error$terminal)
+    expect_legacy_rejection(failed_open)
+
+    failed_page <- jdv:::.jdv_stream_move(owner$stream(mode = 1L))
+    on.exit(jdv:::.jdv_stream_close(failed_page), add = TRUE)
+    jdv:::.jdv_stream_open(failed_page)
+    producer_error <- tryCatch(
+      jdv:::.jdv_stream_page(failed_page, 1L, 100000L),
+      jdv_stream_error = identity
+    )
+    expect_identical(producer_error$code, "producer_error")
+    expect_true(producer_error$terminal)
+    expect_legacy_rejection(failed_page)
+
+    over_budget <- jdv:::.jdv_stream_move(owner$stream(lengths = 1L))
+    on.exit(jdv:::.jdv_stream_close(over_budget), add = TRUE)
+    jdv:::.jdv_stream_open(over_budget)
+    budget_error <- tryCatch(
+      jdv:::.jdv_stream_page(over_budget, 1L, 1L),
+      jdv_stream_error = identity
+    )
+    expect_identical(budget_error$code, "limit_exceeded")
+    expect_true(budget_error$terminal)
+    expect_legacy_rejection(over_budget)
+  })
+})
