@@ -17,6 +17,7 @@ defaults:
 jobs:
   test:
     name: Deno unit tests (${{ matrix.os }})
+    timeout-minutes: 30
     runs-on: ${{ matrix.os }}
     env:
       MISE_ENABLE_TOOLS: deno
