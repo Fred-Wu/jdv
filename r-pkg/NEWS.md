@@ -16,19 +16,19 @@
   are reported and cannot be recovered from a forward-only source.
 - Added binary Arrow IPC framing between R, the reference host, and the browser,
   while keeping the host opaque to Arrow payload contents.
-- Added a manual cross-platform server test workflow for Ubuntu, Windows, and
-  macOS. Browser-driven end-to-end tests run on Linux; Windows named-pipe and
-  explicit TCP R connections are included in the server test suite.
-- The server workflow excludes `e2e_test.ts`, `cell_e2e_test.ts`, and
-  `tree_e2e_test.ts`, which require the separate `arf` headless R controller.
-  Rscript-based binary, Arrow, and sequential browser tests remain enabled.
+- Added separate manual workflows for Deno unit checks and R/browser end-to-end
+  tests on Ubuntu, Windows, and macOS. The E2E workflow includes Windows
+  named-pipe and explicit TCP connections, Chromium, and all three
+  arf-controlled regression files.
+- Pinned Deno and arf in `mise.toml` and added explicit unit/E2E task lists so
+  Deno unit tests do not load R fixtures or optional-producer probes.
 
 ## Platform notes
 
 - Windows named pipes use byte-type mode and the default operating-system ACL;
   the package does not harden those ACLs. Explicit TCP has no authentication.
 - A Windows top-level `for` loop has been observed to dispatch callbacks while
-  the loop is running because the function-frame count is zero. RGui, RStudio,
+  the loop is running because the function-frame count is zero. Rgui, RStudio,
   R.app, Esc/Ctrl-C delivery, and other true top-level behavior still require
   manual validation. A configured workflow is not evidence that a platform run
   has passed; consult the Actions results before treating Windows or macOS

@@ -34,11 +34,15 @@ with interrupts suspended, a long sort or filter may not stop promptly. In a
 bare browser or some frontends, call `jdv_rpc(NULL)` to poll explicitly.
 Named-pipe ACLs are not hardened, and an explicitly configured TCP address has
 no authentication. Windows named pipes must use byte-type mode; message-type
-pipes are unsupported. The manual server test workflow includes a live R
-connection over the default Windows named pipe and an explicit TCP connection;
-until that workflow has run successfully on Windows, transport behavior there
-should be treated as unverified. RGui, RStudio, R.app, Esc/Ctrl-C delivery, and
-behavior in other true top-level contexts also need manual validation.
+pipes are unsupported. The manual `E2E test` workflow includes a live R
+connection over the default Windows named pipe, an explicit TCP connection,
+arf-controlled sessions, and Chromium on Ubuntu, Windows, and macOS. The
+separate `Test server` workflow runs only Deno unit tests and checks without R.
+Both use the development tool versions pinned in the repository's `mise.toml`;
+run `mise install` when developing from a checkout. Consult each platform's
+actual workflow result before treating it as verified. Rgui, RStudio, R.app,
+Esc/Ctrl-C delivery, and behavior in other true top-level contexts also need
+manual validation.
 
 ## Sequential Arrow sources
 

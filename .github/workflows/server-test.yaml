@@ -16,8 +16,10 @@ defaults:
 
 jobs:
   test:
-    name: Deno and R integration (${{ matrix.os }})
+    name: Deno unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      MISE_ENABLE_TOOLS: deno
     strategy:
       fail-fast: false
       matrix:
@@ -27,72 +29,12 @@ jobs:
           - macos-latest
     steps:
       - uses: actions/checkout@v6
-
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
-      - uses: r-lib/actions/setup-r@v2
-        with:
-          r-version: release
-          use-public-rspm: true
-          extra-repositories: https://community.r-multiverse.org
-
-      - name: Prepare temporary R library
-        run: |
-          library_path="$RUNNER_TEMP/jdv-r-library"
-          mkdir -p "$library_path"
-          {
-            printf 'JDV_TEST_R_LIB=%s\n' "$library_path"
-            printf 'R_LIBS_USER=%s\n' "$library_path"
-          } >> "$GITHUB_ENV"
-
-      - uses: r-lib/actions/setup-r-dependencies@v2
-        with:
-          working-directory: r-pkg
-          needs: install
-          extra-packages: |
-            any::arrow
-            any::nanoarrow
-            any::jsonlite
-            any::bit64
-            any::polars
-
-      - name: Install jdv into a temporary library
-        shell: bash
-        run: |
-          Rscript -e 'dir.create(Sys.getenv("JDV_TEST_R_LIB"), recursive = TRUE, showWarnings = FALSE)'
-          R CMD INSTALL --library="$JDV_TEST_R_LIB" r-pkg
-
-      - uses: browser-actions/setup-chrome@v2
-        id: chrome
-        if: runner.os == 'Linux'
-
+      - uses: jdx/mise-action@v4
       - name: Check Deno formatting
-        run: deno fmt --check server
-
+        run: deno task fmt
       - name: Lint Deno sources
-        run: deno lint --ignore=server/web/vendor/tabulator.min.js,server/web/vendor/tabulator.min.css,server/web/vendor/arrow-21.2.0.min.js server
-
+        run: deno task lint
       - name: Check server entry point
-        run: deno check --no-lock server/main.ts
-
-      - name: Run Deno tests with Chromium
-        if: runner.os == 'Linux'
-        env:
-          JDV_TEST_BROWSER: ${{ steps.chrome.outputs.chrome-path }}
-        run: >-
-          deno test --no-lock -A
-          --ignore=server/tests/e2e_test.ts
-          --ignore=server/tests/cell_e2e_test.ts
-          --ignore=server/tests/tree_e2e_test.ts
-          server/tests
-
-      - name: Run Deno tests without arf-controlled E2E files
-        if: runner.os != 'Linux'
-        run: >-
-          deno test --no-lock -A
-          --ignore=server/tests/e2e_test.ts
-          --ignore=server/tests/cell_e2e_test.ts
-          --ignore=server/tests/tree_e2e_test.ts
-          server/tests
+        run: deno task check
+      - name: Run Deno unit tests
+        run: deno task test:unit

@@ -192,46 +192,70 @@ The server uses only Deno APIs and Node's built-in `node:net` adapter for named
 pipes. No repository checkout, import map, or project configuration is needed
 when started by URL.
 
+Use the versions in `mise.toml` for development:
+
 ```sh
-deno fmt --check server
-deno lint --ignore=server/web/vendor/tabulator.min.js,server/web/vendor/tabulator.min.css,server/web/vendor/arrow-21.2.0.min.js server
-deno check --no-lock server/main.ts
-deno test --no-lock -A server/tests
+mise install
+mise exec -- deno task fmt
+mise exec -- deno task lint
+mise exec -- deno task check
+mise exec -- deno task test:unit
 ```
 
-The repository `deno.json` excludes the vendored Tabulator minified JavaScript
-and CSS and Arrow JavaScript bundle from formatting. It contains no imports or
-dependencies; the URL startup command uses `--no-config` and remains
-self-contained.
+The configuration pins Deno 2.9.7 and arf 0.6.0. In a shell with mise activated,
+`deno task` uses the same pinned tools without the `mise exec --` prefix. The
+repository `deno.json` defines the task split and excludes the vendored
+Tabulator and Arrow bundles from formatting and linting. It contains no import
+map or runtime dependencies; URL startup remains self-contained with
+`--no-config`.
 
-The Hub, platform, and R framing unit tests need only Deno. The full suite also
-includes R numeric fixtures and an interactive transport regression that runs an
-interactive R process with `--no-readline` against a real TCP server. It holds R
-in `Sys.sleep(10)`, checks that browser requests finish without manual polling,
-and repeats wire cancellation while verifying one terminal reply per request.
-Select the installed package explicitly with
-`JDV_TEST_R_LIB=/path/to/scratch-library deno test --no-lock -A server/tests`.
-For Chromium tests, set `JDV_TEST_BROWSER` to a Chromium executable path. The
-manual `Test server` workflow runs the Deno suite on Ubuntu, Windows, and macOS;
-it enables Chromium on Linux and installs R, Arrow, nanoarrow, jsonlite, bit64,
-and Polars for the R fixtures. The Windows suite includes the default named-pipe
-R connection and the interactive TCP regression.
+`test:unit` lists only Deno tests that need no R, arf, or Chromium. R numeric
+and query fixtures, installed-package integration, interactive transport, Arrow
+round-trips, browser tests, and arf-controlled regressions belong to `test:e2e`.
+In particular, the Arrow capability probe is never loaded by the unit task. The
+interactive transport regression uses an arf headless R session against a real
+TCP server. It keeps console input open to continue a framed `browser()` wait
+and checks request progress after sleep and browser waits without manual
+polling.
 
-The Unix socket, HTTP origin checks, discovery, and R relay tests run on Linux.
-The Windows named-pipe listener uses the built-in Node compatibility API and a
-Windows real-R test is configured, but the workflow has not yet run on a Windows
-host. RGui, RStudio, R.app, Esc/Ctrl-C delivery, and true top-level behavior
-remain manual checks; callback dispatch during a top-level Windows `for` loop
-has been observed. The viewer lists active R sessions, grid views, and object
-trees. Tree child values and drillable grid cells can be opened as independent
-grid or tree views; closing a child releases it while keeping its parent
-available. Grid Open buttons are shown only for columns marked `drillable`:
-unclassed, `AsIs`, or `vctrs_list_of` list columns, data-frame columns, and
-matrix columns. Record columns, `POSIXlt`, other classed lists, and atomic
-columns do not expose cell controls. The UI always sends the original R row
-index after sorting, filtering, or paging. The view breadcrumb restores the
-parent's query, page, and horizontal scroll, or its object path and child-page
-offset.
+For the integration task, install `jdv` into a scratch library and install the
+optional R packages `arrow`, `nanoarrow`, `jsonlite`, `bit64`, and `polars`. Set
+`JDV_TEST_R_LIB` to the scratch library and `JDV_TEST_BROWSER` to a Chromium
+executable, then run:
+
+```sh
+JDV_TEST_R_LIB=/path/to/scratch-library JDV_TEST_BROWSER=/path/to/chrome mise exec -- deno task test:e2e
+```
+
+The manual `Test server` workflow runs formatting, linting, type checks, and
+`test:unit` on Ubuntu, Windows, and macOS. Its mise tool subset installs only
+Deno. The separate manual `E2E test` workflow installs both pinned tools, R, the
+package and its optional producers, and Chrome on all three platforms. It runs
+`test:e2e`, including all arf-controlled files; prerequisite checks fail rather
+than silently skipping them when tools or required R packages are missing. The
+default installed-package connection uses a named pipe on Windows, while the
+interactive regression selects TCP.
+
+This repository uses Playwright 1.56.1 with the externally supplied
+`JDV_TEST_BROWSER` executable. The jgd reference workflow instead uses Astral;
+its browser launch settings are not used here. CI obtains Chrome through
+`browser-actions/setup-chrome`, including Linux dependencies. Locally,
+`JDV_TEST_BROWSER_LIBS` can supply a Linux shared-library directory for an
+existing Chromium build.
+
+Workflow configuration does not establish a successful platform result; consult
+the latest Actions run. Rgui, RStudio, R.app, Esc/Ctrl-C delivery, and true
+top-level behavior remain manual checks. Callback dispatch during a top-level
+Windows `for` loop has been observed. The viewer lists active R sessions, grid
+views, and object trees. Tree child values and drillable grid cells can be
+opened as independent grid or tree views; closing a child releases it while
+keeping its parent available. Grid Open buttons are shown only for columns
+marked `drillable`: unclassed, `AsIs`, or `vctrs_list_of` list columns,
+data-frame columns, and matrix columns. Record columns, `POSIXlt`, other classed
+lists, and atomic columns do not expose cell controls. The UI always sends the
+original R row index after sorting, filtering, or paging. The view breadcrumb
+restores the parent's query, page, and horizontal scroll, or its object path and
+child-page offset.
 
 A child open waiting for R is shown separately from page loading. Snapshot sort,
 filter, and page changes keep working without canceling that original cell
@@ -261,14 +285,14 @@ Build or install `jdv` into a scratch library with `devtools`, then run the
 focused E2E file with that library selected:
 
 ```sh
-JDV_TEST_R_LIB=/path/to/scratch-library deno test -A --no-config server/tests/e2e_test.ts
+JDV_TEST_R_LIB=/path/to/scratch-library mise exec -- deno test -A --no-lock server/tests/e2e_test.ts
 ```
 
-The `arf` executable must be on `PATH`. The manual cross-platform workflow does
-not provision `arf`, so these three files are excluded there; the Rscript-based
-binary, Arrow, and sequential-browser regressions still run. The test process
-prepends the selected scratch library to `.libPaths()`, loads `jdv` from that
-exact library, and logs the package and DLL paths once. These tests cover
+`mise install` provisions arf for local development, and the manual `E2E test`
+workflow provisions it on each platform. These three files are included in
+`deno task test:e2e`; the Deno-only workflow does not load them. The test
+process prepends the selected scratch library to `.libPaths()`, loads `jdv` from
+that exact library, and logs the package and DLL paths once. These tests cover
 Snapshot queries without R requests, Paged queries without serializing the full
 table at registration, request handling while R is in a top-level wait,
 immediate same-process reconnection after host disconnect, and agreement between

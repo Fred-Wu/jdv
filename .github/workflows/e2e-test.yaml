@@ -1,0 +1,76 @@
+name: E2E test
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: R and browser E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+          extra-repositories: https://community.r-multiverse.org
+
+      - name: Prepare temporary R library
+        run: |
+          library_path="$RUNNER_TEMP/jdv-r-library"
+          mkdir -p "$library_path"
+          {
+            printf 'JDV_TEST_R_LIB=%s\n' "$library_path"
+            printf 'R_LIBS_USER=%s\n' "$library_path"
+          } >> "$GITHUB_ENV"
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          working-directory: r-pkg
+          needs: install
+          extra-packages: |
+            any::arrow
+            any::nanoarrow
+            any::jsonlite
+            any::bit64
+            any::polars
+
+      - name: Install jdv into a temporary library
+        run: |
+          Rscript --vanilla -e 'dir.create(Sys.getenv("JDV_TEST_R_LIB"), recursive = TRUE, showWarnings = FALSE)'
+          R CMD INSTALL --library="$JDV_TEST_R_LIB" r-pkg
+
+      - uses: browser-actions/setup-chrome@v2
+        id: chrome
+        with:
+          chrome-version: stable
+          install-dependencies: ${{ runner.os == 'Linux' }}
+
+      - name: Verify E2E prerequisites and run all integration tests
+        env:
+          JDV_TEST_BROWSER: ${{ steps.chrome.outputs.chrome-path }}
+        run: |
+          arf --version
+          deno eval --no-lock 'const path = Deno.env.get("JDV_TEST_BROWSER"); if (!path || !(await Deno.stat(path)).isFile) throw new Error("A Chromium executable is required for E2E tests.");'
+          Rscript --vanilla -e 'packages <- c("jdv", "arrow", "nanoarrow", "jsonlite", "bit64", "polars"); stopifnot(all(vapply(packages, requireNamespace, logical(1), quietly = TRUE))); lib <- normalizePath(Sys.getenv("JDV_TEST_R_LIB"), winslash = "/", mustWork = TRUE); ns <- normalizePath(getNamespaceInfo(asNamespace("jdv"), "path"), winslash = "/", mustWork = TRUE); dll <- normalizePath(getLoadedDLLs()[["jdv"]][["path"]], winslash = "/", mustWork = TRUE); stopifnot(startsWith(ns, paste0(lib, "/")), startsWith(dll, paste0(lib, "/"))); cat("jdv namespace:", ns, "\njdv DLL:", dll, "\n")'
+          deno task test:e2e

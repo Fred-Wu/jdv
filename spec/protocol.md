@@ -105,17 +105,23 @@ absolute paths or `unix:///absolute/path`; Windows named-pipe addresses use
 `tcp://[::1]:port` address is accepted only when explicitly configured. TCP has
 no authentication, and named-pipe ACLs are not hardened. Windows named pipes
 must use byte-type mode; message-type pipes are unsupported. The Windows
-transport has not yet been exercised on a Windows host.
+transport must be evaluated against each platform's actual workflow result.
 
-The manual server workflow is configured to run the Deno suite on Ubuntu,
-Windows, and macOS. The installed-package integration uses the default listener
+Two manual workflows target Ubuntu, Windows, and macOS. `Test server` runs Deno
+formatting, linting, type checks, and an explicit list of R-free unit tests.
+`E2E test` installs the pinned Deno and arf tools from `mise.toml`, R, the
+package and optional Arrow producers, and Chrome on every platform. It runs the
+R fixtures, interactive transport, browser tests, and all three arf-controlled
+E2E files. The installed-package integration uses the default listener
 (including a named pipe on Windows), and the interactive R regression selects
-TCP explicitly. Chromium-driven browser tests are configured on Linux only.
-Until the workflow has completed on each platform, this configuration is not
-evidence of a passing Windows or macOS run. RGui, RStudio, R.app, Esc/Ctrl-C
-delivery, and true top-level behavior remain outside the automated checks. The
-workflow excludes the `arf`-controlled E2E files; Rscript-based binary, Arrow,
-and sequential browser tests remain included.
+TCP explicitly. Playwright uses `JDV_TEST_BROWSER` from the Chrome action; the
+Astral launcher used by the jgd reference is not part of these tests. Missing CI
+prerequisites fail before tests rather than silently skipping arf or browser
+coverage.
+
+This configuration is not evidence of a passing platform run. Rgui, RStudio,
+R.app, Esc/Ctrl-C delivery, and true top-level behavior remain outside the
+automated checks.
 
 A non-`NULL` title identifies one active display slot. Registering that active
 title again replaces its contents, reuses its view id, and increments its
