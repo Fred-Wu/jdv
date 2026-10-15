@@ -202,3 +202,193 @@ export async function cleanupDeadline<T>(
     if (timer !== undefined) clearTimeout(timer);
   }
 }
+
+// Keep unread lines across calls and normalize only the CRLF line terminator.
+export class ProcessLines {
+  #decoder = new TextDecoder();
+  #buffer = "";
+  #done = false;
+  constructor(private reader: ReadableStreamDefaultReader<Uint8Array>) {}
+
+  async read(timeoutMs: number): Promise<string | undefined> {
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const newline = this.#buffer.indexOf("\n");
+      if (newline >= 0 || this.#done) {
+        if (newline < 0 && !this.#buffer) return undefined;
+        const line = newline < 0
+          ? this.#buffer
+          : this.#buffer.slice(0, newline);
+        this.#buffer = newline < 0 ? "" : this.#buffer.slice(newline + 1);
+        return line.replace(/\r$/, "");
+      }
+      const result = await cleanupDeadline(
+        this.reader.read(),
+        Math.max(1, deadline - Date.now()),
+        "Timed out reading fixture stdout.",
+      );
+      this.#done = result.done;
+      this.#buffer += this.#decoder.decode(result.value, {
+        stream: !result.done,
+      });
+      if (this.#buffer.length > 64 * 1024) {
+        throw new Error("Fixture stdout line exceeds 64 KiB.");
+      }
+    }
+  }
+}
+
+export function pathWithin(
+  path: string,
+  parent: string,
+  os = Deno.build.os,
+): boolean {
+  const normalize = (value: string) => {
+    const slashes = (os === "windows" ? value.replace(/\\/g, "/") : value)
+      .replace(/\/+$/, "");
+    return os === "windows" ? slashes.toLowerCase() : slashes;
+  };
+  const candidate = normalize(path);
+  const base = normalize(parent);
+  return candidate === base || candidate.startsWith(`${base}/`);
+}
+
+export function fixturePid(value: string): number {
+  const pid = Number(value);
+  if (
+    !/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(pid) ||
+    pid === Deno.pid
+  ) {
+    throw new Error(`Invalid owned R fixture PID: ${JSON.stringify(value)}`);
+  }
+  return pid;
+}
+
+export async function finishRFixture(
+  child: Pick<Deno.ChildProcess, "pid" | "kill" | "status">,
+  donePath: string,
+  stderr: Promise<string>,
+  pid?: number,
+): Promise<void> {
+  // Run later cleanup even if the graceful marker cannot be written.
+  const failures: unknown[] = [];
+  await finishIntegrationCleanup([
+    () => Deno.writeTextFile(donePath, "done\n"),
+    async () => {
+      try {
+        const status = await cleanupDeadline(
+          child.status,
+          5_000,
+          "R graceful shutdown timed out.",
+        );
+        if (!status.success) {
+          throw new Error(
+            `R fixture exited unsuccessfully: ${JSON.stringify(status)}`,
+          );
+        }
+      } catch (error) {
+        if (!(error instanceof CleanupTimeout)) throw error;
+        await stopRChild(child, false);
+        // A fixture that needs termination did not complete its normal shutdown.
+        throw error;
+      }
+    },
+  ]).catch((error) => {
+    failures.push(error);
+  });
+  await finishIntegrationCleanup([async () => {
+    try {
+      const output = await cleanupDeadline(
+        stderr,
+        5_000,
+        "R stderr EOF timed out.",
+      );
+      if (output) console.log(`[R fixture stderr] ${output}`);
+    } catch (error) {
+      if (
+        !(error instanceof CleanupTimeout) || Deno.build.os !== "windows" ||
+        pid === undefined
+      ) throw error;
+      fixturePid(String(pid));
+      console.error(
+        `[cleanup] launcher ${child.pid} exited but R ${pid} still holds stderr; reclaiming owned process tree`,
+      );
+      const killer = new Deno.Command("taskkill", {
+        args: ["/PID", String(pid), "/T", "/F"],
+        stdout: "piped",
+        stderr: "piped",
+      }).spawn();
+      let result: Deno.CommandOutput;
+      try {
+        result = await cleanupDeadline(
+          killer.output(),
+          5_000,
+          "Owned R process tree termination timed out.",
+        );
+      } catch (killError) {
+        await finishIntegrationCleanup([
+          () => stopRChild(killer, false, 1_000),
+        ], [error, killError]);
+        throw new AggregateError(
+          [error, killError],
+          "Owned R process tree termination failed.",
+          { cause: error },
+        );
+      }
+      if (!result.success) {
+        throw new AggregateError(
+          [error, new Error(new TextDecoder().decode(result.stderr))],
+          "Owned R process tree termination failed.",
+          { cause: error },
+        );
+      }
+      await cleanupDeadline(
+        stderr,
+        5_000,
+        "R stderr remained open after process tree termination.",
+      );
+      // Retain the leak evidence even if forced recovery released the file handles.
+      throw error;
+    }
+  }], failures);
+  if (failures.length) throw failures[0];
+}
+
+export type ShutdownState = { requested: boolean };
+export async function* fixtureFrames(
+  connection: Pick<Deno.Conn, "read">,
+  shutdown: ShutdownState,
+): AsyncGenerator<string> {
+  const decoder = new TextDecoder();
+  const chunk = new Uint8Array(8192);
+  let buffered = "";
+  try {
+    while (true) {
+      const size = await connection.read(chunk);
+      if (size === null) {
+        if (!shutdown.requested) {
+          throw new Error("Mock R connection ended before explicit shutdown.");
+        }
+        return;
+      }
+      buffered += decoder.decode(chunk.subarray(0, size), { stream: true });
+      if (buffered.length > 10 * 1024 * 1024) {
+        throw new Error("Mock R JSONL frame exceeds 10 MiB.");
+      }
+      while (true) {
+        const newline = buffered.indexOf("\n");
+        if (newline < 0) break;
+        const line = buffered.slice(0, newline).replace(/\r$/, "");
+        buffered = buffered.slice(newline + 1);
+        if (line) yield line;
+      }
+    }
+  } catch (error) {
+    if (
+      shutdown.requested &&
+      (error instanceof Deno.errors.BadResource ||
+        error instanceof Deno.errors.Interrupted)
+    ) return;
+    throw error;
+  }
+}

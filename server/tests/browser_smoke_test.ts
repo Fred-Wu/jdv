@@ -1,3 +1,15 @@
+import { launchOwnedBrowser, phase } from "./bounded_browser.ts";
+import {
+  assertServerReleased,
+  cleanupDeadline,
+  finishIntegrationCleanup,
+  finishRFixture,
+  fixtureFrames,
+  fixturePid,
+  pathWithin,
+  ProcessLines,
+  removeCacheDirectory,
+} from "./integration_cleanup.ts";
 import { assert, assertEquals } from "./assert.ts";
 import { startServer } from "../main.ts";
 
@@ -63,12 +75,16 @@ Deno.test({
     const playwrightModule = "npm:playwright@1.56.1";
     const { chromium } = await import(playwrightModule);
     const cacheDir = await Deno.makeTempDir({ prefix: "jdv-browser-smoke-" });
-    const server = await startServer({
-      mode: "tcp",
-      httpPort: 0,
-      cacheDir,
-    });
-    const rConnection = await connectR(server.socketPath);
+    const server = await phase("HTTP server startup", () =>
+      startServer({
+        mode: "tcp",
+        httpPort: 0,
+        cacheDir,
+      }));
+    const rConnection = await phase(
+      "mock R connect",
+      () => connectR(server.socketPath),
+    );
     const columns = Array.from({ length: 300 }, (_, position) => ({
       position,
       name: position === 0 ? "key" : `column-${position}`,
@@ -132,11 +148,14 @@ Deno.test({
       },
     });
     const requests: Array<Record<string, unknown>> = [];
-    const responder = respondToR(rConnection, columns, requests);
-    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    const shutdown = { requested: false };
+    const responder = respondToR(rConnection, columns, requests, shutdown);
+    void responder.catch((error) => console.error("[mock R responder]", error));
+    let owned: Awaited<ReturnType<typeof launchOwnedBrowser>> | undefined;
+    const originalFailure: unknown[] = [];
 
     try {
-      browser = await chromium.launch({
+      owned = await launchOwnedBrowser(chromium, {
         executablePath: browserExecutable,
         headless: true,
         args: ["--no-sandbox"],
@@ -149,1090 +168,1127 @@ Deno.test({
           }
           : {}),
       });
-      const page = await browser.newPage({
-        viewport: { width: 1280, height: 1000 },
-      });
-      const pageErrors: string[] = [];
-      page.on("pageerror", (error: Error) => pageErrors.push(error.message));
-      await page.goto(server.url, { waitUntil: "networkidle" });
-      assertEquals(
-        await page.evaluate(async () => (await fetch("/favicon.ico")).status),
-        204,
-      );
-      await page.waitForSelector('#status[data-state="connected"]');
-      await page.locator("#tables article").nth(1).getByRole("button", {
-        name: "Open object",
-      }).click();
-      await page.waitForSelector("#tree-viewer:not([hidden])");
-      await page.waitForSelector('#tree-child-list li[data-child-index="1"]');
-      assert(
-        (await page.locator("#tree-child-list").textContent())?.includes(
-          "nested <img src=x onerror=alert(1)>list · 1 item",
-        ),
-        "Tree labels, classes, and summaries should render as text.",
-      );
-      assertEquals(await page.locator("#tree-child-list img").count(), 0);
-      await page.locator('#tree-child-list [data-action="open-child"]').nth(1)
-        .click();
-      await page.waitForFunction(() => {
-        const document = (globalThis as unknown as {
-          document: BrowserDocument;
-        }).document;
-        return document.querySelector("#tree-title")?.textContent ===
-          "Nested object";
-      });
-      await page.locator("#tree-parent-return").click();
-      await page.waitForFunction(() => {
-        const document = (globalThis as unknown as {
-          document: BrowserDocument;
-        }).document;
-        return document.querySelector("#tree-title")?.textContent ===
-          "Object smoke";
-      });
-      await page.locator('#tree-child-list [data-action="open-child"]').first()
-        .click();
-      await page.waitForSelector("#viewer:not([hidden])");
-      await page.locator('[data-action="close-view"]').last().click();
-      await page.waitForFunction(() => {
-        const document = (globalThis as unknown as {
-          document: BrowserDocument;
-        }).document;
-        return document.querySelectorAll(
-              '#tables button[data-action="close-view"]',
-            ).length === 1 &&
-          document.querySelector("#tree-viewer")?.hidden === true;
-      });
-      await page.locator("#tables article").nth(1).getByRole("button", {
-        name: "Open object",
-      }).click();
-      await page.waitForSelector("#tree-viewer:not([hidden])");
-      await page.locator("#tables article").first().getByRole("button", {
-        name: "Open view",
-      }).click();
-      await page.waitForSelector("#viewer .tabulator-row");
-      await page.selectOption("#filter-column", "299");
-      assertEquals(
-        await page.locator("#filter-op option").allTextContents(),
-        ["Is missing"],
-      );
-      await page.selectOption("#filter-column", "0");
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
-          )?.textContent === "1";
-        },
-      );
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector(
-            '.tabulator-row [tabulator-field="c1"]',
-          )?.textContent === "<img src=x onerror=alert(1)>";
-        },
-      );
-      assertEquals(await page.locator("#column-window img").count(), 0);
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector("#warnings")?.textContent?.includes(
-            "<img src=x onerror=alert(1)>",
-          ) === true;
-        },
-      );
-      assertEquals(await page.locator("#warnings img").count(), 0);
-      await page.screenshot({
-        path: "/tmp/jdv-phase7-browser-smoke.png",
-        fullPage: true,
-      });
-
-      assertEquals(
-        requests.slice(0, 3).map((request) => request.offset),
-        [0, 37, 49],
-      );
-      assertEquals(
-        await page.locator("#column-window.tabulator").count(),
-        1,
-      );
-      assertEquals(
-        await page.locator(
-          '#column-window .tabulator-col[tabulator-field="c0"]',
-        ).count(),
-        1,
-      );
-      assertEquals(
-        await page.locator('.tabulator-row [tabulator-field="c0"]').first()
-          .textContent(),
-        "1",
-      );
-
-      await page.selectOption("#sort-column", "0");
-      await page.selectOption("#sort-direction", "desc");
-      await page.getByRole("button", { name: "Add sort" }).click();
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
-          )?.textContent === "249";
-        },
-      );
-      assert(
-        requests.some((request) =>
-          Array.isArray(request.sort) &&
-          (request.sort[0] as Record<string, unknown>)?.desc === true
-        ),
-        "The browser did not send the descending sort request.",
-      );
-
-      await clickNextPage(page);
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
-          )?.textContent === "49";
-        },
-      );
-      const pagedRequestsBeforeHorizontalScroll = requests.length;
-      const heldScrollGeometry = await page.evaluate(async () => {
-        const runtime = globalThis as unknown as BrowserRuntime & {
-          document: BrowserDocument;
-        };
-        const document = runtime.document;
-        const viewport = document.querySelector("#column-viewport");
-        if (!viewport) throw new Error("The column viewport was not found.");
-        for (const column of [80, 140, 200, 260, 290]) {
-          viewport.scrollLeft = 86 + column * 180;
-          viewport.dispatchEvent(new runtime.Event("scroll"));
-          await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
-        }
-        for (let repeat = 0; repeat < 4; repeat++) {
-          viewport.dispatchEvent(new runtime.Event("scroll"));
-          await new Promise((resolve) => globalThis.setTimeout(resolve, 25));
-        }
-        await new Promise<void>((resolve) => {
-          runtime.requestAnimationFrame(() => resolve());
-        });
-        await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
-        const rowHeader = viewport.querySelector(
-          '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+      const browser = owned.browser;
+      await phase("browser test body", async () => {
+        const page = await phase("new page", () =>
+          browser.newPage({
+            viewport: { width: 1280, height: 1000 },
+          }));
+        page.setDefaultTimeout(15_000);
+        page.setDefaultNavigationTimeout(20_000);
+        const pageErrors: string[] = [];
+        page.on("pageerror", (error: Error) => pageErrors.push(error.message));
+        await phase(
+          "navigation",
+          () => page.goto(server.url, { waitUntil: "networkidle" }),
+          25_000,
         );
-        const rowCell = viewport.querySelector(
-          '.tabulator-row [tabulator-field="row_index"]',
+        assertEquals(
+          await page.evaluate(async () => (await fetch("/favicon.ico")).status),
+          204,
         );
-        const viewportLeft = viewport.getBoundingClientRect().left;
-        const headerRect = rowHeader?.getBoundingClientRect();
-        const cellRect = rowCell?.getBoundingClientRect();
-        return {
-          scrollLeft: viewport.scrollLeft,
-          viewportLeft,
-          headerLeft: headerRect?.left ?? Number.NaN,
-          headerRight: headerRect?.right ?? Number.NaN,
-          cellLeft: cellRect?.left ?? Number.NaN,
-          cellRight: cellRect?.right ?? Number.NaN,
-        };
-      });
-      assert(
-        requests.length === pagedRequestsBeforeHorizontalScroll,
-        `Horizontal paging should wait for the scroll debounce while the user is still moving: before=${pagedRequestsBeforeHorizontalScroll}, after=${requests.length}, new=${
-          JSON.stringify(requests.slice(pagedRequestsBeforeHorizontalScroll))
-        }`,
-      );
-      assert(
-        heldScrollGeometry.scrollLeft === 86 + 290 * 180 &&
-          heldScrollGeometry.headerLeft >=
-            heldScrollGeometry.viewportLeft - 1 &&
-          heldScrollGeometry.headerLeft < heldScrollGeometry.viewportLeft + 8 &&
-          heldScrollGeometry.cellLeft >= heldScrollGeometry.viewportLeft - 1 &&
-          heldScrollGeometry.cellLeft < heldScrollGeometry.viewportLeft + 8 &&
-          heldScrollGeometry.headerRight - heldScrollGeometry.headerLeft ===
-            86 &&
-          heldScrollGeometry.cellRight - heldScrollGeometry.cellLeft === 86,
-        `The row index moved during rapid scroll/hold: ${
-          JSON.stringify(heldScrollGeometry)
-        }`,
-      );
-      await page.waitForTimeout(500);
-      console.log(
-        "horizontal-column-diagnostic",
-        await page.locator("#column-viewport").evaluate(
-          (element: BrowserElement) => {
-            const columns = [...element.querySelectorAll(".tabulator-col")];
-            const runtime = globalThis as unknown as BrowserRuntime;
-            const rowHeader = element.querySelector(
-              '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
-            );
-            const rowCell = element.querySelector(
-              '.tabulator-row [tabulator-field="row_index"]',
-            );
-            const describe = (node: BrowserElement | null) => {
-              if (!node) return null;
-              const rect = node.getBoundingClientRect();
-              const computed = runtime.getComputedStyle(node);
-              const parentComputed = node.parentElement
-                ? runtime.getComputedStyle(node.parentElement)
-                : null;
-              return {
-                className: node.className,
-                left: rect.left,
-                right: rect.right,
-                position: computed.position,
-                transform: computed.transform,
-                leftStyle: computed.left,
-                parentClassName: node.parentElement?.className ?? null,
-                parentPosition: parentComputed?.position ?? null,
-                parentTransform: parentComputed?.transform ?? null,
-              };
-            };
-            return JSON.stringify({
-              scrollLeft: element.scrollLeft,
-              scrollWidth: element.scrollWidth,
-              clientWidth: element.clientWidth,
-              windowWidth: element.querySelector("#column-window")?.style.width,
-              transform: element.querySelector("#column-window")?.style
-                .transform,
-              firstHeaders: columns.slice(0, 5).map((node) =>
-                node.getAttribute("tabulator-field")
-              ),
-              lastHeaders: columns.slice(-5).map((node) =>
-                node.getAttribute("tabulator-field")
-              ),
-              rowHeader: describe(rowHeader),
-              rowCell: describe(rowCell),
-            });
-          },
-        ),
-      );
-      await page.screenshot({
-        path: "/tmp/jdv-phase7-browser-scroll.png",
-        fullPage: true,
-      });
-      await page.waitForSelector(
-        '#column-window .tabulator-col[tabulator-field="c290"]',
-        undefined,
-        { timeout: 5_000 },
-      );
-      const pinnedRowGeometry = await page.locator("#column-viewport")
-        .evaluate((viewport: BrowserElement) => {
-          const viewportRect = viewport.getBoundingClientRect();
-          const header = viewport.querySelector(
-            '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
-          );
-          const cell = viewport.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
-          );
-          const headerRect = header?.getBoundingClientRect();
-          const cellRect = cell?.getBoundingClientRect();
-          return {
-            viewportLeft: viewportRect.left,
-            headerLeft: headerRect?.left,
-            headerRight: headerRect?.right,
-            cellLeft: cellRect?.left,
-            cellRight: cellRect?.right,
-          };
-        });
-      assert(
-        pinnedRowGeometry.headerLeft !== undefined &&
-          pinnedRowGeometry.headerRight !== undefined &&
-          pinnedRowGeometry.cellLeft !== undefined &&
-          pinnedRowGeometry.cellRight !== undefined &&
-          pinnedRowGeometry.headerLeft >= pinnedRowGeometry.viewportLeft - 1 &&
-          pinnedRowGeometry.headerLeft < pinnedRowGeometry.viewportLeft + 8 &&
-          pinnedRowGeometry.cellLeft >= pinnedRowGeometry.viewportLeft - 1 &&
-          pinnedRowGeometry.cellLeft < pinnedRowGeometry.viewportLeft + 8 &&
-          pinnedRowGeometry.headerRight - pinnedRowGeometry.headerLeft ===
-            86 &&
-          pinnedRowGeometry.cellRight - pinnedRowGeometry.cellLeft === 86,
-        `The frozen row index must remain pinned at the viewport left edge: ${
-          JSON.stringify(pinnedRowGeometry)
-        }`,
-      );
-      console.log(
-        "right-column-paged-requests",
-        JSON.stringify(requests.filter((request) => request.offset === 200)),
-      );
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector("#sort-list")?.textContent?.includes(
-            "#0",
-          ) === true;
-        },
-      );
-      assert(
-        requests.some((request) =>
-          request.offset === 200 && Array.isArray(request.cols) &&
-          request.cols.includes(290) && Array.isArray(request.sort) &&
-          (request.sort[0] as Record<string, unknown>)?.col === 0 &&
-          (request.sort[0] as Record<string, unknown>)?.desc === true
-        ),
-        "The right-column page request lost page offset or the column-0 sort.",
-      );
-
-      await page.selectOption("#filter-column", "0");
-      await page.selectOption("#filter-op", "gt");
-      await page.locator("#filter-value").fill("247");
-      await page.getByRole("button", { name: "Apply filter" }).click();
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          const cells = [
-            ...document.querySelectorAll(
-              '.tabulator-row [tabulator-field="row_index"]',
-            ),
-          ];
-          return cells.length === 2 && cells[0].textContent === "249" &&
-            cells[1].textContent === "248";
-        },
-      );
-      assert(
-        requests.some((request) =>
-          (request.filter as Record<string, unknown> | null)?.op === "gt"
-        ),
-        "The browser did not send the filter request.",
-      );
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector("#table-meta")?.textContent?.startsWith(
-            "2 of 249 rows · 300 columns · paged · ",
-          ) === true;
-        },
-      );
-      assert(
-        (await page.locator("#table-meta").textContent())?.startsWith(
-          "2 of 249 rows · 300 columns · paged · ",
-        ),
-        "The Paged heading should show the filtered and unfiltered totals.",
-      );
-      await page.screenshot({
-        path: "/tmp/jdv-20261014-ui-filtered-count.png",
-        fullPage: true,
-      });
-
-      await page.getByRole("button", { name: "Clear" }).click();
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
-          )?.textContent === "249";
-        },
-      );
-      await page.selectOption("#filter-column", "0");
-      await page.selectOption("#filter-op", "gt");
-      await page.locator("#filter-value").fill("999");
-      await page.getByRole("button", { name: "Apply filter" }).click();
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector('#warnings li[data-state="error"]')
-            ?.textContent?.includes("r_error: <img src=x onerror=alert(1)>") ===
-            true;
-        },
-      );
-      assertEquals(await page.locator("#warnings img").count(), 0);
-      await page.getByRole("button", { name: "Clear" }).click();
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
-          )?.textContent === "249";
-        },
-      );
-      await page.evaluate(() => {
-        const document = (globalThis as unknown as {
-          document: BrowserDocument;
-        }).document;
-        const viewport = document.querySelector("#column-viewport");
-        if (viewport) viewport.scrollLeft = viewport.scrollWidth;
-      });
-      await page.waitForSelector(
-        '#column-window .tabulator-col[tabulator-field="c299"]',
-      );
-      await page.waitForSelector(
-        '.tabulator-row [tabulator-field="c299"]',
-      );
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector(
-            '.tabulator-row [tabulator-field="c299"]',
-          )?.textContent?.startsWith("value-299-") === true;
-        },
-        { timeout: 5_000 },
-      );
-      await page.waitForFunction(() => {
-        const document = (globalThis as unknown as {
-          document: BrowserDocument;
-        }).document;
-        const viewport = document.querySelector("#column-viewport");
-        if (!viewport) return false;
-        const viewportRect = viewport.getBoundingClientRect();
-        const header = viewport.querySelector(
-          '.tabulator-header .tabulator-col[tabulator-field="c299"]',
-        )?.getBoundingClientRect();
-        const cell = viewport.querySelector(
-          '.tabulator-row [tabulator-field="c299"]',
-        )?.getBoundingClientRect();
-        return header !== undefined && cell !== undefined &&
-          header.left >= viewportRect.left - 1 &&
-          header.right <= viewportRect.right + 1 &&
-          cell.left >= viewportRect.left - 1 &&
-          cell.right <= viewportRect.right + 1;
-      }, { timeout: 5_000 });
-      assert(
-        (await page.locator('.tabulator-row [tabulator-field="c299"]')
-          .first().textContent())?.startsWith("value-299-"),
-        "The rightmost data cell was not rendered.",
-      );
-      const rightEdgeGeometry = await page.locator("#column-viewport").evaluate(
-        (element: BrowserElement) => {
-          const viewportRect = element.getBoundingClientRect();
-          const row = element.querySelector(
-            '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
-          );
-          const rowRight = row?.getBoundingClientRect().right ?? Number.NaN;
-          const firstVisible = [
-            ...element.querySelectorAll(
-              '.tabulator-header .tabulator-col[tabulator-field^="c"]',
-            ),
-          ].map((column) => column.getBoundingClientRect()).find((rect) =>
-            rect.right > rowRight && rect.left >= rowRight - 1
-          );
-          const lastHeader = element.querySelector(
-            '.tabulator-header .tabulator-col[tabulator-field="c299"]',
-          );
-          const lastCell = element.querySelector(
-            '.tabulator-row [tabulator-field="c299"]',
-          );
-          const lastHeaderRect = lastHeader?.getBoundingClientRect();
-          const lastCellRect = lastCell?.getBoundingClientRect();
-          return {
-            scrollLeft: element.scrollLeft,
-            scrollWidth: element.scrollWidth,
-            clientWidth: element.clientWidth,
-            viewportLeft: viewportRect.left,
-            viewportRight: viewportRect.right,
-            rowRight,
-            firstDataLeft: firstVisible?.left ?? Number.NaN,
-            lastHeaderLeft: lastHeaderRect?.left ?? Number.NaN,
-            lastHeaderRight: lastHeaderRect?.right ?? Number.NaN,
-            lastCellLeft: lastCellRect?.left ?? Number.NaN,
-            lastCellRight: lastCellRect?.right ?? Number.NaN,
-          };
-        },
-      );
-      assert(
-        Math.abs(
-          rightEdgeGeometry.firstDataLeft - rightEdgeGeometry.rowRight,
-        ) <=
-          1,
-        `A horizontal gap appeared after the frozen Row column: ${
-          JSON.stringify(rightEdgeGeometry)
-        }`,
-      );
-      assert(
-        rightEdgeGeometry.lastHeaderLeft >=
-            rightEdgeGeometry.viewportLeft - 1 &&
-          rightEdgeGeometry.lastHeaderRight <=
-            rightEdgeGeometry.viewportRight + 1 &&
-          rightEdgeGeometry.lastHeaderRight -
-                rightEdgeGeometry.lastHeaderLeft === 180 &&
-          rightEdgeGeometry.lastCellLeft >=
-            rightEdgeGeometry.viewportLeft - 1 &&
-          rightEdgeGeometry.lastCellRight <=
-            rightEdgeGeometry.viewportRight + 1 &&
-          rightEdgeGeometry.lastCellRight - rightEdgeGeometry.lastCellLeft ===
-            180,
-        `The rightmost column must fit fully inside the viewport: ${
-          JSON.stringify(rightEdgeGeometry)
-        }`,
-      );
-      assertEquals(
-        rightEdgeGeometry.scrollLeft,
-        rightEdgeGeometry.scrollWidth - rightEdgeGeometry.clientWidth,
-      );
-      await page.screenshot({
-        path: "/tmp/jdv-20261014-ui-wide-right-edge.png",
-        fullPage: true,
-      }, { timeout: 5_000 });
-      console.log(
-        "rightmost-column-paged-requests",
-        JSON.stringify(
-          requests.filter((request) =>
-            Array.isArray(request.cols) && request.cols.includes(299)
+        await page.waitForSelector('#status[data-state="connected"]');
+        await page.locator("#tables article").nth(1).getByRole("button", {
+          name: "Open object",
+        }).click();
+        await page.waitForSelector("#tree-viewer:not([hidden])");
+        await page.waitForSelector('#tree-child-list li[data-child-index="1"]');
+        assert(
+          (await page.locator("#tree-child-list").textContent())?.includes(
+            "nested <img src=x onerror=alert(1)>list · 1 item",
           ),
-        ),
-      );
-      await clickNextPage(page);
-      await page.waitForFunction(() => {
-        const document = (globalThis as unknown as {
-          document: BrowserDocument;
-        }).document;
-        return document.querySelector(
-          '.tabulator-row [tabulator-field="row_index"]',
-        )?.textContent === "49";
-      });
-      console.log(
-        "vertical-layout-diagnostic",
-        await page.locator("#column-viewport").evaluate(
-          (viewport: BrowserElement) => {
-            const runtime = globalThis as unknown as BrowserRuntime;
-            const pagination = runtime.document.querySelector(
-              "#table-pagination",
-            );
-            const paginationRect = pagination?.getBoundingClientRect();
-            const describe = (selector: string) => {
-              const element = viewport.querySelector(selector);
-              if (!element) return null;
-              const rect = element.getBoundingClientRect();
-              return {
-                className: element.className,
-                top: rect.top,
-                bottom: rect.bottom,
-                clientHeight: element.clientHeight,
-                scrollHeight: element.scrollHeight,
-                scrollTop: element.scrollTop,
-              };
-            };
-            const outerRect = viewport.getBoundingClientRect();
-            return JSON.stringify({
-              outer: {
-                top: outerRect.top,
-                bottom: outerRect.bottom,
-                clientHeight: viewport.clientHeight,
-                scrollHeight: viewport.scrollHeight,
-                scrollTop: viewport.scrollTop,
-              },
-              tabulator: describe(".tabulator"),
-              header: describe(".tabulator-header"),
-              tableholder: describe(".tabulator-tableholder"),
-              pagination: paginationRect
-                ? {
-                  top: paginationRect.top,
-                  bottom: paginationRect.bottom,
-                  insideViewport: viewport.contains(
-                    pagination as BrowserElement,
-                  ),
-                }
-                : null,
-            });
-          },
-        ),
-      );
-      const verticalLayoutBefore = await page.locator("#column-viewport")
-        .evaluate((viewport: BrowserElement) => {
-          const header = viewport.querySelector(".tabulator-header");
-          const tableholder = viewport.querySelector(
-            ".tabulator-tableholder",
-          );
-          const headerRect = header?.getBoundingClientRect();
-          const viewportRect = viewport.getBoundingClientRect();
-          const pagination = (globalThis as unknown as BrowserRuntime).document
-            .querySelector("#table-pagination");
-          const paginationRect = pagination?.getBoundingClientRect();
-          return {
-            outerTop: viewportRect.top,
-            outerBottom: viewportRect.bottom,
-            outerScrollTop: viewport.scrollTop,
-            outerScrollHeight: viewport.scrollHeight,
-            outerClientHeight: viewport.clientHeight,
-            headerTop: headerRect?.top,
-            headerBottom: headerRect?.bottom,
-            innerScrollTop: tableholder?.scrollTop,
-            innerScrollHeight: tableholder?.scrollHeight,
-            paginationTop: paginationRect?.top,
-            paginationInsideViewport: pagination
-              ? viewport.contains(pagination)
-              : true,
-          };
-        });
-      assert(
-        verticalLayoutBefore.outerScrollTop === 0 &&
-          verticalLayoutBefore.headerTop !== undefined &&
-          verticalLayoutBefore.headerBottom !== undefined &&
-          verticalLayoutBefore.headerTop >= verticalLayoutBefore.outerTop &&
-          verticalLayoutBefore.headerBottom <=
-            verticalLayoutBefore.outerBottom &&
-          verticalLayoutBefore.paginationTop !== undefined &&
-          verticalLayoutBefore.paginationInsideViewport === false,
-        `The table header must be fully visible at outer scrollTop zero, with pagination outside the scroller: ${
-          JSON.stringify(verticalLayoutBefore)
-        }`,
-      );
-      await page.evaluate(() => {
-        const document = (globalThis as unknown as {
-          document: BrowserDocument;
-        }).document;
-        const tableholder = document.querySelector(
-          "#column-viewport .tabulator-tableholder",
+          "Tree labels, classes, and summaries should render as text.",
         );
-        if (tableholder) tableholder.scrollTop = tableholder.scrollHeight / 2;
-      });
-      await page.waitForTimeout(100);
-      const verticalLayoutAfter = await page.locator("#column-viewport")
-        .evaluate((viewport: BrowserElement) => {
-          const header = viewport.querySelector(".tabulator-header");
-          const tableholder = viewport.querySelector(
-            ".tabulator-tableholder",
-          );
-          const headerRect = header?.getBoundingClientRect();
-          const viewportRect = viewport.getBoundingClientRect();
-          const pagination = (globalThis as unknown as BrowserRuntime).document
-            .querySelector("#table-pagination");
-          const paginationRect = pagination?.getBoundingClientRect();
-          return {
-            outerTop: viewportRect.top,
-            outerBottom: viewportRect.bottom,
-            outerScrollTop: viewport.scrollTop,
-            headerTop: headerRect?.top,
-            headerBottom: headerRect?.bottom,
-            innerScrollTop: tableholder?.scrollTop,
-            paginationTop: paginationRect?.top,
-            paginationInsideViewport: pagination
-              ? viewport.contains(pagination)
-              : true,
-          };
+        assertEquals(await page.locator("#tree-child-list img").count(), 0);
+        await page.locator('#tree-child-list [data-action="open-child"]').nth(1)
+          .click();
+        await page.waitForFunction(() => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#tree-title")?.textContent ===
+            "Nested object";
         });
-      assert(
-        verticalLayoutAfter.outerScrollTop === 0 &&
-          verticalLayoutAfter.headerTop !== undefined &&
-          verticalLayoutAfter.headerBottom !== undefined &&
-          verticalLayoutAfter.headerTop >= verticalLayoutAfter.outerTop &&
-          verticalLayoutAfter.headerBottom <= verticalLayoutAfter.outerBottom &&
-          verticalLayoutAfter.innerScrollTop !== undefined &&
-          verticalLayoutAfter.innerScrollTop > 0 &&
-          verticalLayoutAfter.paginationTop ===
-            verticalLayoutBefore.paginationTop &&
-          verticalLayoutAfter.paginationInsideViewport === false,
-        `Inner vertical scrolling must preserve the header, outer position, and separate pagination: ${
-          JSON.stringify(verticalLayoutAfter)
-        }`,
-      );
-      const rerenderedRowGeometry = await page.locator("#column-viewport")
-        .evaluate((viewport: BrowserElement) => {
-          const viewportLeft = viewport.getBoundingClientRect().left;
-          const header = viewport.querySelector(
-            '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
-          );
-          const cell = viewport.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
-          );
-          const headerRect = header?.getBoundingClientRect();
-          const cellRect = cell?.getBoundingClientRect();
-          return {
-            viewportLeft,
-            headerLeft: headerRect?.left,
-            headerRight: headerRect?.right,
-            cellLeft: cellRect?.left,
-            cellRight: cellRect?.right,
-          };
+        await page.locator("#tree-parent-return").click();
+        await page.waitForFunction(() => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#tree-title")?.textContent ===
+            "Object smoke";
         });
-      assert(
-        rerenderedRowGeometry.headerLeft !== undefined &&
-          rerenderedRowGeometry.headerRight !== undefined &&
-          rerenderedRowGeometry.cellLeft !== undefined &&
-          rerenderedRowGeometry.cellRight !== undefined &&
-          rerenderedRowGeometry.headerLeft >=
-            rerenderedRowGeometry.viewportLeft - 1 &&
-          rerenderedRowGeometry.headerLeft <
-            rerenderedRowGeometry.viewportLeft + 8 &&
-          rerenderedRowGeometry.cellLeft >=
-            rerenderedRowGeometry.viewportLeft - 1 &&
-          rerenderedRowGeometry.cellLeft <
-            rerenderedRowGeometry.viewportLeft + 8 &&
-          rerenderedRowGeometry.headerRight -
-                rerenderedRowGeometry.headerLeft === 86 &&
-          rerenderedRowGeometry.cellRight - rerenderedRowGeometry.cellLeft ===
-            86,
-        `The row index moved after vertical scrolling/page rendering: ${
-          JSON.stringify(rerenderedRowGeometry)
-        }`,
-      );
-      await page.evaluate(() =>
-        new Promise<void>((resolve) => {
-          const runtime = globalThis as unknown as BrowserRuntime;
-          runtime.requestAnimationFrame(() => {
+        await page.locator('#tree-child-list [data-action="open-child"]')
+          .first()
+          .click();
+        await page.waitForSelector("#viewer:not([hidden])");
+        await page.locator('[data-action="close-view"]').last().click();
+        await page.waitForFunction(() => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelectorAll(
+                '#tables button[data-action="close-view"]',
+              ).length === 1 &&
+            document.querySelector("#tree-viewer")?.hidden === true;
+        });
+        await page.locator("#tables article").nth(1).getByRole("button", {
+          name: "Open object",
+        }).click();
+        await page.waitForSelector("#tree-viewer:not([hidden])");
+        await page.locator("#tables article").first().getByRole("button", {
+          name: "Open view",
+        }).click();
+        await page.waitForSelector("#viewer .tabulator-row");
+        await page.selectOption("#filter-column", "299");
+        assertEquals(
+          await page.locator("#filter-op option").allTextContents(),
+          ["Is missing"],
+        );
+        await page.selectOption("#filter-column", "0");
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector(
+              '.tabulator-row [tabulator-field="row_index"]',
+            )?.textContent === "1";
+          },
+        );
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector(
+              '.tabulator-row [tabulator-field="c1"]',
+            )?.textContent === "<img src=x onerror=alert(1)>";
+          },
+        );
+        assertEquals(await page.locator("#column-window img").count(), 0);
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector("#warnings")?.textContent?.includes(
+              "<img src=x onerror=alert(1)>",
+            ) === true;
+          },
+        );
+        assertEquals(await page.locator("#warnings img").count(), 0);
+        await page.screenshot({
+          path: `${cacheDir}/jdv-phase7-browser-smoke.png`,
+          fullPage: true,
+        });
+
+        assertEquals(
+          requests.slice(0, 3).map((request) => request.offset),
+          [0, 37, 49],
+        );
+        assertEquals(
+          await page.locator("#column-window.tabulator").count(),
+          1,
+        );
+        assertEquals(
+          await page.locator(
+            '#column-window .tabulator-col[tabulator-field="c0"]',
+          ).count(),
+          1,
+        );
+        assertEquals(
+          await page.locator('.tabulator-row [tabulator-field="c0"]').first()
+            .textContent(),
+          "1",
+        );
+
+        await page.selectOption("#sort-column", "0");
+        await page.selectOption("#sort-direction", "desc");
+        await page.getByRole("button", { name: "Add sort" }).click();
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector(
+              '.tabulator-row [tabulator-field="row_index"]',
+            )?.textContent === "249";
+          },
+        );
+        assert(
+          requests.some((request) =>
+            Array.isArray(request.sort) &&
+            (request.sort[0] as Record<string, unknown>)?.desc === true
+          ),
+          "The browser did not send the descending sort request.",
+        );
+
+        await clickNextPage(page);
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector(
+              '.tabulator-row [tabulator-field="row_index"]',
+            )?.textContent === "49";
+          },
+        );
+        const pagedRequestsBeforeHorizontalScroll = requests.length;
+        const heldScrollGeometry = await page.evaluate(async () => {
+          const runtime = globalThis as unknown as BrowserRuntime & {
+            document: BrowserDocument;
+          };
+          const document = runtime.document;
+          const viewport = document.querySelector("#column-viewport");
+          if (!viewport) throw new Error("The column viewport was not found.");
+          for (const column of [80, 140, 200, 260, 290]) {
+            viewport.scrollLeft = 86 + column * 180;
+            viewport.dispatchEvent(new runtime.Event("scroll"));
+            await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+          }
+          for (let repeat = 0; repeat < 4; repeat++) {
+            viewport.dispatchEvent(new runtime.Event("scroll"));
+            await new Promise((resolve) => globalThis.setTimeout(resolve, 25));
+          }
+          await new Promise<void>((resolve) => {
             runtime.requestAnimationFrame(() => resolve());
           });
-        })
-      );
-      const renderedEdgeCells: {
-        loading: boolean;
-        columns: Array<{
-          field: string;
-          headerLeft: number | undefined;
-          headerRight: number | undefined;
-          cellLeft: number | undefined;
-          cellRight: number | undefined;
-          textLeft: number | undefined;
-          textRight: number | undefined;
-          text: string | null | undefined;
-        }>;
-      } = await page.locator("#column-viewport")
-        .evaluate((viewport: BrowserElement) => {
-          const rows = [...viewport.querySelectorAll(".tabulator-row")];
-          const targetRow = rows.find((row) =>
-            row.querySelector('[tabulator-field="row_index"]')?.textContent ===
-              "24"
+          await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
+          const rowHeader = viewport.querySelector(
+            '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
           );
-          const cellGeometry = (field: string) => {
+          const rowCell = viewport.querySelector(
+            '.tabulator-row [tabulator-field="row_index"]',
+          );
+          const viewportLeft = viewport.getBoundingClientRect().left;
+          const headerRect = rowHeader?.getBoundingClientRect();
+          const cellRect = rowCell?.getBoundingClientRect();
+          return {
+            scrollLeft: viewport.scrollLeft,
+            viewportLeft,
+            headerLeft: headerRect?.left ?? Number.NaN,
+            headerRight: headerRect?.right ?? Number.NaN,
+            cellLeft: cellRect?.left ?? Number.NaN,
+            cellRight: cellRect?.right ?? Number.NaN,
+          };
+        });
+        assert(
+          requests.length === pagedRequestsBeforeHorizontalScroll,
+          `Horizontal paging should wait for the scroll debounce while the user is still moving: before=${pagedRequestsBeforeHorizontalScroll}, after=${requests.length}, new=${
+            JSON.stringify(requests.slice(pagedRequestsBeforeHorizontalScroll))
+          }`,
+        );
+        assert(
+          heldScrollGeometry.scrollLeft === 86 + 290 * 180 &&
+            heldScrollGeometry.headerLeft >=
+              heldScrollGeometry.viewportLeft - 1 &&
+            heldScrollGeometry.headerLeft <
+              heldScrollGeometry.viewportLeft + 8 &&
+            heldScrollGeometry.cellLeft >=
+              heldScrollGeometry.viewportLeft - 1 &&
+            heldScrollGeometry.cellLeft < heldScrollGeometry.viewportLeft + 8 &&
+            heldScrollGeometry.headerRight - heldScrollGeometry.headerLeft ===
+              86 &&
+            heldScrollGeometry.cellRight - heldScrollGeometry.cellLeft === 86,
+          `The row index moved during rapid scroll/hold: ${
+            JSON.stringify(heldScrollGeometry)
+          }`,
+        );
+        await page.waitForTimeout(500);
+        console.log(
+          "horizontal-column-diagnostic",
+          await page.locator("#column-viewport").evaluate(
+            (element: BrowserElement) => {
+              const columns = [...element.querySelectorAll(".tabulator-col")];
+              const runtime = globalThis as unknown as BrowserRuntime;
+              const rowHeader = element.querySelector(
+                '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+              );
+              const rowCell = element.querySelector(
+                '.tabulator-row [tabulator-field="row_index"]',
+              );
+              const describe = (node: BrowserElement | null) => {
+                if (!node) return null;
+                const rect = node.getBoundingClientRect();
+                const computed = runtime.getComputedStyle(node);
+                const parentComputed = node.parentElement
+                  ? runtime.getComputedStyle(node.parentElement)
+                  : null;
+                return {
+                  className: node.className,
+                  left: rect.left,
+                  right: rect.right,
+                  position: computed.position,
+                  transform: computed.transform,
+                  leftStyle: computed.left,
+                  parentClassName: node.parentElement?.className ?? null,
+                  parentPosition: parentComputed?.position ?? null,
+                  parentTransform: parentComputed?.transform ?? null,
+                };
+              };
+              return JSON.stringify({
+                scrollLeft: element.scrollLeft,
+                scrollWidth: element.scrollWidth,
+                clientWidth: element.clientWidth,
+                windowWidth: element.querySelector("#column-window")?.style
+                  .width,
+                transform: element.querySelector("#column-window")?.style
+                  .transform,
+                firstHeaders: columns.slice(0, 5).map((node) =>
+                  node.getAttribute("tabulator-field")
+                ),
+                lastHeaders: columns.slice(-5).map((node) =>
+                  node.getAttribute("tabulator-field")
+                ),
+                rowHeader: describe(rowHeader),
+                rowCell: describe(rowCell),
+              });
+            },
+          ),
+        );
+        await page.screenshot({
+          path: `${cacheDir}/jdv-phase7-browser-scroll.png`,
+          fullPage: true,
+        });
+        await page.waitForSelector(
+          '#column-window .tabulator-col[tabulator-field="c290"]',
+          { timeout: 5_000 },
+        );
+        const pinnedRowGeometry = await page.locator("#column-viewport")
+          .evaluate((viewport: BrowserElement) => {
+            const viewportRect = viewport.getBoundingClientRect();
             const header = viewport.querySelector(
-              `.tabulator-header .tabulator-col[tabulator-field="${field}"]`,
+              '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
             );
-            const cell = targetRow?.querySelector(
-              `[tabulator-field="${field}"]`,
+            const cell = viewport.querySelector(
+              '.tabulator-row [tabulator-field="row_index"]',
             );
             const headerRect = header?.getBoundingClientRect();
             const cellRect = cell?.getBoundingClientRect();
-            const textRect = cell?.querySelector("span")
-              ?.getBoundingClientRect();
             return {
+              viewportLeft: viewportRect.left,
               headerLeft: headerRect?.left,
               headerRight: headerRect?.right,
               cellLeft: cellRect?.left,
               cellRight: cellRect?.right,
-              textLeft: textRect?.left,
-              textRight: textRect?.right,
-              text: cell?.textContent,
             };
-          };
-          return {
-            loading: viewport.querySelector("#column-window")?.className
-              .includes("is-loading-window") ?? false,
-            columns: [294, 295, 296, 297, 298, 299].map((position) => ({
-              field: `c${position}`,
-              ...cellGeometry(`c${position}`),
-            })),
-          };
-        });
-      assert(
-        !renderedEdgeCells.loading &&
-          renderedEdgeCells.columns.length === 6 &&
-          renderedEdgeCells.columns.every((column, index) => {
-            const previous = renderedEdgeCells.columns[index - 1];
-            return column.text === `value-${column.field.slice(1)}-24` &&
-              column.headerLeft !== undefined &&
-              column.headerRight !== undefined &&
-              column.cellLeft !== undefined &&
-              column.cellRight !== undefined &&
-              column.textLeft !== undefined && column.textRight !== undefined &&
-              Math.abs(column.headerLeft - column.cellLeft) <= 1 &&
-              Math.abs(column.headerRight - column.cellRight) <= 1 &&
-              column.textLeft >= column.cellLeft - 1 &&
-              column.textRight <= column.cellRight + 1 &&
-              (!previous || (previous.cellRight ?? Infinity) <=
-                  (column.cellLeft ?? -Infinity) + 1) &&
-              (!previous || (previous.textRight ?? Infinity) <=
-                  (column.textLeft ?? -Infinity) + 1);
-          }),
-        `Settled right-edge cells must have exact row 24 values and non-overlapping text/geometry: ${
-          JSON.stringify(renderedEdgeCells)
-        }`,
-      );
-      console.log(
-        "settled-right-edge-row-24",
-        JSON.stringify(renderedEdgeCells),
-      );
-      await page.screenshot({
-        path: "/tmp/jdv-20261014-ui-wide-right-edge-after-render.png",
-        fullPage: true,
-      });
-      assertEquals(
-        await page.locator("#column-window img").count(),
-        0,
-      );
+          });
+        assert(
+          pinnedRowGeometry.headerLeft !== undefined &&
+            pinnedRowGeometry.headerRight !== undefined &&
+            pinnedRowGeometry.cellLeft !== undefined &&
+            pinnedRowGeometry.cellRight !== undefined &&
+            pinnedRowGeometry.headerLeft >=
+              pinnedRowGeometry.viewportLeft - 1 &&
+            pinnedRowGeometry.headerLeft < pinnedRowGeometry.viewportLeft + 8 &&
+            pinnedRowGeometry.cellLeft >= pinnedRowGeometry.viewportLeft - 1 &&
+            pinnedRowGeometry.cellLeft < pinnedRowGeometry.viewportLeft + 8 &&
+            pinnedRowGeometry.headerRight - pinnedRowGeometry.headerLeft ===
+              86 &&
+            pinnedRowGeometry.cellRight - pinnedRowGeometry.cellLeft === 86,
+          `The frozen row index must remain pinned at the viewport left edge: ${
+            JSON.stringify(pinnedRowGeometry)
+          }`,
+        );
+        console.log(
+          "right-column-paged-requests",
+          JSON.stringify(requests.filter((request) => request.offset === 200)),
+        );
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector("#sort-list")?.textContent?.includes(
+              "#0",
+            ) === true;
+          },
+        );
+        assert(
+          requests.some((request) =>
+            request.offset === 200 && Array.isArray(request.cols) &&
+            request.cols.includes(290) && Array.isArray(request.sort) &&
+            (request.sort[0] as Record<string, unknown>)?.col === 0 &&
+            (request.sort[0] as Record<string, unknown>)?.desc === true
+          ),
+          "The right-column page request lost page offset or the column-0 sort.",
+        );
 
-      const pagedRequestsBeforeSnapshot = requests.length;
-      await writeFrame(rConnection, {
-        method: "view/open",
-        params: snapshotDescriptor(columns.slice(0, 3)),
-      });
-      const snapshotCard = page.locator("#tables article").filter({
-        hasText: "Snapshot smoke",
-      });
-      await snapshotCard.getByRole("button", { name: "Open view" }).click();
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector("#table-title")?.textContent ===
-              "Snapshot smoke" &&
-            document.querySelector(
+        await page.selectOption("#filter-column", "0");
+        await page.selectOption("#filter-op", "gt");
+        await page.locator("#filter-value").fill("247");
+        await page.getByRole("button", { name: "Apply filter" }).click();
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            const cells = [
+              ...document.querySelectorAll(
                 '.tabulator-row [tabulator-field="row_index"]',
-              )?.textContent === "1";
-        },
-      );
-      await page.waitForFunction(
-        () => {
+              ),
+            ];
+            return cells.length === 2 && cells[0].textContent === "249" &&
+              cells[1].textContent === "248";
+          },
+        );
+        assert(
+          requests.some((request) =>
+            (request.filter as Record<string, unknown> | null)?.op === "gt"
+          ),
+          "The browser did not send the filter request.",
+        );
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector("#table-meta")?.textContent
+              ?.startsWith(
+                "2 of 249 rows · 300 columns · paged · ",
+              ) === true;
+          },
+        );
+        assert(
+          (await page.locator("#table-meta").textContent())?.startsWith(
+            "2 of 249 rows · 300 columns · paged · ",
+          ),
+          "The Paged heading should show the filtered and unfiltered totals.",
+        );
+        await page.screenshot({
+          path: `${cacheDir}/jdv-20261014-ui-filtered-count.png`,
+          fullPage: true,
+        });
+
+        await page.getByRole("button", { name: "Clear" }).click();
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector(
+              '.tabulator-row [tabulator-field="row_index"]',
+            )?.textContent === "249";
+          },
+        );
+        await page.selectOption("#filter-column", "0");
+        await page.selectOption("#filter-op", "gt");
+        await page.locator("#filter-value").fill("999");
+        await page.getByRole("button", { name: "Apply filter" }).click();
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector('#warnings li[data-state="error"]')
+              ?.textContent?.includes(
+                "r_error: <img src=x onerror=alert(1)>",
+              ) ===
+              true;
+          },
+        );
+        assertEquals(await page.locator("#warnings img").count(), 0);
+        await page.getByRole("button", { name: "Clear" }).click();
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector(
+              '.tabulator-row [tabulator-field="row_index"]',
+            )?.textContent === "249";
+          },
+        );
+        await page.evaluate(() => {
           const document = (globalThis as unknown as {
             document: BrowserDocument;
           }).document;
-          return document.querySelector("#table-meta")?.textContent?.startsWith(
-            "249 of 249 rows · 3 columns · snapshot · ",
-          ) === true;
-        },
-      );
-      await page.selectOption("#filter-column", "2");
-      assertEquals(
-        await page.locator("#filter-op option").allTextContents(),
-        ["Is missing"],
-      );
-      await page.selectOption("#filter-column", "0");
-      await page.selectOption("#sort-column", "0");
-      await page.selectOption("#sort-direction", "desc");
-      await page.getByRole("button", { name: "Add sort" }).click();
-      await page.waitForFunction(
-        () => {
+          const viewport = document.querySelector("#column-viewport");
+          if (viewport) viewport.scrollLeft = viewport.scrollWidth;
+        });
+        await page.waitForSelector(
+          '#column-window .tabulator-col[tabulator-field="c299"]',
+        );
+        await page.waitForSelector(
+          '.tabulator-row [tabulator-field="c299"]',
+        );
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector(
+              '.tabulator-row [tabulator-field="c299"]',
+            )?.textContent?.startsWith("value-299-") === true;
+          },
+          { timeout: 5_000 },
+        );
+        await page.waitForFunction(() => {
           const document = (globalThis as unknown as {
             document: BrowserDocument;
           }).document;
-          return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
-          )?.textContent === "249";
-        },
-      );
-      await clickNextPage(page);
-      await page.waitForFunction(
-        () => {
+          const viewport = document.querySelector("#column-viewport");
+          if (!viewport) return false;
+          const viewportRect = viewport.getBoundingClientRect();
+          const header = viewport.querySelector(
+            '.tabulator-header .tabulator-col[tabulator-field="c299"]',
+          )?.getBoundingClientRect();
+          const cell = viewport.querySelector(
+            '.tabulator-row [tabulator-field="c299"]',
+          )?.getBoundingClientRect();
+          return header !== undefined && cell !== undefined &&
+            header.left >= viewportRect.left - 1 &&
+            header.right <= viewportRect.right + 1 &&
+            cell.left >= viewportRect.left - 1 &&
+            cell.right <= viewportRect.right + 1;
+        }, { timeout: 5_000 });
+        assert(
+          (await page.locator('.tabulator-row [tabulator-field="c299"]')
+            .first().textContent())?.startsWith("value-299-"),
+          "The rightmost data cell was not rendered.",
+        );
+        const rightEdgeGeometry = await page.locator("#column-viewport")
+          .evaluate(
+            (element: BrowserElement) => {
+              const viewportRect = element.getBoundingClientRect();
+              const row = element.querySelector(
+                '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+              );
+              const rowRight = row?.getBoundingClientRect().right ?? Number.NaN;
+              const firstVisible = [
+                ...element.querySelectorAll(
+                  '.tabulator-header .tabulator-col[tabulator-field^="c"]',
+                ),
+              ].map((column) => column.getBoundingClientRect()).find((rect) =>
+                rect.right > rowRight && rect.left >= rowRight - 1
+              );
+              const lastHeader = element.querySelector(
+                '.tabulator-header .tabulator-col[tabulator-field="c299"]',
+              );
+              const lastCell = element.querySelector(
+                '.tabulator-row [tabulator-field="c299"]',
+              );
+              const lastHeaderRect = lastHeader?.getBoundingClientRect();
+              const lastCellRect = lastCell?.getBoundingClientRect();
+              return {
+                scrollLeft: element.scrollLeft,
+                scrollWidth: element.scrollWidth,
+                clientWidth: element.clientWidth,
+                viewportLeft: viewportRect.left,
+                viewportRight: viewportRect.right,
+                rowRight,
+                firstDataLeft: firstVisible?.left ?? Number.NaN,
+                lastHeaderLeft: lastHeaderRect?.left ?? Number.NaN,
+                lastHeaderRight: lastHeaderRect?.right ?? Number.NaN,
+                lastCellLeft: lastCellRect?.left ?? Number.NaN,
+                lastCellRight: lastCellRect?.right ?? Number.NaN,
+              };
+            },
+          );
+        assert(
+          Math.abs(
+            rightEdgeGeometry.firstDataLeft - rightEdgeGeometry.rowRight,
+          ) <=
+            1,
+          `A horizontal gap appeared after the frozen Row column: ${
+            JSON.stringify(rightEdgeGeometry)
+          }`,
+        );
+        assert(
+          rightEdgeGeometry.lastHeaderLeft >=
+              rightEdgeGeometry.viewportLeft - 1 &&
+            rightEdgeGeometry.lastHeaderRight <=
+              rightEdgeGeometry.viewportRight + 1 &&
+            rightEdgeGeometry.lastHeaderRight -
+                  rightEdgeGeometry.lastHeaderLeft === 180 &&
+            rightEdgeGeometry.lastCellLeft >=
+              rightEdgeGeometry.viewportLeft - 1 &&
+            rightEdgeGeometry.lastCellRight <=
+              rightEdgeGeometry.viewportRight + 1 &&
+            rightEdgeGeometry.lastCellRight - rightEdgeGeometry.lastCellLeft ===
+              180,
+          `The rightmost column must fit fully inside the viewport: ${
+            JSON.stringify(rightEdgeGeometry)
+          }`,
+        );
+        assertEquals(
+          rightEdgeGeometry.scrollLeft,
+          rightEdgeGeometry.scrollWidth - rightEdgeGeometry.clientWidth,
+        );
+        await page.screenshot({
+          path: `${cacheDir}/wide-right-edge.png`,
+          fullPage: true,
+          timeout: 5_000,
+        });
+        console.log(
+          "rightmost-column-paged-requests",
+          JSON.stringify(
+            requests.filter((request) =>
+              Array.isArray(request.cols) && request.cols.includes(299)
+            ),
+          ),
+        );
+        await clickNextPage(page);
+        await page.waitForFunction(() => {
           const document = (globalThis as unknown as {
             document: BrowserDocument;
           }).document;
           return document.querySelector(
             '.tabulator-row [tabulator-field="row_index"]',
           )?.textContent === "49";
-        },
-      );
-      await page.selectOption("#filter-column", "0");
-      await page.selectOption("#filter-op", "gt");
-      await page.locator("#filter-value").fill("247");
-      await page.getByRole("button", { name: "Apply filter" }).click();
-      await page.waitForFunction(
-        () => {
+        });
+        console.log(
+          "vertical-layout-diagnostic",
+          await page.locator("#column-viewport").evaluate(
+            (viewport: BrowserElement) => {
+              const runtime = globalThis as unknown as BrowserRuntime;
+              const pagination = runtime.document.querySelector(
+                "#table-pagination",
+              );
+              const paginationRect = pagination?.getBoundingClientRect();
+              const describe = (selector: string) => {
+                const element = viewport.querySelector(selector);
+                if (!element) return null;
+                const rect = element.getBoundingClientRect();
+                return {
+                  className: element.className,
+                  top: rect.top,
+                  bottom: rect.bottom,
+                  clientHeight: element.clientHeight,
+                  scrollHeight: element.scrollHeight,
+                  scrollTop: element.scrollTop,
+                };
+              };
+              const outerRect = viewport.getBoundingClientRect();
+              return JSON.stringify({
+                outer: {
+                  top: outerRect.top,
+                  bottom: outerRect.bottom,
+                  clientHeight: viewport.clientHeight,
+                  scrollHeight: viewport.scrollHeight,
+                  scrollTop: viewport.scrollTop,
+                },
+                tabulator: describe(".tabulator"),
+                header: describe(".tabulator-header"),
+                tableholder: describe(".tabulator-tableholder"),
+                pagination: paginationRect
+                  ? {
+                    top: paginationRect.top,
+                    bottom: paginationRect.bottom,
+                    insideViewport: viewport.contains(
+                      pagination as BrowserElement,
+                    ),
+                  }
+                  : null,
+              });
+            },
+          ),
+        );
+        const verticalLayoutBefore = await page.locator("#column-viewport")
+          .evaluate((viewport: BrowserElement) => {
+            const header = viewport.querySelector(".tabulator-header");
+            const tableholder = viewport.querySelector(
+              ".tabulator-tableholder",
+            );
+            const headerRect = header?.getBoundingClientRect();
+            const viewportRect = viewport.getBoundingClientRect();
+            const pagination = (globalThis as unknown as BrowserRuntime)
+              .document
+              .querySelector("#table-pagination");
+            const paginationRect = pagination?.getBoundingClientRect();
+            return {
+              outerTop: viewportRect.top,
+              outerBottom: viewportRect.bottom,
+              outerScrollTop: viewport.scrollTop,
+              outerScrollHeight: viewport.scrollHeight,
+              outerClientHeight: viewport.clientHeight,
+              headerTop: headerRect?.top,
+              headerBottom: headerRect?.bottom,
+              innerScrollTop: tableholder?.scrollTop,
+              innerScrollHeight: tableholder?.scrollHeight,
+              paginationTop: paginationRect?.top,
+              paginationInsideViewport: pagination
+                ? viewport.contains(pagination)
+                : true,
+            };
+          });
+        assert(
+          verticalLayoutBefore.outerScrollTop === 0 &&
+            verticalLayoutBefore.headerTop !== undefined &&
+            verticalLayoutBefore.headerBottom !== undefined &&
+            verticalLayoutBefore.headerTop >= verticalLayoutBefore.outerTop &&
+            verticalLayoutBefore.headerBottom <=
+              verticalLayoutBefore.outerBottom &&
+            verticalLayoutBefore.paginationTop !== undefined &&
+            verticalLayoutBefore.paginationInsideViewport === false,
+          `The table header must be fully visible at outer scrollTop zero, with pagination outside the scroller: ${
+            JSON.stringify(verticalLayoutBefore)
+          }`,
+        );
+        await page.evaluate(() => {
           const document = (globalThis as unknown as {
             document: BrowserDocument;
           }).document;
-          const cells = [
-            ...document.querySelectorAll(
+          const tableholder = document.querySelector(
+            "#column-viewport .tabulator-tableholder",
+          );
+          if (tableholder) tableholder.scrollTop = tableholder.scrollHeight / 2;
+        });
+        await page.waitForTimeout(100);
+        const verticalLayoutAfter = await page.locator("#column-viewport")
+          .evaluate((viewport: BrowserElement) => {
+            const header = viewport.querySelector(".tabulator-header");
+            const tableholder = viewport.querySelector(
+              ".tabulator-tableholder",
+            );
+            const headerRect = header?.getBoundingClientRect();
+            const viewportRect = viewport.getBoundingClientRect();
+            const pagination = (globalThis as unknown as BrowserRuntime)
+              .document
+              .querySelector("#table-pagination");
+            const paginationRect = pagination?.getBoundingClientRect();
+            return {
+              outerTop: viewportRect.top,
+              outerBottom: viewportRect.bottom,
+              outerScrollTop: viewport.scrollTop,
+              headerTop: headerRect?.top,
+              headerBottom: headerRect?.bottom,
+              innerScrollTop: tableholder?.scrollTop,
+              paginationTop: paginationRect?.top,
+              paginationInsideViewport: pagination
+                ? viewport.contains(pagination)
+                : true,
+            };
+          });
+        assert(
+          verticalLayoutAfter.outerScrollTop === 0 &&
+            verticalLayoutAfter.headerTop !== undefined &&
+            verticalLayoutAfter.headerBottom !== undefined &&
+            verticalLayoutAfter.headerTop >= verticalLayoutAfter.outerTop &&
+            verticalLayoutAfter.headerBottom <=
+              verticalLayoutAfter.outerBottom &&
+            verticalLayoutAfter.innerScrollTop !== undefined &&
+            verticalLayoutAfter.innerScrollTop > 0 &&
+            verticalLayoutAfter.paginationTop ===
+              verticalLayoutBefore.paginationTop &&
+            verticalLayoutAfter.paginationInsideViewport === false,
+          `Inner vertical scrolling must preserve the header, outer position, and separate pagination: ${
+            JSON.stringify(verticalLayoutAfter)
+          }`,
+        );
+        const rerenderedRowGeometry = await page.locator("#column-viewport")
+          .evaluate((viewport: BrowserElement) => {
+            const viewportLeft = viewport.getBoundingClientRect().left;
+            const header = viewport.querySelector(
+              '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+            );
+            const cell = viewport.querySelector(
               '.tabulator-row [tabulator-field="row_index"]',
-            ),
-          ];
-          return cells.length === 2 && cells[0].textContent === "249" &&
-            cells[1].textContent === "248";
-        },
-      );
-      assert(
-        (await page.locator("#table-meta").textContent())?.startsWith(
-          "2 of 249 rows · 3 columns · snapshot · ",
-        ),
-        "Snapshot local filtering should update both row totals.",
-      );
-      assertEquals(requests.length, pagedRequestsBeforeSnapshot);
+            );
+            const headerRect = header?.getBoundingClientRect();
+            const cellRect = cell?.getBoundingClientRect();
+            return {
+              viewportLeft,
+              headerLeft: headerRect?.left,
+              headerRight: headerRect?.right,
+              cellLeft: cellRect?.left,
+              cellRight: cellRect?.right,
+            };
+          });
+        assert(
+          rerenderedRowGeometry.headerLeft !== undefined &&
+            rerenderedRowGeometry.headerRight !== undefined &&
+            rerenderedRowGeometry.cellLeft !== undefined &&
+            rerenderedRowGeometry.cellRight !== undefined &&
+            rerenderedRowGeometry.headerLeft >=
+              rerenderedRowGeometry.viewportLeft - 1 &&
+            rerenderedRowGeometry.headerLeft <
+              rerenderedRowGeometry.viewportLeft + 8 &&
+            rerenderedRowGeometry.cellLeft >=
+              rerenderedRowGeometry.viewportLeft - 1 &&
+            rerenderedRowGeometry.cellLeft <
+              rerenderedRowGeometry.viewportLeft + 8 &&
+            rerenderedRowGeometry.headerRight -
+                  rerenderedRowGeometry.headerLeft === 86 &&
+            rerenderedRowGeometry.cellRight - rerenderedRowGeometry.cellLeft ===
+              86,
+          `The row index moved after vertical scrolling/page rendering: ${
+            JSON.stringify(rerenderedRowGeometry)
+          }`,
+        );
+        await page.evaluate(() =>
+          new Promise<void>((resolve) => {
+            const runtime = globalThis as unknown as BrowserRuntime;
+            runtime.requestAnimationFrame(() => {
+              runtime.requestAnimationFrame(() => resolve());
+            });
+          })
+        );
+        const renderedEdgeCells: {
+          loading: boolean;
+          columns: Array<{
+            field: string;
+            headerLeft: number | undefined;
+            headerRight: number | undefined;
+            cellLeft: number | undefined;
+            cellRight: number | undefined;
+            textLeft: number | undefined;
+            textRight: number | undefined;
+            text: string | null | undefined;
+          }>;
+        } = await page.locator("#column-viewport")
+          .evaluate((viewport: BrowserElement) => {
+            const rows = [...viewport.querySelectorAll(".tabulator-row")];
+            const targetRow = rows.find((row) =>
+              row.querySelector('[tabulator-field="row_index"]')
+                ?.textContent ===
+                "24"
+            );
+            const cellGeometry = (field: string) => {
+              const header = viewport.querySelector(
+                `.tabulator-header .tabulator-col[tabulator-field="${field}"]`,
+              );
+              const cell = targetRow?.querySelector(
+                `[tabulator-field="${field}"]`,
+              );
+              const headerRect = header?.getBoundingClientRect();
+              const cellRect = cell?.getBoundingClientRect();
+              const textRect = cell?.querySelector("span")
+                ?.getBoundingClientRect();
+              return {
+                headerLeft: headerRect?.left,
+                headerRight: headerRect?.right,
+                cellLeft: cellRect?.left,
+                cellRight: cellRect?.right,
+                textLeft: textRect?.left,
+                textRight: textRect?.right,
+                text: cell?.textContent,
+              };
+            };
+            return {
+              loading: viewport.querySelector("#column-window")?.className
+                .includes("is-loading-window") ?? false,
+              columns: [294, 295, 296, 297, 298, 299].map((position) => ({
+                field: `c${position}`,
+                ...cellGeometry(`c${position}`),
+              })),
+            };
+          });
+        assert(
+          !renderedEdgeCells.loading &&
+            renderedEdgeCells.columns.length === 6 &&
+            renderedEdgeCells.columns.every((column, index) => {
+              const previous = renderedEdgeCells.columns[index - 1];
+              return column.text === `value-${column.field.slice(1)}-24` &&
+                column.headerLeft !== undefined &&
+                column.headerRight !== undefined &&
+                column.cellLeft !== undefined &&
+                column.cellRight !== undefined &&
+                column.textLeft !== undefined &&
+                column.textRight !== undefined &&
+                Math.abs(column.headerLeft - column.cellLeft) <= 1 &&
+                Math.abs(column.headerRight - column.cellRight) <= 1 &&
+                column.textLeft >= column.cellLeft - 1 &&
+                column.textRight <= column.cellRight + 1 &&
+                (!previous || (previous.cellRight ?? Infinity) <=
+                    (column.cellLeft ?? -Infinity) + 1) &&
+                (!previous || (previous.textRight ?? Infinity) <=
+                    (column.textLeft ?? -Infinity) + 1);
+            }),
+          `Settled right-edge cells must have exact row 24 values and non-overlapping text/geometry: ${
+            JSON.stringify(renderedEdgeCells)
+          }`,
+        );
+        console.log(
+          "settled-right-edge-row-24",
+          JSON.stringify(renderedEdgeCells),
+        );
+        await page.screenshot({
+          path: `${cacheDir}/jdv-20261014-ui-wide-right-edge-after-render.png`,
+          fullPage: true,
+        });
+        assertEquals(
+          await page.locator("#column-window img").count(),
+          0,
+        );
 
-      const pagedCard = page.locator("#tables article").filter({
-        hasText: "Browser smoke",
-      });
-      await pagedCard.getByRole("button", { name: "Open view" }).click();
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector("#table-title")?.textContent ===
-              "Browser smoke" &&
-            document.querySelector(
+        const pagedRequestsBeforeSnapshot = requests.length;
+        await writeFrame(rConnection, {
+          method: "view/open",
+          params: snapshotDescriptor(columns.slice(0, 3)),
+        });
+        const snapshotCard = page.locator("#tables article").filter({
+          hasText: "Snapshot smoke",
+        });
+        await snapshotCard.getByRole("button", { name: "Open view" }).click();
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector("#table-title")?.textContent ===
+                "Snapshot smoke" &&
+              document.querySelector(
+                  '.tabulator-row [tabulator-field="row_index"]',
+                )?.textContent === "1";
+          },
+        );
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector("#table-meta")?.textContent
+              ?.startsWith(
+                "249 of 249 rows · 3 columns · snapshot · ",
+              ) === true;
+          },
+        );
+        await page.selectOption("#filter-column", "2");
+        assertEquals(
+          await page.locator("#filter-op option").allTextContents(),
+          ["Is missing"],
+        );
+        await page.selectOption("#filter-column", "0");
+        await page.selectOption("#sort-column", "0");
+        await page.selectOption("#sort-direction", "desc");
+        await page.getByRole("button", { name: "Add sort" }).click();
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector(
+              '.tabulator-row [tabulator-field="row_index"]',
+            )?.textContent === "249";
+          },
+        );
+        await clickNextPage(page);
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector(
+              '.tabulator-row [tabulator-field="row_index"]',
+            )?.textContent === "49";
+          },
+        );
+        await page.selectOption("#filter-column", "0");
+        await page.selectOption("#filter-op", "gt");
+        await page.locator("#filter-value").fill("247");
+        await page.getByRole("button", { name: "Apply filter" }).click();
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            const cells = [
+              ...document.querySelectorAll(
                 '.tabulator-row [tabulator-field="row_index"]',
-              )?.textContent === "1";
-        },
-      );
-      await writeFrame(rConnection, {
-        method: "view/open",
-        params: {
-          view: "wide-paged",
-          generation: 2,
-          kind: "grid",
-          access: "random",
-          encoding: "r-json",
-          mode: "paged",
-          title: "Generation 2",
-          nrow: 3,
-          ncol: 2,
-          columns: columns.slice(0, 2),
-          capabilities: gridCapabilities(),
-        },
-      });
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector("#table-title")?.textContent ===
-              "Generation 2" &&
-            document.querySelector(
-                '.tabulator-row [tabulator-field="row_index"]',
-              )?.textContent === "1001";
-        },
-      );
-      await writeFrame(rConnection, {
-        method: "view/closed",
-        params: { view: "wide-paged", generation: 1 },
-      });
-      await page.waitForTimeout(100);
-      assertEquals(
-        await page.locator("#viewer").evaluate((element: BrowserElement) =>
-          element.hidden
-        ),
-        false,
-      );
-      assertEquals(
-        await page.locator("#table-title").textContent(),
-        "Generation 2",
-      );
-      assertEquals(
-        await page.locator('.tabulator-row [tabulator-field="row_index"]')
-          .first().textContent(),
-        "1001",
-      );
+              ),
+            ];
+            return cells.length === 2 && cells[0].textContent === "249" &&
+              cells[1].textContent === "248";
+          },
+        );
+        assert(
+          (await page.locator("#table-meta").textContent())?.startsWith(
+            "2 of 249 rows · 3 columns · snapshot · ",
+          ),
+          "Snapshot local filtering should update both row totals.",
+        );
+        assertEquals(requests.length, pagedRequestsBeforeSnapshot);
 
-      const limitedView = snapshotDescriptor(columns.slice(0, 3));
-      limitedView.view = "limited-grid";
-      limitedView.title = "Limited capabilities";
-      limitedView.nrow = null;
-      limitedView.capabilities = {
-        ...gridCapabilities(),
-        sort: false,
-        filter: false,
-      };
-      await writeFrame(rConnection, {
-        method: "view/open",
-        params: limitedView,
-      });
-      const limitedCard = page.locator("#tables article").filter({
-        hasText: "Limited capabilities",
-      });
-      await limitedCard.getByRole("button", { name: "Open view" }).click();
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector("#table-title")?.textContent ===
-            "Limited capabilities";
-        },
-      );
-      assert(
-        (await limitedCard.textContent())?.includes("Unknown rows"),
-        "A missing row count should be labeled unknown.",
-      );
-      assertEquals(
-        await page.locator(".query-tools fieldset").evaluateAll(
-          (elements: BrowserElement[]) =>
-            elements.every((element) => element.hidden),
-        ),
-        true,
-      );
+        const pagedCard = page.locator("#tables article").filter({
+          hasText: "Browser smoke",
+        });
+        await pagedCard.getByRole("button", { name: "Open view" }).click();
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector("#table-title")?.textContent ===
+                "Browser smoke" &&
+              document.querySelector(
+                  '.tabulator-row [tabulator-field="row_index"]',
+                )?.textContent === "1";
+          },
+        );
+        await writeFrame(rConnection, {
+          method: "view/open",
+          params: {
+            view: "wide-paged",
+            generation: 2,
+            kind: "grid",
+            access: "random",
+            encoding: "r-json",
+            mode: "paged",
+            title: "Generation 2",
+            nrow: 3,
+            ncol: 2,
+            columns: columns.slice(0, 2),
+            capabilities: gridCapabilities(),
+          },
+        });
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector("#table-title")?.textContent ===
+                "Generation 2" &&
+              document.querySelector(
+                  '.tabulator-row [tabulator-field="row_index"]',
+                )?.textContent === "1001";
+          },
+        );
+        await writeFrame(rConnection, {
+          method: "view/closed",
+          params: { view: "wide-paged", generation: 1 },
+        });
+        await page.waitForTimeout(100);
+        assertEquals(
+          await page.locator("#viewer").evaluate((element: BrowserElement) =>
+            element.hidden
+          ),
+          false,
+        );
+        assertEquals(
+          await page.locator("#table-title").textContent(),
+          "Generation 2",
+        );
+        assertEquals(
+          await page.locator('.tabulator-row [tabulator-field="row_index"]')
+            .first().textContent(),
+          "1001",
+        );
 
-      const unsupported = snapshotDescriptor(columns.slice(0, 3));
-      unsupported.view = "unsupported-list";
-      unsupported.title = "Unsupported list";
-      unsupported.kind = "list";
-      await writeFrame(rConnection, {
-        method: "view/open",
-        params: unsupported,
-      });
-      const unsupportedCard = page.locator("#tables article").filter({
-        hasText: "Unsupported list",
-      });
-      await unsupportedCard.getByRole("button", {
-        name: "Unsupported view",
-      }).waitFor();
-      await writeFrame(rConnection, {
-        method: "view/open",
-        params: {
-          view: "binary-app-probe",
-          generation: 1,
-          kind: "grid",
-          access: "random",
-          encoding: "r-json",
-          mode: "paged",
-          title: "Binary response probe",
-          nrow: 1,
-          ncol: 1,
-          columns: [{
-            position: 0,
-            name: "value",
-            type: "integer",
-            sortable: false,
-            filterable: false,
-          }],
-          capabilities: gridCapabilities(),
-        },
-      });
-      const binaryProbe = page.locator("#tables article").filter({
-        hasText: "Binary response probe",
-      });
-      await binaryProbe.getByRole("button", { name: "Open view" }).click();
-      const binaryRequestDeadline = Date.now() + 5_000;
-      while (
-        !requests.some((request) => request.view === "binary-app-probe") &&
-        Date.now() < binaryRequestDeadline
-      ) await new Promise((resolve) => setTimeout(resolve, 10));
-      if (!requests.some((request) => request.view === "binary-app-probe")) {
-        throw new Error("The app did not send its binary probe table request.");
-      }
-      await page.waitForTimeout(500);
-      const probeState = await page.evaluate(() => {
-        const document = (globalThis as unknown as {
-          document: BrowserDocument;
-        }).document;
-        return {
-          status: document.querySelector("#status")?.textContent,
-          state: document.querySelector("#status")?.getAttribute("data-state"),
-          warning: document.querySelector('#warnings li[data-state="error"]')
-            ?.textContent,
+        const limitedView = snapshotDescriptor(columns.slice(0, 3));
+        limitedView.view = "limited-grid";
+        limitedView.title = "Limited capabilities";
+        limitedView.nrow = null;
+        limitedView.capabilities = {
+          ...gridCapabilities(),
+          sort: false,
+          filter: false,
         };
-      });
-      assert(
-        probeState.warning === "R returned an invalid table page.",
-        JSON.stringify(probeState),
-      );
-      assertEquals(probeState.state, "error");
-      assertEquals(pageErrors, []);
+        await writeFrame(rConnection, {
+          method: "view/open",
+          params: limitedView,
+        });
+        const limitedCard = page.locator("#tables article").filter({
+          hasText: "Limited capabilities",
+        });
+        await limitedCard.getByRole("button", { name: "Open view" }).click();
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector("#table-title")?.textContent ===
+              "Limited capabilities";
+          },
+        );
+        assert(
+          (await limitedCard.textContent())?.includes("Unknown rows"),
+          "A missing row count should be labeled unknown.",
+        );
+        assertEquals(
+          await page.locator(".query-tools fieldset").evaluateAll(
+            (elements: BrowserElement[]) =>
+              elements.every((element) => element.hidden),
+          ),
+          true,
+        );
+
+        const unsupported = snapshotDescriptor(columns.slice(0, 3));
+        unsupported.view = "unsupported-list";
+        unsupported.title = "Unsupported list";
+        unsupported.kind = "list";
+        await writeFrame(rConnection, {
+          method: "view/open",
+          params: unsupported,
+        });
+        const unsupportedCard = page.locator("#tables article").filter({
+          hasText: "Unsupported list",
+        });
+        await unsupportedCard.getByRole("button", {
+          name: "Unsupported view",
+        }).waitFor();
+        await writeFrame(rConnection, {
+          method: "view/open",
+          params: {
+            view: "binary-app-probe",
+            generation: 1,
+            kind: "grid",
+            access: "random",
+            encoding: "r-json",
+            mode: "paged",
+            title: "Binary response probe",
+            nrow: 1,
+            ncol: 1,
+            columns: [{
+              position: 0,
+              name: "value",
+              type: "integer",
+              sortable: false,
+              filterable: false,
+            }],
+            capabilities: gridCapabilities(),
+          },
+        });
+        const binaryProbe = page.locator("#tables article").filter({
+          hasText: "Binary response probe",
+        });
+        await binaryProbe.getByRole("button", { name: "Open view" }).click();
+        const binaryRequestDeadline = Date.now() + 5_000;
+        while (
+          !requests.some((request) => request.view === "binary-app-probe") &&
+          Date.now() < binaryRequestDeadline
+        ) await new Promise((resolve) => setTimeout(resolve, 10));
+        if (!requests.some((request) => request.view === "binary-app-probe")) {
+          throw new Error(
+            "The app did not send its binary probe table request.",
+          );
+        }
+        await page.waitForTimeout(500);
+        const probeState = await page.evaluate(() => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return {
+            status: document.querySelector("#status")?.textContent,
+            state: document.querySelector("#status")?.getAttribute(
+              "data-state",
+            ),
+            warning: document.querySelector('#warnings li[data-state="error"]')
+              ?.textContent,
+          };
+        });
+        assert(
+          probeState.warning === "R returned an invalid table page.",
+          JSON.stringify(probeState),
+        );
+        assertEquals(probeState.state, "error");
+        assertEquals(pageErrors, []);
+      }, 120_000);
+    } catch (error) {
+      originalFailure.push(error);
+      throw error;
     } finally {
-      await browser?.close();
-      await server.close();
-      rConnection.close();
-      await responder;
-      await Deno.remove(cacheDir, { recursive: true });
+      shutdown.requested = true;
+      await finishIntegrationCleanup([
+        () => owned?.close(),
+        () => rConnection.close(),
+        () =>
+          cleanupDeadline(responder, 5_000, "Mock R responder did not stop."),
+        () => phase("HTTP server shutdown", () => server.close(), 5_000),
+        () => assertServerReleased(server),
+        () => removeCacheDirectory(cacheDir),
+      ], originalFailure);
     }
   },
 });
@@ -1251,7 +1307,10 @@ Deno.test({
     const cacheDir = `${cacheRoot}/jdv`;
     const scriptPath = `${cacheRoot}/binary-view.R`;
     const donePath = `${cacheRoot}/finish-r-loop`;
-    const server = await startServer({ mode: "tcp", httpPort: 0, cacheDir });
+    const server = await phase(
+      "HTTP server startup",
+      () => startServer({ mode: "tcp", httpPort: 0, cacheDir }),
+    );
     const rEnv = Deno.env.toObject();
     for (
       const name of [
@@ -1282,7 +1341,7 @@ Deno.test({
       "}, envir = ns)",
       "lockBinding('.jdv_process_request', ns)",
       "view_id <- jdv_view(data.frame(value = 1:3), title = 'Real R binary probe', mode = 'paged')",
-      'cat("READY\\t", view_id, "\\t", normalizePath(find.package("jdv")), "\\t", getLoadedDLLs()[["jdv"]][["path"]], "\\t", getNamespaceInfo(ns, "path"), "\\n", sep = "")',
+      'cat("READY\\t", view_id, "\\t", normalizePath(find.package("jdv")), "\\t", getLoadedDLLs()[["jdv"]][["path"]], "\\t", getNamespaceInfo(ns, "path"), "\\t", Sys.getpid(), "\\n", sep = "")',
       "flush.console()",
       "repeat {",
       "  jdv_rpc(NULL)",
@@ -1295,8 +1354,11 @@ Deno.test({
     ].join("\n");
     await Deno.writeTextFile(scriptPath, source);
     let rChild: Deno.ChildProcess | undefined;
-    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    let owned: Awaited<ReturnType<typeof launchOwnedBrowser>> | undefined;
+    const originalFailure: unknown[] = [];
     let outputReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let stderrOutput: Promise<string> | undefined;
+    let rPid: number | undefined;
     try {
       rChild = new Deno.Command("Rscript", {
         args: ["--vanilla", scriptPath, donePath],
@@ -1305,37 +1367,46 @@ Deno.test({
         stderr: "piped",
       }).spawn();
       outputReader = rChild.stdout.getReader();
-      const readyLine = await readProcessLine(outputReader, 15_000);
+      stderrOutput = new Response(rChild.stderr).text();
+      const lines = new ProcessLines(outputReader);
+      const readyLine = await lines.read(15_000);
       if (!readyLine?.startsWith("READY\t")) {
         throw new Error(
           `R binary fixture did not start. Output: ${readyLine ?? "<timeout>"}`,
         );
       }
       const readyParts = readyLine.split("\t");
-      if (readyParts.length !== 5) {
+      if (readyParts.length !== 6) {
         throw new Error(`Invalid R binary fixture ready line: ${readyLine}`);
       }
       const viewId = readyParts[1];
+      rPid = fixturePid(readyParts[5]);
+      console.log(
+        `[binary R ready] ${
+          JSON.stringify({ readyParts, launcherPid: rChild.pid, rPid })
+        }`,
+      );
       const packagePath = await Deno.realPath(readyParts[2]);
       const libraryPath = await Deno.realPath(binaryRLibrary);
-      const packagePrefix = libraryPath.endsWith("/")
-        ? libraryPath
-        : `${libraryPath}/`;
-      if (!packagePath.startsWith(packagePrefix)) {
+      if (!pathWithin(packagePath, libraryPath)) {
         throw new Error(
           `R loaded jdv from ${packagePath}, outside ${libraryPath}.`,
         );
       }
+      const dllPath = await Deno.realPath(readyParts[3]);
+      const namespacePath = await Deno.realPath(readyParts[4]);
       if (
-        !readyParts[3].startsWith(packagePath) ||
-        !readyParts[4].startsWith(packagePath)
+        !pathWithin(dllPath, packagePath) ||
+        !pathWithin(namespacePath, packagePath)
       ) {
         throw new Error(
-          `R DLL or namespace path does not match ${packagePath}: ${readyLine}`,
+          `R DLL or namespace path does not match ${packagePath}: ${
+            JSON.stringify(readyParts)
+          }`,
         );
       }
 
-      browser = await chromium.launch({
+      owned = await launchOwnedBrowser(chromium, {
         executablePath: browserExecutable,
         headless: true,
         args: ["--no-sandbox"],
@@ -1348,126 +1419,146 @@ Deno.test({
           }
           : {}),
       });
-      const page = await browser.newPage({
-        viewport: { width: 1280, height: 1000 },
-      });
-      const pageErrors: string[] = [];
-      const websocketFrames: Array<{
-        direction: "sent" | "received";
-        payload: string | Uint8Array;
-      }> = [];
-      page.on("pageerror", (error: Error) => pageErrors.push(error.message));
-      page.on("websocket", (websocket: PlaywrightWebSocket) => {
-        websocket.on("framesent", (frame) => {
-          websocketFrames.push({
-            direction: "sent",
-            payload: typeof frame.payload === "string"
-              ? frame.payload
-              : new Uint8Array(frame.payload),
+      const browser = owned.browser;
+      await phase("browser test body", async () => {
+        const page = await phase("new page", () =>
+          browser.newPage({
+            viewport: { width: 1280, height: 1000 },
+          }));
+        page.setDefaultTimeout(15_000);
+        page.setDefaultNavigationTimeout(20_000);
+        const pageErrors: string[] = [];
+        const websocketFrames: Array<{
+          direction: "sent" | "received";
+          payload: string | Uint8Array;
+        }> = [];
+        page.on("pageerror", (error: Error) => pageErrors.push(error.message));
+        page.on("websocket", (websocket: PlaywrightWebSocket) => {
+          websocket.on("framesent", (frame) => {
+            websocketFrames.push({
+              direction: "sent",
+              payload: typeof frame.payload === "string"
+                ? frame.payload
+                : new Uint8Array(frame.payload),
+            });
+          });
+          websocket.on("framereceived", (frame) => {
+            websocketFrames.push({
+              direction: "received",
+              payload: typeof frame.payload === "string"
+                ? frame.payload
+                : new Uint8Array(frame.payload),
+            });
           });
         });
-        websocket.on("framereceived", (frame) => {
-          websocketFrames.push({
-            direction: "received",
-            payload: typeof frame.payload === "string"
-              ? frame.payload
-              : new Uint8Array(frame.payload),
-          });
-        });
-      });
-      await page.goto(server.url, { waitUntil: "networkidle" });
-      await page.waitForSelector('#status[data-state="connected"]');
-      const card = page.locator("#tables article").filter({
-        hasText: "Real R binary probe",
-      });
-      await card.getByRole("button", { name: "Open view" }).click();
-      await page.waitForFunction(
-        () => {
-          const document = (globalThis as unknown as {
-            document: BrowserDocument;
-          }).document;
-          return document.querySelector('#warnings li[data-state="error"]')
-                ?.textContent === "R returned an invalid table page." &&
-            document.querySelector("#status")?.getAttribute("data-state") ===
-              "error";
-        },
-        { timeout: 15_000 },
-      );
-      const requestEntry = websocketFrames.find((frame) => {
-        if (frame.direction !== "sent" || typeof frame.payload !== "string") {
-          return false;
-        }
-        const message = JSON.parse(frame.payload) as Record<string, unknown>;
-        const params = message.params as Record<string, unknown> | undefined;
-        return message.type === "request" && params?.view === viewId;
-      });
-      assert(requestEntry, "Chromium did not send the expected table request.");
-      const requestMessage = JSON.parse(requestEntry.payload as string) as {
-        id: string;
-        session: string;
-      };
-      const responseFrame = websocketFrames.find((frame) =>
-        frame.direction === "received" && frame.payload instanceof Uint8Array
-      );
-      assert(responseFrame, "Chromium did not receive a binary response.");
-      const responseBytes = responseFrame.payload as Uint8Array;
-      assert(responseBytes.length >= 4, "Binary response prefix is truncated.");
-      const headerLength = new DataView(
-        responseBytes.buffer,
-        responseBytes.byteOffset,
-        4,
-      ).getUint32(0, true);
-      assert(
-        headerLength > 0 && 4 + headerLength <= responseBytes.length,
-        "Binary response header length is invalid.",
-      );
-      const binaryEnvelope = JSON.parse(
-        new TextDecoder().decode(responseBytes.subarray(4, 4 + headerLength)),
-      ) as Record<string, unknown>;
-      const result = binaryEnvelope.result as Record<string, unknown>;
-      const transfer = result.transfer as Record<string, unknown>;
-      assertEquals(binaryEnvelope.type, "response");
-      assertEquals(binaryEnvelope.id, requestMessage.id);
-      assertEquals(binaryEnvelope.session, requestMessage.session);
-      assertEquals(result.view, viewId);
-      assertEquals(result.generation, 1);
-      assertEquals(transfer, { encoding: "arrow-ipc", byte_length: 3 });
-      assertEquals(responseBytes.length - 4 - headerLength, 3);
-      assertEquals(
-        responseBytes.slice(4 + headerLength),
-        new Uint8Array([0, 10, 255]),
-      );
-      const terminalFrames = websocketFrames.filter((frame) => {
-        if (frame.direction !== "received") return false;
-        const message = typeof frame.payload === "string"
-          ? JSON.parse(frame.payload) as Record<string, unknown>
-          : binaryEnvelope;
-        return message.id === requestMessage.id &&
-          (message.type === "response" || message.type === "error" ||
-            message.type === "cancelled");
-      });
-      assertEquals(terminalFrames.length, 1);
-      assertEquals(pageErrors, []);
-    } finally {
-      await browser?.close();
-      await Deno.writeTextFile(donePath, "done\n").catch(() => undefined);
-      if (rChild) {
-        const timeout = new Promise<"timeout">((resolve) =>
-          setTimeout(() => resolve("timeout"), 5_000)
+        await phase(
+          "navigation",
+          () => page.goto(server.url, { waitUntil: "networkidle" }),
+          25_000,
         );
-        const result = await Promise.race([rChild.status, timeout]);
-        if (result === "timeout") {
-          try {
-            rChild.kill("SIGTERM");
-          } catch {
-            // The fixture process may already be exiting.
+        await page.waitForSelector('#status[data-state="connected"]');
+        const card = page.locator("#tables article").filter({
+          hasText: "Real R binary probe",
+        });
+        await card.getByRole("button", { name: "Open view" }).click();
+        await page.waitForFunction(
+          () => {
+            const document = (globalThis as unknown as {
+              document: BrowserDocument;
+            }).document;
+            return document.querySelector('#warnings li[data-state="error"]')
+                  ?.textContent === "R returned an invalid table page." &&
+              document.querySelector("#status")?.getAttribute("data-state") ===
+                "error";
+          },
+          undefined,
+          { timeout: 15_000 },
+        );
+        const requestEntry = websocketFrames.find((frame) => {
+          if (frame.direction !== "sent" || typeof frame.payload !== "string") {
+            return false;
           }
-          await rChild.status;
-        }
-      }
-      outputReader?.releaseLock();
-      await server.close();
-      await Deno.remove(cacheRoot, { recursive: true });
+          const message = JSON.parse(frame.payload) as Record<string, unknown>;
+          const params = message.params as Record<string, unknown> | undefined;
+          return message.type === "request" && params?.view === viewId;
+        });
+        assert(
+          requestEntry,
+          "Chromium did not send the expected table request.",
+        );
+        const requestMessage = JSON.parse(requestEntry.payload as string) as {
+          id: string;
+          session: string;
+        };
+        const responseFrame = websocketFrames.find((frame) =>
+          frame.direction === "received" && frame.payload instanceof Uint8Array
+        );
+        assert(responseFrame, "Chromium did not receive a binary response.");
+        const responseBytes = responseFrame.payload as Uint8Array;
+        assert(
+          responseBytes.length >= 4,
+          "Binary response prefix is truncated.",
+        );
+        const headerLength = new DataView(
+          responseBytes.buffer,
+          responseBytes.byteOffset,
+          4,
+        ).getUint32(0, true);
+        assert(
+          headerLength > 0 && 4 + headerLength <= responseBytes.length,
+          "Binary response header length is invalid.",
+        );
+        const binaryEnvelope = JSON.parse(
+          new TextDecoder().decode(responseBytes.subarray(4, 4 + headerLength)),
+        ) as Record<string, unknown>;
+        const result = binaryEnvelope.result as Record<string, unknown>;
+        const transfer = result.transfer as Record<string, unknown>;
+        assertEquals(binaryEnvelope.type, "response");
+        assertEquals(binaryEnvelope.id, requestMessage.id);
+        assertEquals(binaryEnvelope.session, requestMessage.session);
+        assertEquals(result.view, viewId);
+        assertEquals(result.generation, 1);
+        assertEquals(transfer, { encoding: "arrow-ipc", byte_length: 3 });
+        assertEquals(responseBytes.length - 4 - headerLength, 3);
+        assertEquals(
+          responseBytes.slice(4 + headerLength),
+          new Uint8Array([0, 10, 255]),
+        );
+        const terminalFrames = websocketFrames.filter((frame) => {
+          if (frame.direction !== "received") return false;
+          const message = typeof frame.payload === "string"
+            ? JSON.parse(frame.payload) as Record<string, unknown>
+            : binaryEnvelope;
+          return message.id === requestMessage.id &&
+            (message.type === "response" || message.type === "error" ||
+              message.type === "cancelled");
+        });
+        assertEquals(terminalFrames.length, 1);
+        assertEquals(pageErrors, []);
+      }, 120_000);
+    } catch (error) {
+      originalFailure.push(error);
+      throw error;
+    } finally {
+      await finishIntegrationCleanup([
+        () => owned?.close(),
+        () =>
+          rChild && stderrOutput
+            ? finishRFixture(rChild, donePath, stderrOutput, rPid)
+            : undefined,
+        () =>
+          outputReader
+            ? cleanupDeadline(
+              outputReader.cancel(),
+              5_000,
+              "R stdout cancellation timed out.",
+            )
+            : undefined,
+        () => outputReader?.releaseLock(),
+        () => phase("HTTP server shutdown", () => server.close(), 5_000),
+        () => assertServerReleased(server),
+        () => removeCacheDirectory(cacheRoot),
+      ], originalFailure);
     }
   },
 });
@@ -1506,58 +1597,13 @@ async function writeRBinaryResponse(
   }
 }
 
-async function readProcessLine(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  timeoutMs: number,
-): Promise<string | undefined> {
-  const decoder = new TextDecoder();
-  let text = "";
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const remaining = deadline - Date.now();
-    const result = await Promise.race([
-      reader.read(),
-      new Promise<undefined>((resolve) =>
-        setTimeout(() => resolve(undefined), remaining)
-      ),
-    ]);
-    if (!result) return undefined;
-    if (result.done) return text || undefined;
-    text += decoder.decode(result.value, { stream: true });
-    const newline = text.indexOf("\n");
-    if (newline >= 0) return text.slice(0, newline);
-  }
-  return undefined;
-}
-
-async function* readFrames(connection: Deno.Conn): AsyncGenerator<string> {
-  const decoder = new TextDecoder();
-  const chunk = new Uint8Array(8192);
-  let buffered = "";
-  try {
-    while (true) {
-      const size = await connection.read(chunk);
-      if (size === null) return;
-      buffered += decoder.decode(chunk.subarray(0, size), { stream: true });
-      while (true) {
-        const newline = buffered.indexOf("\n");
-        if (newline < 0) break;
-        const line = buffered.slice(0, newline);
-        buffered = buffered.slice(newline + 1);
-        if (line) yield line;
-      }
-    }
-  } catch (error) {
-    if (!(error instanceof Deno.errors.BadResource)) throw error;
-  }
-}
-
 async function respondToR(
   connection: Deno.Conn,
   columns: Array<Record<string, unknown>>,
   requests: Array<Record<string, unknown>>,
+  shutdown: { requested: boolean },
 ): Promise<void> {
-  for await (const line of readFrames(connection)) {
+  for await (const line of fixtureFrames(connection, shutdown)) {
     const request = JSON.parse(line) as Record<string, unknown>;
     if (typeof request.id !== "string") continue;
     const params = request.params as Record<string, unknown>;
@@ -1867,8 +1913,14 @@ Deno.test({
     const playwrightModule = "npm:playwright@1.56.1";
     const { chromium } = await import(playwrightModule);
     const cacheDir = await Deno.makeTempDir({ prefix: "jdv-cell-browser-" });
-    const server = await startServer({ mode: "tcp", httpPort: 0, cacheDir });
-    const connection = await connectR(server.socketPath);
+    const server = await phase(
+      "HTTP server startup",
+      () => startServer({ mode: "tcp", httpPort: 0, cacheDir }),
+    );
+    const connection = await phase(
+      "cell mock R connect",
+      () => connectR(server.socketPath),
+    );
     const values = Array.from({ length: 449 }, (_, index) => index + 1);
     const columns = Array.from({ length: 12 }, (_, position) => ({
       position,
@@ -1929,8 +1981,9 @@ Deno.test({
     const opened = new Promise<Record<string, unknown>>((resolve) =>
       resolveOpen = resolve
     );
+    const shutdown = { requested: false };
     const responder = (async () => {
-      for await (const line of readFrames(connection)) {
+      for await (const line of fixtureFrames(connection, shutdown)) {
         const frame = JSON.parse(line) as Record<string, unknown>;
         frames.push(frame);
         if (frame.method === "object/open") resolveOpen(frame);
@@ -1955,9 +2008,13 @@ Deno.test({
         }
       }
     })();
-    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    void responder.catch((error) =>
+      console.error("[cell mock R responder]", error)
+    );
+    let owned: Awaited<ReturnType<typeof launchOwnedBrowser>> | undefined;
+    const originalFailure: unknown[] = [];
     try {
-      browser = await chromium.launch({
+      owned = await launchOwnedBrowser(chromium, {
         executablePath: browserExecutable,
         headless: true,
         args: ["--no-sandbox"],
@@ -1970,177 +2027,198 @@ Deno.test({
           }
           : {}),
       });
-      const page = await browser.newPage({
-        viewport: { width: 1280, height: 1000 },
-      });
-      const errors: string[] = [];
-      page.on("pageerror", (error: Error) => errors.push(error.message));
-      await page.goto(server.url, { waitUntil: "networkidle" });
-      await page.getByRole("button", { name: "Open view", exact: true })
-        .click();
-      await page.waitForSelector(
-        '[data-action="open-cell"][data-row-index="1"][data-column="2"]',
-      );
-      assertEquals(
-        await page.locator('[data-action="open-cell"][data-column="3"]')
-          .count(),
-        0,
-      );
-      assertEquals(await page.locator("#viewer img").count(), 0);
-      await page.locator(
-        '[data-action="open-cell"][data-row-index="1"][data-column="2"]',
-      ).click();
-      const open = await opened;
-      assertEquals((open.params as Record<string, unknown>).path, [{
-        kind: "cell",
-        row_index: 1,
-        column: 2,
-      }]);
-      await page.waitForSelector(
-        '#child-open-status[data-state="waiting"]:not([hidden])',
-      );
-      await page.selectOption("#sort-column", "0");
-      await page.selectOption("#sort-direction", "desc");
-      await page.locator("#sort-add").click();
-      await page.waitForFunction(() =>
-        (globalThis as unknown as { document: BrowserDocument }).document
-          .querySelector('.tabulator-row [tabulator-field="row_index"]')
-          ?.textContent === "449"
-      );
-      await page.selectOption("#filter-column", "0");
-      await page.selectOption("#filter-op", "gt");
-      await page.locator("#filter-value").fill("10");
-      await page.locator("#filter-apply").click();
-      await page.waitForFunction(() =>
-        (globalThis as unknown as { document: BrowserDocument }).document
-          .querySelector("#table-meta")?.textContent?.startsWith(
-            "439 of 449 rows",
-          )
-      );
-      await clickNextPage(page);
-      await page.waitForFunction(() =>
-        (globalThis as unknown as { document: BrowserDocument }).document
-          .querySelector('.tabulator-row [tabulator-field="row_index"]')
-          ?.textContent === "249"
-      );
-      await page.locator("#column-viewport").evaluate(
-        (element: BrowserElement) => {
-          element.scrollLeft = 540;
-        },
-      );
-      await page.waitForFunction(() =>
-        !(globalThis as unknown as { document: BrowserDocument }).document
-          .querySelector("#column-window")?.className.includes(
-            "is-loading-window",
-          )
-      );
-      const scrollLeft = await page.locator("#column-viewport").evaluate((
-        element: BrowserElement,
-      ) => element.scrollLeft);
-      assert(scrollLeft > 0);
-      assertEquals(
+      const browser = owned.browser;
+      await phase("browser test body", async () => {
+        const page = await phase("new page", () =>
+          browser.newPage({
+            viewport: { width: 1280, height: 1000 },
+          }));
+        page.setDefaultTimeout(15_000);
+        page.setDefaultNavigationTimeout(20_000);
+        const errors: string[] = [];
+        page.on("pageerror", (error: Error) => errors.push(error.message));
+        await phase(
+          "navigation",
+          () => page.goto(server.url, { waitUntil: "networkidle" }),
+          25_000,
+        );
+        await page.getByRole("button", { name: "Open view", exact: true })
+          .click();
+        await page.waitForSelector(
+          '[data-action="open-cell"][data-row-index="1"][data-column="2"]',
+        );
+        assertEquals(
+          await page.locator('[data-action="open-cell"][data-column="3"]')
+            .count(),
+          0,
+        );
+        assertEquals(await page.locator("#viewer img").count(), 0);
         await page.locator(
+          '[data-action="open-cell"][data-row-index="1"][data-column="2"]',
+        ).click();
+        const open = await opened;
+        assertEquals((open.params as Record<string, unknown>).path, [{
+          kind: "cell",
+          row_index: 1,
+          column: 2,
+        }]);
+        await page.waitForSelector(
           '#child-open-status[data-state="waiting"]:not([hidden])',
-        ).count(),
-        1,
-      );
-      assertEquals(
-        frames.filter((frame) => frame.method === "table/rows").length,
-        0,
-      );
-      assertEquals(
-        frames.filter((frame) => frame.method === "cancel").length,
-        0,
-      );
-      await writeFrame(connection, {
-        id: open.id,
-        result: {
-          view: "cell-child",
-          generation: 1,
-          parent: "cell-parent",
-          kind: "tree",
-          access: "random",
-          encoding: "r-json",
-          title: "Captured row 1",
-          path: [],
-          capabilities: {
-            seek: true,
-            sort: false,
-            filter: false,
-            known_total: true,
-            next: false,
-            children: true,
+        );
+        await page.selectOption("#sort-column", "0");
+        await page.selectOption("#sort-direction", "desc");
+        await page.locator("#sort-add").click();
+        await page.waitForFunction(() =>
+          (globalThis as unknown as { document: BrowserDocument }).document
+            .querySelector('.tabulator-row [tabulator-field="row_index"]')
+            ?.textContent === "449"
+        );
+        await page.selectOption("#filter-column", "0");
+        await page.selectOption("#filter-op", "gt");
+        await page.locator("#filter-value").fill("10");
+        await page.locator("#filter-apply").click();
+        await page.waitForFunction(() =>
+          (globalThis as unknown as { document: BrowserDocument }).document
+            .querySelector("#table-meta")?.textContent?.startsWith(
+              "439 of 449 rows",
+            )
+        );
+        await clickNextPage(page);
+        await page.waitForFunction(() =>
+          (globalThis as unknown as { document: BrowserDocument }).document
+            .querySelector('.tabulator-row [tabulator-field="row_index"]')
+            ?.textContent === "249"
+        );
+        await page.locator("#column-viewport").evaluate(
+          (element: BrowserElement) => {
+            element.scrollLeft = 540;
           },
-        },
-      });
-      await page.waitForFunction(() =>
-        (globalThis as unknown as { document: BrowserDocument }).document
-          .querySelector("#tree-title")?.textContent === "Captured row 1"
-      );
-      await page.waitForSelector("#tree-child-list li");
-      assertEquals(await page.locator("#tree-child-list img").count(), 0);
-      await page.locator('#view-breadcrumb [data-view-depth="0"]').click();
-      await page.waitForFunction(() =>
-        (globalThis as unknown as { document: BrowserDocument }).document
-          .querySelector('.tabulator-row [tabulator-field="row_index"]')
-          ?.textContent === "249"
-      );
-      assertEquals(await page.locator("#filter-value").inputValue(), "10");
-      assertEquals(await page.locator("#filter-op").inputValue(), "gt");
-      assert(
-        (await page.locator("#sort-list").textContent())?.includes(
-          "descending",
-        ),
-      );
-      assertEquals(
-        await page.locator("#column-viewport").evaluate((
+        );
+        await page.waitForFunction(() =>
+          !(globalThis as unknown as { document: BrowserDocument }).document
+            .querySelector("#column-window")?.className.includes(
+              "is-loading-window",
+            )
+        );
+        const scrollLeft = await page.locator("#column-viewport").evaluate((
           element: BrowserElement,
-        ) => element.scrollLeft),
-        scrollLeft,
-      );
-      assertEquals(
-        frames.filter((frame) => frame.method === "object/open").length,
-        1,
-      );
-      assertEquals(
-        frames.filter((frame) => frame.method === "table/rows").length,
-        0,
-      );
-      const sortedOpen = new Promise<Record<string, unknown>>((resolve) =>
-        resolveOpen = resolve
-      );
-      await page.locator("#column-viewport").evaluate(
-        (element: BrowserElement) => {
-          element.scrollLeft = 0;
-        },
-      );
-      await page.waitForSelector(
-        '[data-action="open-cell"][data-row-index="249"][data-column="2"]',
-      );
-      await page.locator(
-        '[data-action="open-cell"][data-row-index="249"][data-column="2"]',
-      ).click();
-      const secondOpen = await sortedOpen;
-      assertEquals((secondOpen.params as Record<string, unknown>).path, [{
-        kind: "cell",
-        row_index: 249,
-        column: 2,
-      }]);
-      await writeFrame(connection, {
-        id: secondOpen.id,
-        error: { code: "unavailable", message: "<img src=x> unavailable cell" },
-      });
-      await page.waitForSelector(
-        '#child-open-status[data-state="error"]:not([hidden])',
-      );
-      assertEquals(await page.locator("#child-open-status img").count(), 0);
-      assertEquals(errors, []);
+        ) => element.scrollLeft);
+        assert(scrollLeft > 0);
+        assertEquals(
+          await page.locator(
+            '#child-open-status[data-state="waiting"]:not([hidden])',
+          ).count(),
+          1,
+        );
+        assertEquals(
+          frames.filter((frame) => frame.method === "table/rows").length,
+          0,
+        );
+        assertEquals(
+          frames.filter((frame) => frame.method === "cancel").length,
+          0,
+        );
+        await writeFrame(connection, {
+          id: open.id,
+          result: {
+            view: "cell-child",
+            generation: 1,
+            parent: "cell-parent",
+            kind: "tree",
+            access: "random",
+            encoding: "r-json",
+            title: "Captured row 1",
+            path: [],
+            capabilities: {
+              seek: true,
+              sort: false,
+              filter: false,
+              known_total: true,
+              next: false,
+              children: true,
+            },
+          },
+        });
+        await page.waitForFunction(() =>
+          (globalThis as unknown as { document: BrowserDocument }).document
+            .querySelector("#tree-title")?.textContent === "Captured row 1"
+        );
+        await page.waitForSelector("#tree-child-list li");
+        assertEquals(await page.locator("#tree-child-list img").count(), 0);
+        await page.locator('#view-breadcrumb [data-view-depth="0"]').click();
+        await page.waitForFunction(() =>
+          (globalThis as unknown as { document: BrowserDocument }).document
+            .querySelector('.tabulator-row [tabulator-field="row_index"]')
+            ?.textContent === "249"
+        );
+        assertEquals(await page.locator("#filter-value").inputValue(), "10");
+        assertEquals(await page.locator("#filter-op").inputValue(), "gt");
+        assert(
+          (await page.locator("#sort-list").textContent())?.includes(
+            "descending",
+          ),
+        );
+        assertEquals(
+          await page.locator("#column-viewport").evaluate((
+            element: BrowserElement,
+          ) => element.scrollLeft),
+          scrollLeft,
+        );
+        assertEquals(
+          frames.filter((frame) => frame.method === "object/open").length,
+          1,
+        );
+        assertEquals(
+          frames.filter((frame) => frame.method === "table/rows").length,
+          0,
+        );
+        const sortedOpen = new Promise<Record<string, unknown>>((resolve) =>
+          resolveOpen = resolve
+        );
+        await page.locator("#column-viewport").evaluate(
+          (element: BrowserElement) => {
+            element.scrollLeft = 0;
+          },
+        );
+        await page.waitForSelector(
+          '[data-action="open-cell"][data-row-index="249"][data-column="2"]',
+        );
+        await page.locator(
+          '[data-action="open-cell"][data-row-index="249"][data-column="2"]',
+        ).click();
+        const secondOpen = await sortedOpen;
+        assertEquals((secondOpen.params as Record<string, unknown>).path, [{
+          kind: "cell",
+          row_index: 249,
+          column: 2,
+        }]);
+        await writeFrame(connection, {
+          id: secondOpen.id,
+          error: {
+            code: "unavailable",
+            message: "<img src=x> unavailable cell",
+          },
+        });
+        await page.waitForSelector(
+          '#child-open-status[data-state="error"]:not([hidden])',
+        );
+        assertEquals(await page.locator("#child-open-status img").count(), 0);
+        assertEquals(errors, []);
+      }, 120_000);
+    } catch (error) {
+      originalFailure.push(error);
+      throw error;
     } finally {
-      await browser?.close();
-      await server.close();
-      connection.close();
-      await responder;
-      await Deno.remove(cacheDir, { recursive: true });
+      shutdown.requested = true;
+      await finishIntegrationCleanup([
+        () => owned?.close(),
+        () => connection.close(),
+        () =>
+          cleanupDeadline(responder, 5_000, "Mock R responder did not stop."),
+        () => phase("HTTP server shutdown", () => server.close(), 5_000),
+        () => assertServerReleased(server),
+        () => removeCacheDirectory(cacheDir),
+      ], originalFailure);
     }
   },
 });

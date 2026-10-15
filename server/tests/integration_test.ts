@@ -4,6 +4,9 @@ import {
   assertServerReleased,
   cleanupDeadline,
   finishIntegrationCleanup,
+  finishRFixture,
+  fixturePid,
+  ProcessLines,
   removeCacheDirectory,
   stopRChild,
 } from "./integration_cleanup.ts";
@@ -111,7 +114,11 @@ class RawWebSocket {
         `GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nOrigin: ${parsed.origin}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
       ),
     );
-    const response = await client.#reader.readHeaders();
+    const response = await cleanupDeadline(
+      client.#reader.readHeaders(),
+      10_000,
+      "WebSocket upgrade timed out.",
+    );
     if (!response.startsWith("HTTP/1.1 101 ")) {
       connection.close();
       throw new Error(`WebSocket upgrade failed: ${response.split("\r\n")[0]}`);
@@ -127,7 +134,11 @@ class RawWebSocket {
   }
 
   read(): Promise<Record<string, unknown>> {
-    return this.#reader.readWebSocketText();
+    return cleanupDeadline(
+      this.#reader.readWebSocketText(),
+      10_000,
+      "Timed out reading browser response.",
+    );
   }
 
   async send(value: Record<string, unknown>): Promise<void> {
@@ -456,6 +467,7 @@ Deno.test({
     let browser: RawWebSocket | undefined;
     let stderrOutput: Promise<string> | undefined;
     let rExited = false;
+    let rPid: number | undefined;
     const originalFailure: unknown[] = [];
     try {
       const { startServer } = await import("../main.ts");
@@ -476,7 +488,7 @@ Deno.test({
         "library(jdv)",
         'cat("JDV_PACKAGE\\t", find.package("jdv"), "\\n", sep = "", file = stderr())',
         'id <- jdv_view(data.frame(value = c(2L, 4L, 8L)), title = "Phase 6 integration", mode = "paged")',
-        'cat("READY\\t", id, "\\n", sep = "")',
+        'cat("READY\\t", id, "\\t", Sys.getpid(), "\\n", sep = "")',
         "flush.console()",
         "repeat {",
         "  jdv_rpc(NULL)",
@@ -511,14 +523,32 @@ Deno.test({
       stderrOutput = new Response(rChild.stderr).text();
       const readyLine = await readLine(outputReader, 10_000);
       if (!readyLine?.startsWith("READY\t")) {
-        const status = await rChild.status;
+        const status = await cleanupDeadline(
+          rChild.status,
+          10_000,
+          "R status timed out.",
+        );
         rExited = true;
-        const error = await stderrOutput;
+        const error = await cleanupDeadline(
+          stderrOutput,
+          5_000,
+          "R stderr EOF timed out.",
+        );
         throw new Error(
           `Installed R package did not start: ${status.code}: ${error}`,
         );
       }
-      const tableId = readyLine.slice("READY\t".length);
+      const readyParts = readyLine.split("\t");
+      if (readyParts.length !== 3) {
+        throw new Error(`Invalid R READY line: ${JSON.stringify(readyLine)}`);
+      }
+      const tableId = readyParts[1];
+      rPid = fixturePid(readyParts[2]);
+      console.log(
+        `[installed R ready] ${
+          JSON.stringify({ readyLine, launcherPid: rChild.pid, rPid })
+        }`,
+      );
       let sessionOpen: Record<string, unknown>;
       try {
         sessionOpen = await withTimeout(
@@ -537,9 +567,17 @@ Deno.test({
             { cause: error },
           );
         }
-        const status = await rChild.status;
+        const status = await cleanupDeadline(
+          rChild.status,
+          10_000,
+          "R status timed out.",
+        );
         rExited = true;
-        const stderr = await stderrOutput;
+        const stderr = await cleanupDeadline(
+          stderrOutput,
+          5_000,
+          "R stderr EOF timed out.",
+        );
         const discovery = await Deno.readTextFile(server.discoveryPath)
           .catch(() => "unavailable");
         throw new Error(
@@ -553,9 +591,21 @@ Deno.test({
       assertMessage(tableOpen, "view/open");
       const descriptor = tableOpen.message as Record<string, unknown>;
       const params = descriptor.params as Record<string, unknown>;
+      console.log(
+        `[installed R view/open] ${
+          JSON.stringify({
+            expected: { view: tableId, generation: 1 },
+            actual: params,
+          })
+        }`,
+      );
       if (params.view !== tableId || params.generation !== 1) {
         throw new Error(
-          "R view/open does not match the installed API result.",
+          `R view/open mismatch: expected=${
+            JSON.stringify({ view: tableId, generation: 1 })
+          }; actual=${JSON.stringify(params)}; READY=${
+            JSON.stringify(readyLine)
+          }`,
         );
       }
 
@@ -583,17 +633,33 @@ Deno.test({
       await Deno.writeTextFile(donePath, "done\n");
       const closedLine = await readLine(outputReader, 10_000);
       if (closedLine !== "CLOSED") {
-        const status = await rChild.status;
+        const status = await cleanupDeadline(
+          rChild.status,
+          10_000,
+          "R status timed out.",
+        );
         rExited = true;
-        const error = await stderrOutput;
+        const error = await cleanupDeadline(
+          stderrOutput,
+          5_000,
+          "R stderr EOF timed out.",
+        );
         throw new Error(
           `Installed R package did not close cleanly: ${status.code}: ${error}`,
         );
       }
-      const status = await rChild.status;
+      const status = await cleanupDeadline(
+        rChild.status,
+        10_000,
+        "R status timed out.",
+      );
       rExited = true;
       if (!status.success) {
-        const error = await stderrOutput;
+        const error = await cleanupDeadline(
+          stderrOutput,
+          5_000,
+          "R stderr EOF timed out.",
+        );
         throw new Error(`Installed R package exited ${status.code}: ${error}`);
       }
       assertMessage(await browserClient.read(), "view/closed");
@@ -603,8 +669,11 @@ Deno.test({
       throw error;
     } finally {
       await finishIntegrationCleanup([
+        () =>
+          rChild && stderrOutput
+            ? finishRFixture(rChild, donePath, stderrOutput, rPid)
+            : undefined,
         () => browser?.close(),
-        () => rChild ? stopRChild(rChild, rExited) : undefined,
         () =>
           outputReader
             ? cleanupDeadline(
@@ -880,27 +949,20 @@ function assertMessage(value: Record<string, unknown>, type: string): void {
   }
 }
 
-async function readLine(
+const processLines = new WeakMap<
+  ReadableStreamDefaultReader<Uint8Array>,
+  ProcessLines
+>();
+function readLine(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number,
 ): Promise<string | undefined> {
-  let text = "";
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const remaining = deadline - Date.now();
-    const result = await Promise.race([
-      reader.read(),
-      new Promise<undefined>((resolve) =>
-        setTimeout(() => resolve(undefined), remaining)
-      ),
-    ]);
-    if (!result) throw new Error("Timed out waiting for URL startup line.");
-    if (result.done) return text || undefined;
-    text += decoder.decode(result.value, { stream: true });
-    const newline = text.indexOf("\n");
-    if (newline >= 0) return text.slice(0, newline);
+  let lines = processLines.get(reader);
+  if (!lines) {
+    lines = new ProcessLines(reader);
+    processLines.set(reader, lines);
   }
-  return undefined;
+  return lines.read(timeoutMs);
 }
 
 async function withTimeout<T>(
