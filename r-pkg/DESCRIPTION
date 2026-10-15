@@ -38,10 +38,12 @@ Description: A dependency-free table engine and data viewer foundation for R
     with external display applications.
 License: MIT + file LICENSE
 Suggests:
+    arrow,
     bit64,
     callr,
     jsonlite,
     methods,
+    nanoarrow,
     testthat (>= 3.0.0),
     tibble,
     vctrs

@@ -20,6 +20,8 @@ Other contributors:
 \itemize{
   \item Dave Gamble (cJSON library in src/cjson/) [copyright holder]
   \item cJSON contributors (cJSON library in src/cjson/) [copyright holder]
+  \item Apache Software Foundation (nanoarrow C library in src/nanoarrow/) [copyright holder]
+  \item Mikkel F. Jørgensen (flatcc in src/nanoarrow/) [copyright holder]
 }
 
 }
