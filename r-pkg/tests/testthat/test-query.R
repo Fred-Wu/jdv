@@ -16,6 +16,7 @@ test_that(
 test_that(
   "shared fixtures agree across Paged and an independent wire Snapshot",
   {
+    skip_if_not_installed("jsonlite")
     fixture <- jsonlite::fromJSON(
       system.file("spec", "query-fixtures.json", package = "jdv"),
       simplifyVector = FALSE

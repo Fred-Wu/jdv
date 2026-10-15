@@ -5,6 +5,7 @@ jdv_budget_test_options <- function(values) {
 }
 
 jdv_budget_test_rpc <- function(method, params, id = 1) {
+  skip_if_not_installed("jsonlite")
   request <- jsonlite::toJSON(
     list(id = id, method = method, params = params),
     auto_unbox = TRUE,
@@ -202,6 +203,7 @@ test_that("one-row wide double packed matrices return a shape summary", {
 })
 
 test_that("snapshot and page guards precede packed matrix and frame slicing", {
+  skip_if_not_installed("jsonlite")
   .jdv_close_internal()
   on.exit(.jdv_close_internal(), add = TRUE)
   restore <- jdv_budget_test_options(list(jdv.max_work_bytes = 2 * 1024^2))

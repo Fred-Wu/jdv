@@ -1,6 +1,7 @@
 # The independent producer DLL keeps counters readable after a real jdv unload.
 # A setup helper owns its build, load and cleanup for each test invocation.
 with_arrow_owner <- function(code) {
+  skip_on_cran()
   skip_if_not_installed("nanoarrow")
   work <- tempfile("jdv-owner-fixture-")
   dir.create(work)

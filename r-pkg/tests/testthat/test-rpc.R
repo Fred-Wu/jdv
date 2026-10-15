@@ -1,6 +1,10 @@
-rpc_json <- function(value) jsonlite::fromJSON(value, simplifyVector = FALSE)
+rpc_json <- function(value) {
+  skip_if_not_installed("jsonlite")
+  jsonlite::fromJSON(value, simplifyVector = FALSE)
+}
 
 rpc_request <- function(method, params = list(), id = 1, extra = list()) {
+  skip_if_not_installed("jsonlite")
   jsonlite::toJSON(
     c(list(id = id, method = method, params = params), extra),
     auto_unbox = TRUE,
@@ -339,6 +343,7 @@ test_that(
 )
 
 test_that("the minimum response budget covers every accepted string id", {
+  skip_if_not_installed("jsonlite")
   old <- getOption("jdv.max_message_bytes")
   options(jdv.max_message_bytes = 1024)
   on.exit(options(jdv.max_message_bytes = old), add = TRUE)

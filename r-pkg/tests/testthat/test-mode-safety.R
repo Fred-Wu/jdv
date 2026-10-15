@@ -5,10 +5,12 @@ set_jdv_options <- function(values) {
 }
 
 mode_safety_rpc_json <- function(value) {
+  skip_if_not_installed("jsonlite")
   jsonlite::fromJSON(value, simplifyVector = FALSE)
 }
 
 mode_safety_rpc_call <- function(method, params, id = 1) {
+  skip_if_not_installed("jsonlite")
   request <- jsonlite::toJSON(
     list(id = id, method = method, params = params),
     auto_unbox = TRUE,

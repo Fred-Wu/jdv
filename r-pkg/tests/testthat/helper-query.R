@@ -104,6 +104,7 @@ query_fixture_table <- function(columns) {
 # Reconstruct wire arrays after JSON has replaced non-finite values with null.
 # Numeric sort keys are omitted, requiring the reference to consume special.
 query_wire_snapshot <- function(snapshot) {
+  skip_if_not_installed("jsonlite")
   for (j in seq_along(snapshot$columns)) {
     data <- snapshot$columns[[j]]$data
     if (snapshot$schema[[j]]$type %in% c("number", "integer", "boolean")) {

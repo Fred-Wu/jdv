@@ -71,6 +71,8 @@ test_that("the registered unload hook is safe to call repeatedly", {
 })
 
 test_that("the package can unload and load repeatedly in a fresh session", {
+  skip_on_cran()
+  skip_if_not_installed("callr")
   skip_if(
     !file.exists(file.path(find.package("jdv"), "Meta", "package.rds")),
     "Native unload/load requires an installed package"

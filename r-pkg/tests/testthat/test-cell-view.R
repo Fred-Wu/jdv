@@ -30,6 +30,7 @@ local({
   close <- function(view) jdv:::.jdv_close_internal(view$id %||% view$view)
 
   test_that("drillable schemas use an explicit class allowlist", {
+    skip_if_not_installed("vctrs")
     allowed <- list(
       list(1),
       I(list(1)),
@@ -369,6 +370,9 @@ local({
   })
 
   test_that("active JSONL hosts receive eviction, notification-only and cascade events in order", {
+    skip_on_cran()
+    skip_if_not_installed("callr")
+    skip_if_not_installed("jsonlite")
     skip_on_os("windows")
     skip_if(!nzchar(Sys.which("python3")))
     for (scenario in c(

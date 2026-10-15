@@ -15,10 +15,13 @@ page_roundtrip <- function(stream, max_rows = 200L, max_bytes = 1048576) {
 }
 
 decode_page <- function(payload) {
-  arrow::read_ipc_stream(rawConnection(payload), as_data_frame = FALSE)
+  connection <- rawConnection(payload)
+  on.exit(try(close(connection), silent = TRUE), add = TRUE)
+  arrow::read_ipc_stream(connection, as_data_frame = FALSE)
 }
 
 compile_pagefixture <- function(work, output) {
+  skip_on_cran()
   system2(
     file.path(R.home("bin"), "R"),
     c(
@@ -66,6 +69,7 @@ test_that("sequential pages preserve row order and only report observed EOF", {
 })
 
 test_that("page slicing adds the parent struct offset to unoffset children", {
+  skip_on_cran()
   skip_if_not_installed("nanoarrow")
   skip_if_not_installed("arrow")
   work <- tempfile("jdv-page-parent-offset-")
@@ -115,6 +119,7 @@ test_that("page slicing adds the parent struct offset to unoffset children", {
 })
 
 test_that("unsupported top-level fields are mapped out without losing rows", {
+  skip_on_cran()
   skip_if_not_installed("nanoarrow")
   skip_if_not_installed("arrow")
   work <- tempfile("jdv-page-unsupported-")
@@ -467,6 +472,7 @@ test_that("byte budget splits batches and empty batches do not imply EOF", {
 })
 
 test_that("encoder interrupts unwind cleanly and preserve the page cursor", {
+  skip_on_cran()
   skip_if_not_installed("nanoarrow")
   skip_if_not_installed("arrow")
   work <- tempfile("jdv-page-interrupt-")

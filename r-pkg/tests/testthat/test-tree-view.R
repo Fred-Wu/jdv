@@ -561,14 +561,23 @@ local({
   test_that(
     "native scalar child copies survive focused garbage collection pressure",
     {
-      value <- as.integer(1:3)
-      gctorture(TRUE)
-      on.exit(gctorture(FALSE), add = TRUE)
-      child <- .Call(jdv:::C_jdv_tree_child, value, "index", 2, "")
-      expect_identical(child$status, "value")
-      expect_identical(child$value, 2L)
-      text <- .Call(jdv:::C_jdv_tree_scalar_text, child$value)
-      expect_identical(text, "2")
+      skip_on_cran()
+      skip_if_not_installed("callr")
+      result <- callr::r(
+        function() {
+          loadNamespace("jdv")
+          value <- as.integer(1:3)
+          gctorture(TRUE)
+          on.exit(gctorture(FALSE), add = TRUE)
+          child <- .Call(jdv:::C_jdv_tree_child, value, "index", 2, "")
+          text <- .Call(jdv:::C_jdv_tree_scalar_text, child$value)
+          list(child = child, text = text)
+        },
+        libpath = .libPaths()
+      )
+      expect_identical(result$child$status, "value")
+      expect_identical(result$child$value, 2L)
+      expect_identical(result$text, "2")
     }
   )
 })

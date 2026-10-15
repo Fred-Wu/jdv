@@ -108,6 +108,7 @@ rpc_fixture_page <- function(id, query) {
 }
 
 test_that("public RPC round-trips every shared query fixture", {
+  skip_if_not_installed("jsonlite")
   fixture <- jsonlite::fromJSON(
     system.file("spec", "query-fixtures.json", package = "jdv"),
     simplifyVector = FALSE

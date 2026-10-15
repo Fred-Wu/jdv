@@ -108,11 +108,14 @@ test_that("binary budgets and identities fail before producing a packet", {
 })
 
 test_that("native binary callbacks validate before sending and recover for the next request", {
+  skip_on_cran()
+  skip_if_not_installed("jsonlite")
   skip_if_not_installed("callr")
   python <- Sys.which("python3")
   skip_if(!nzchar(python), "python3 is required for the local binary peer")
   fixture_dir <- tempfile("jdv-binary-fixture-")
   dir.create(fixture_dir)
+  on.exit(unlink(fixture_dir, recursive = TRUE), add = TRUE)
   fixture_dir <- normalizePath(fixture_dir, winslash = "/", mustWork = TRUE)
   fixture_source <- file.path(fixture_dir, "binaryfixture.c")
   file.copy(test_path("fixtures", "binaryfixture.c"), fixture_source)
@@ -138,9 +141,9 @@ test_that("native binary callbacks validate before sending and recover for the n
     {
       invisible(gc())
       dyn.unload(fixture_path)
-      unlink(fixture_dir, recursive = TRUE)
     },
-    add = TRUE
+    add = TRUE,
+    after = FALSE
   )
   ready <- tempfile("jdv-binary-ready-")
   result <- tempfile("jdv-binary-result-")
@@ -305,6 +308,8 @@ test_that("native binary callbacks validate before sending and recover for the n
 })
 
 test_that("bounded binary backpressure and peer disconnect terminate without JSON in the body", {
+  skip_on_cran()
+  skip_if_not_installed("jsonlite")
   skip_if_not_installed("callr")
   python <- Sys.which("python3")
   skip_if(!nzchar(python), "python3 is required for the local binary peer")
@@ -405,6 +410,8 @@ test_that("bounded binary backpressure and peer disconnect terminate without JSO
 test_that(
   "the real R callback flushes lifecycle events before binary and later JSONL",
   {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
     skip_if_not_installed("callr")
     python <- Sys.which("python3")
     skip_if(!nzchar(python), "python3 is required for the local binary peer")

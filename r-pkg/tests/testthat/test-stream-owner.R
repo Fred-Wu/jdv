@@ -240,6 +240,8 @@ test_that(
 test_that(
   "namespace and direct DLL unload release independent outputs exactly once",
   {
+    skip_on_cran()
+    skip_if_not_installed("callr")
     skip_if(
       !file.exists(file.path(find.package("jdv"), "Meta", "package.rds")),
       "A real unload requires an installed package"
@@ -325,6 +327,8 @@ test_that(
 test_that(
   "raw unload from a producer callback is rejected before unloading code",
   {
+    skip_on_cran()
+    skip_if_not_installed("callr")
     skip_if(
       !file.exists(file.path(find.package("jdv"), "Meta", "package.rds")),
       "A real unload requires an installed package"
@@ -406,6 +410,8 @@ test_that(
 test_that(
   "namespace unload during a callback defers cleanup until the callback unwinds",
   {
+    skip_on_cran()
+    skip_if_not_installed("callr")
     skip_if(
       !file.exists(file.path(find.package("jdv"), "Meta", "package.rds")),
       "A real unload requires an installed package"
@@ -451,6 +457,8 @@ test_that(
 )
 
 test_that("raw unload blocks new native work from foreign release callbacks", {
+  skip_on_cran()
+  skip_if_not_installed("callr")
   skip_if(
     !file.exists(file.path(find.package("jdv"), "Meta", "package.rds")),
     "A real unload requires an installed package"

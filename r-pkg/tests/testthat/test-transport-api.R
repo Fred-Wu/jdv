@@ -7,6 +7,7 @@ local({
   on.exit(state$outbox <- initial_outbox, add = TRUE)
 
   transport_rpc_json <- function(value) {
+    skip_if_not_installed("jsonlite")
     jsonlite::fromJSON(value, simplifyVector = FALSE)
   }
 
@@ -173,8 +174,10 @@ local({
     queue_messages = 256L,
     queue_bytes = 16 * 1024^2
   ) {
+    skip_on_cran()
     skip_on_os("windows")
     skip_if_not_installed("callr")
+    skip_if_not_installed("jsonlite")
     python <- Sys.which("python3")
     skip_if(!nzchar(python), "python3 is required for the local mock host")
 
@@ -491,6 +494,9 @@ local({
   }
 
   test_that("the local viewer sends hello/open, serves rows, and closes", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
     received <- with_mock_transport("fragmented", data.frame(value = 11:13))
     expect_identical(
       received$responses[[1]]$result$data$row_index,
@@ -499,6 +505,9 @@ local({
   })
 
   test_that("the largest allowed request frame can arrive in one write", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
     with_mock_transport(
       "maximum-frame",
       data.frame(value = 11:13),
@@ -507,6 +516,9 @@ local({
   })
 
   test_that("full request queues reject only new work and stay connected", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
     exercise_overflow <- function(scenario, queue_messages, queue_bytes) {
       queued_during_busy <- NULL
       received <- with_mock_transport(
@@ -564,12 +576,17 @@ local({
   })
 
   test_that("host EOF closes every registry entry", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
     with_mock_transport("disconnect", data.frame(value = 11:13))
   })
 
   test_that(
     "a new viewer API call detects EOF and reconnects without waiting",
     {
+      skip_on_cran()
+      skip_if_not_installed("jsonlite")
       skip_on_os("windows")
       skip_if_not_installed("callr")
       python <- Sys.which("python3")
@@ -692,6 +709,8 @@ local({
   )
 
   test_that("a finalizer cannot unload an active transport callback", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
     skip_on_os("windows")
     skip_if_not_installed("callr")
     skip_if(
@@ -854,6 +873,8 @@ local({
   })
 
   test_that("native unload closes an active TCP transport", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
     skip_on_os("windows")
     skip_if_not_installed("callr")
     skip_if(
@@ -961,10 +982,16 @@ local({
   })
 
   test_that("close-all stops an active transport with an empty registry", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
     with_mock_transport("empty-registry-close", data.frame(value = 11:13))
   })
 
   test_that("multi-megabyte row responses are fully framed", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
     old_options <- options(
       jdv.max_work_bytes = Inf,
       jdv.max_message_bytes = 32 * 1024^2
@@ -1012,6 +1039,7 @@ local({
   test_that(
     "a host that does not read cannot block a large open indefinitely",
     {
+      skip_on_cran()
       skip_on_os("windows")
       skip_if_not_installed("callr")
       python <- Sys.which("python3")
@@ -1072,6 +1100,9 @@ local({
   )
 
   test_that("cancelled and expired queued work receive terminal responses", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
     cancelled <- with_mock_transport("cancel", data.frame(value = 11:13))
     expired <- with_mock_transport(
       "expired",
@@ -1083,11 +1114,17 @@ local({
   })
 
   test_that("receiver acknowledges all complete frames cumulatively", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
     received <- with_mock_transport("ack-controls", data.frame(value = 11:13))
     expect_identical(tail(received$acks, 1L)[[1L]]$params$frames, 4L)
   })
 
   test_that("stale and closed table requests receive terminal errors", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
     stale <- with_mock_transport("stale-generation", data.frame(value = 11:13))
     missing <- with_mock_transport("missing-table", data.frame(value = 11:13))
     expect_identical(stale$responses[[1L]]$error$code, "stale_generation")
@@ -1106,6 +1143,9 @@ local({
   )
 
   test_that("an invalid cancel id does not cancel a valid queued request", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
     received <- with_mock_transport("invalid-cancel", data.frame(value = 11:13))
     expect_identical(received$responses[[1]]$error$code, "invalid_request")
     expect_identical(received$responses[[2]]$id, "must-survive")
@@ -1127,6 +1167,9 @@ local({
   )
 
   test_that("duplicate live request ids close the transport", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
     with_mock_transport("duplicate-id", data.frame(value = 11:13))
   })
 
@@ -1194,6 +1237,7 @@ local({
 
     discovery_dir <- tempfile("jdv-cache-")
     dir.create(discovery_dir)
+    on.exit(unlink(discovery_dir, recursive = TRUE), add = TRUE)
     discovery_file <- file.path(discovery_dir, "discovery.json")
     options(jdv.address = NULL, jdv.discovery_path = NULL)
     Sys.unsetenv("JDV_ADDRESS")
@@ -1221,7 +1265,6 @@ local({
     expect_identical(.jdv_resolve_address(), "tcp://127.0.0.1:43123")
     options(jdv.address = "unix:///tmp/option-address")
     expect_identical(.jdv_resolve_address(), "unix:///tmp/option-address")
-    unlink(discovery_dir, recursive = TRUE)
   })
 
   test_that("cancel request ids use the same strict raw-token rules", {
@@ -1236,6 +1279,9 @@ local({
   })
 
   test_that("offline close, eviction, and cascade never reach a fresh viewer", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
     for (action in c("close", "eviction", "cascade")) {
       jdv_close()
       old_options <- options(jdv.max_tables = 2L)
@@ -1291,6 +1337,8 @@ local({
   test_that(
     "active connections retain cascade and eviction close notifications",
     {
+      skip_on_cran()
+      skip_if_not_installed("jsonlite")
       skip_on_os("windows")
       skip_if_not_installed("callr")
       skip_if(

@@ -213,6 +213,8 @@ test_that("integer64 orders agree with bit64 without a runtime dependency", {
 })
 
 test_that("installed integer64 extraction works without loading bit64", {
+  skip_on_cran()
+  skip_if_not_installed("callr")
   skip_if(
     !file.exists(file.path(find.package("jdv"), "Meta", "package.rds")),
     "Requires an installed package"

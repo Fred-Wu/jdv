@@ -3888,7 +3888,7 @@ extern "C" {
  */
 
 #ifdef _MSC_VER
-#pragma warning(disable: 4668) /* preprocessor name not defined */
+/**/#pragma warning(disable: 4668) /* preprocessor name not defined */
 #endif
 
 #if !defined(PDIAGNOSTIC_AWARE_MSVC) && defined(_MSC_VER)
@@ -3916,29 +3916,29 @@ extern "C" {
 
 #if defined(PDIAGNOSTIC_IGNORE_UNUSED_FUNCTION) || defined(PDIAGNOSTIC_IGNORE_UNUSED)
 #if PDIAGNOSTIC_AWARE_CLANG
-#pragma clang diagnostic ignored "-Wunused-function"
+/**/#pragma clang diagnostic ignored "-Wunused-function"
 #elif PDIAGNOSTIC_AWARE_GCC
-#pragma GCC diagnostic ignored "-Wunused-function"
+/**/#pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 #endif
 #undef PDIAGNOSTIC_IGNORE_UNUSED_FUNCTION
 
 #if defined(PDIAGNOSTIC_IGNORE_UNUSED_VARIABLE) || defined(PDIAGNOSTIC_IGNORE_UNUSED)
 #if PDIAGNOSTIC_AWARE_MSVC
-#pragma warning(disable: 4101) /* unused local variable */
+/**/#pragma warning(disable: 4101) /* unused local variable */
 #elif PDIAGNOSTIC_AWARE_CLANG
-#pragma clang diagnostic ignored "-Wunused-variable"
+/**/#pragma clang diagnostic ignored "-Wunused-variable"
 #elif PDIAGNOSTIC_AWARE_GCC
-#pragma GCC diagnostic ignored "-Wunused-variable"
+/**/#pragma GCC diagnostic ignored "-Wunused-variable"
 #endif
 #endif
 #undef PDIAGNOSTIC_IGNORE_UNUSED_VARIABLE
 
 #if defined(PDIAGNOSTIC_IGNORE_UNUSED_PARAMETER) || defined(PDIAGNOSTIC_IGNORE_UNUSED)
 #if PDIAGNOSTIC_AWARE_CLANG
-#pragma clang diagnostic ignored "-Wunused-parameter"
+/**/#pragma clang diagnostic ignored "-Wunused-parameter"
 #elif PDIAGNOSTIC_AWARE_GCC
-#pragma GCC diagnostic ignored "-Wunused-parameter"
+/**/#pragma GCC diagnostic ignored "-Wunused-parameter"
 #endif
 #endif
 #undef PDIAGNOSTIC_IGNORE_UNUSED_PARAMETER
@@ -3948,11 +3948,11 @@ extern "C" {
 #if defined (__cplusplus) && __cplusplus < 201103L
 #if PDIAGNOSTIC_AWARE_CLANG
 /* Needed for < C++11 clang C++ static_assert */
-#pragma clang diagnostic ignored "-Wc11-extensions"
+/**/#pragma clang diagnostic ignored "-Wc11-extensions"
 /* Needed for empty macro arguments. */
-#pragma clang diagnostic ignored "-Wc99-extensions"
+/**/#pragma clang diagnostic ignored "-Wc99-extensions"
 /* Needed for trailing commas. */
-#pragma clang diagnostic ignored "-Wc++11-extensions"
+/**/#pragma clang diagnostic ignored "-Wc++11-extensions"
 #endif
 #endif
 #endif
