@@ -1,8 +1,9 @@
 # jdv: JSON Data Viewer
 
 jdv is an R data viewer and query engine under development. The R package
-bundles cJSON and has no runtime R package dependencies. Public viewer APIs are
-available through `jdv_view()` and `jdv_close()`.
+bundles cJSON and has no required runtime R package dependencies. Optional Arrow
+stream support uses `nanoarrow` and, for Arrow objects, `arrow`. Public viewer
+APIs are available through `jdv_view()` and `jdv_close()`.
 
 - `r-pkg/`: R package and bundled native code.
 - `server/`: reference host for R sessions and browser clients, developed
@@ -25,6 +26,31 @@ objects open in a browsable tree by default. Use a drillable cell's **Open**
 button to inspect its captured value as a child view. View breadcrumbs restore
 the parent table's query and page. See [server/README.md](server/README.md) for
 the browser protocol, connection limits, and platform details.
+
+## Sequential Arrow views
+
+`jdv_view()` can display Arrow `Table` and `RecordBatchReader` objects,
+`nanoarrow_array_stream` pointers, and Polars `DataFrame` objects as
+forward-only views. These sources require the optional R `nanoarrow` package;
+Arrow objects also require `arrow`, and Polars objects require `polars`. The
+viewer requests bounded pages with **Load next** and reports an unknown total
+while the stream is open. Sequential views do not support random paging,
+sorting, or filtering.
+
+The reference server retains opaque Arrow IPC pages so switching views,
+reloading, or opening another tab can reuse pages already received. Its default
+cache is 256 MiB total and 64 MiB per view. Set `--stream-cache-bytes` or
+`--stream-cache-view-bytes` to adjust either limit; set either to `0` to disable
+the host cache. Browser display and raw IPC caches have separate bounded
+budgets. Once a page is no longer held by either the browser or host, a
+forward-only source cannot fetch it again.
+
+On Unix, R connects through a local domain socket; on Windows, the default is a
+byte-mode named pipe. Named-pipe ACLs are not hardened. Explicit TCP connections
+have no authentication. Windows callback dispatch has been observed inside a
+top-level `for` loop because its function-frame count is zero. Windows R GUI,
+RStudio, R.app, Esc/Ctrl-C, and other top-level behavior have not been fully
+validated; see [the package README](r-pkg/README.md).
 
 ## Local development
 

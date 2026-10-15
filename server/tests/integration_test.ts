@@ -436,7 +436,6 @@ Deno.test({
 
 Deno.test({
   name: "installed R package connects and services a browser schema request",
-  ignore: Deno.build.os === "windows",
   async fn() {
     const testLibrary = Deno.env.get("JDV_TEST_R_LIB")?.trim();
     const cacheRoot = await Deno.makeTempDir({ prefix: "jdv-r-integration-" });
@@ -450,6 +449,13 @@ Deno.test({
     try {
       const { startServer } = await import("../main.ts");
       server = await startServer({ mode: "default", httpPort: 0, cacheDir });
+      if (Deno.build.os === "windows") {
+        if (!server.socketPath.startsWith("npipe:")) {
+          throw new Error(
+            "The default Windows R listener was not a named pipe.",
+          );
+        }
+      }
       const browserClient = await RawWebSocket.connect(server.url);
       browser = browserClient;
       assertMessage(await browserClient.read(), "welcome");

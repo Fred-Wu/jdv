@@ -4,8 +4,9 @@ The Deno reference server connects to R over a local JSON Lines (JSONL)
 transport and serves the browser viewer from `web/`. Project files are
 distributed under [LICENSE.md](LICENSE.md). The viewer also vendors Tabulator
 6.5.0 under its MIT license; see `web/vendor/TABULATOR-LICENSE.txt`. Apache
-Arrow JS 21.2.0 is vendored under Apache-2.0 for planned binary decoding, with
-notices and provenance in `web/vendor/`; it is not yet loaded by the viewer.
+Arrow JS 21.2.0 is vendored under Apache-2.0 and loaded by the viewer to decode
+Arrow IPC pages and inspect nested Arrow cells. Its notices and provenance are
+in `web/vendor/`.
 
 ## Start from a URL
 
@@ -24,7 +25,8 @@ server listens for browser traffic on `127.0.0.1` only. Its R listener uses a
 Unix-domain socket on Unix systems and a Windows named pipe on Windows. The
 cache directory and discovery file are private to the current user on Unix; the
 socket has mode `0600`. Windows named-pipe access follows the OS default ACL,
-which Deno does not let this server harden.
+which Deno does not let this server harden. The Windows pipe uses byte-type
+mode; message-type pipes are unsupported.
 
 `-A` is used in this portable example because Unix socket and Windows named pipe
 permissions differ across platforms. When using TCP for the R connection, select
@@ -40,6 +42,17 @@ When using a custom host cache directory, configure R with the matching
 `options(jdv.discovery_path = ...)` or `JDV_ADDRESS` setting so it connects to
 the same discovery address. On shutdown the server removes the discovery file
 only when it still contains that server's process id and private instance id.
+
+## Sequential Arrow views
+
+With the optional R packages installed, `jdv_view()` can open Arrow `Table` and
+`RecordBatchReader` objects, nanoarrow stream pointers, and Polars data frames
+as forward-only views. Arrow sources require `nanoarrow` and `arrow`; Polars
+sources require `nanoarrow` and `polars`. The viewer requests bounded Arrow IPC
+pages with **Load next** and keeps the row total unknown until the stream ends.
+Sequential views do not support random paging, sorting, or filtering. Supported
+nested list, struct, map, and dictionary values can be inspected in the browser
+from the retained IPC page without asking R for object navigation.
 
 ## Sequential page cache
 
@@ -182,8 +195,8 @@ when started by URL.
 ```sh
 deno fmt --check server
 deno lint --ignore=server/web/vendor/tabulator.min.js,server/web/vendor/tabulator.min.css,server/web/vendor/arrow-21.2.0.min.js server
-deno check server/main.ts
-deno test -A server/tests
+deno check --no-lock server/main.ts
+deno test --no-lock -A server/tests
 ```
 
 The repository `deno.json` excludes the vendored Tabulator minified JavaScript
@@ -197,20 +210,28 @@ interactive R process with `--no-readline` against a real TCP server. It holds R
 in `Sys.sleep(10)`, checks that browser requests finish without manual polling,
 and repeats wire cancellation while verifying one terminal reply per request.
 Select the installed package explicitly with
-`JDV_TEST_R_LIB=/path/to/scratch-library deno test -A server/tests`.
+`JDV_TEST_R_LIB=/path/to/scratch-library deno test --no-lock -A server/tests`.
+For Chromium tests, set `JDV_TEST_BROWSER` to a Chromium executable path. The
+manual `Test server` workflow runs the Deno suite on Ubuntu, Windows, and macOS;
+it enables Chromium on Linux and installs R, Arrow, nanoarrow, jsonlite, bit64,
+and Polars for the R fixtures. The Windows suite includes the default named-pipe
+R connection and the interactive TCP regression.
 
 The Unix socket, HTTP origin checks, discovery, and R relay tests run on Linux.
-The Windows named-pipe listener uses the built-in Node compatibility API but has
-not been exercised on a Windows host. The viewer lists active R sessions, grid
-views, and object trees. Tree child values and drillable grid cells can be
-opened as independent grid or tree views; closing a child releases it while
-keeping its parent available. Grid Open buttons are shown only for columns
-marked `drillable`: unclassed, `AsIs`, or `vctrs_list_of` list columns,
-data-frame columns, and matrix columns. Record columns, `POSIXlt`, other classed
-lists, and atomic columns do not expose cell controls. The UI always sends the
-original R row index after sorting, filtering, or paging. The view breadcrumb
-restores the parent's query, page, and horizontal scroll, or its object path and
-child-page offset.
+The Windows named-pipe listener uses the built-in Node compatibility API and a
+Windows real-R test is configured, but the workflow has not yet run on a Windows
+host. RGui, RStudio, R.app, Esc/Ctrl-C delivery, and true top-level behavior
+remain manual checks; callback dispatch during a top-level Windows `for` loop
+has been observed. The viewer lists active R sessions, grid views, and object
+trees. Tree child values and drillable grid cells can be opened as independent
+grid or tree views; closing a child releases it while keeping its parent
+available. Grid Open buttons are shown only for columns marked `drillable`:
+unclassed, `AsIs`, or `vctrs_list_of` list columns, data-frame columns, and
+matrix columns. Record columns, `POSIXlt`, other classed lists, and atomic
+columns do not expose cell controls. The UI always sends the original R row
+index after sorting, filtering, or paging. The view breadcrumb restores the
+parent's query, page, and horizontal scroll, or its object path and child-page
+offset.
 
 A child open waiting for R is shown separately from page loading. Snapshot sort,
 filter, and page changes keep working without canceling that original cell
@@ -229,11 +250,12 @@ Snapshot.
 
 ## Real R end-to-end tests
 
-The real-session viewer regressions use `arf` to control a headless R process.
-They run the installed `jdv` package against the real Deno server and route R
-traffic through a test-only TCP relay that records compact JSON frame metadata.
-The relay is outside the production server and lets tests check request counts,
-Snapshot descriptors, and Paged responses without changing server behavior.
+The `e2e_test.ts`, `cell_e2e_test.ts`, and `tree_e2e_test.ts` regressions use
+`arf` to control a headless R process. They run the installed `jdv` package
+against the real Deno server and route R traffic through a test-only TCP relay
+that records compact JSON frame metadata. The relay is outside the production
+server and lets tests check request counts, Snapshot descriptors, and Paged
+responses without changing server behavior.
 
 Build or install `jdv` into a scratch library with `devtools`, then run the
 focused E2E file with that library selected:
@@ -242,12 +264,15 @@ focused E2E file with that library selected:
 JDV_TEST_R_LIB=/path/to/scratch-library deno test -A --no-config server/tests/e2e_test.ts
 ```
 
-The `arf` executable must be on `PATH`. The test process prepends the selected
-scratch library to `.libPaths()`, loads `jdv` from that exact library, and logs
-the package and DLL paths once. These tests cover Snapshot queries without R
-requests, Paged queries without serializing the full table at registration,
-request handling while R is in a top-level wait, immediate same-process
-reconnection after host disconnect, and agreement between the two query modes.
-The reconnect case also checks that the old table and shared registry entries
-are released before the new Paged request succeeds. The tests do not use the
-`jdv_rpc(NULL)` polling loop from the unit integration fixture.
+The `arf` executable must be on `PATH`. The manual cross-platform workflow does
+not provision `arf`, so these three files are excluded there; the Rscript-based
+binary, Arrow, and sequential-browser regressions still run. The test process
+prepends the selected scratch library to `.libPaths()`, loads `jdv` from that
+exact library, and logs the package and DLL paths once. These tests cover
+Snapshot queries without R requests, Paged queries without serializing the full
+table at registration, request handling while R is in a top-level wait,
+immediate same-process reconnection after host disconnect, and agreement between
+the two query modes. The reconnect case also checks that the old table and
+shared registry entries are released before the new Paged request succeeds. The
+tests do not use the `jdv_rpc(NULL)` polling loop from the unit integration
+fixture.

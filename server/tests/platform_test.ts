@@ -47,9 +47,11 @@ Deno.test("empty XDG_CACHE_HOME uses the HOME cache fallback", () => {
   }
 });
 
-Deno.test("Node named-pipe adapter accepts and closes one Unix-domain connection", async () => {
+Deno.test("Node pipe adapter accepts and closes one byte-stream connection", async () => {
   const directory = await Deno.makeTempDir({ prefix: "jdv-node-listener-" });
-  const path = `${directory}/listener.sock`;
+  const path = Deno.build.os === "windows"
+    ? `\\\\.\\pipe\\jdv-test-${crypto.randomUUID()}`
+    : `${directory}/listener.sock`;
   const listener = new NodePipeListener(path);
   try {
     await listener.ready;

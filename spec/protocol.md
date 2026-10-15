@@ -107,6 +107,16 @@ no authentication, and named-pipe ACLs are not hardened. Windows named pipes
 must use byte-type mode; message-type pipes are unsupported. The Windows
 transport has not yet been exercised on a Windows host.
 
+The manual server workflow is configured to run the Deno suite on Ubuntu,
+Windows, and macOS. The installed-package integration uses the default listener
+(including a named pipe on Windows), and the interactive R regression selects
+TCP explicitly. Chromium-driven browser tests are configured on Linux only.
+Until the workflow has completed on each platform, this configuration is not
+evidence of a passing Windows or macOS run. RGui, RStudio, R.app, Esc/Ctrl-C
+delivery, and true top-level behavior remain outside the automated checks. The
+workflow excludes the `arf`-controlled E2E files; Rscript-based binary, Arrow,
+and sequential browser tests remain included.
+
 A non-`NULL` title identifies one active display slot. Registering that active
 title again replaces its contents, reuses its view id, and increments its
 generation. The new view is prepared before the prior view is replaced, so a
@@ -1110,13 +1120,14 @@ The gate temporarily saves `R_interrupts_suspended`, sets it to `TRUE` for the
 single frame-count evaluation, and restores the prior value with unwind-safe
 cleanup. It does not use `END_SUSPEND_INTERRUPTS`, call `onintr`, or inspect or
 change private pending-interrupt state. This practical function-frame check is
-not a guarantee that R is idle: on Windows, a timer can run during top-level
-computation while `sys.nframe()` is zero. The Windows timer interval is about
-200 ms. If the request callback begins with interrupts enabled, an interrupt
-after dequeue becomes an `interrupted` error. If R entered the callback with
-interrupts already suspended, R may defer delivery; long sort or filter work may
-therefore not stop promptly. The viewer should show a busy state and offer a
-retry after a terminal failure.
+not a guarantee that R is idle: on Windows, a timer can run during a top-level
+`for` loop while `sys.nframe()` is zero, and this dispatch behavior has been
+observed. The Windows timer interval is about 200 ms. If the request callback
+begins with interrupts enabled, an interrupt after dequeue becomes an
+`interrupted` error. If R entered the callback with interrupts already
+suspended, R may defer delivery; long sort or filter work may therefore not stop
+promptly. The viewer should show a busy state and offer a retry after a terminal
+failure.
 
 `jdv_rpc(NULL)` is a non-reentrant recovery path that bypasses the normal gate
 and drains at most the configured batch under `R_UnwindProtect`; it does not use

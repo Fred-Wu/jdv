@@ -1,0 +1,79 @@
+name: Test server
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Deno and R integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    env:
+      JDV_TEST_R_LIB: ${{ runner.temp }}/jdv-r-library
+      R_LIBS_USER: ${{ runner.temp }}/jdv-r-library
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+          extra-repositories: https://community.r-multiverse.org
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          working-directory: r-pkg
+          needs: install
+          extra-packages: any::arrow, any::nanoarrow, any::jsonlite, any::bit64, any::polars
+
+      - name: Install jdv into a temporary library
+        shell: bash
+        run: |
+          Rscript -e 'dir.create(Sys.getenv("JDV_TEST_R_LIB"), recursive = TRUE, showWarnings = FALSE)'
+          R CMD INSTALL --library="$JDV_TEST_R_LIB" r-pkg
+
+      - uses: browser-actions/setup-chrome@v2
+        id: chrome
+        if: runner.os == 'Linux'
+
+      - name: Check Deno formatting
+        run: deno fmt --check server
+
+      - name: Lint Deno sources
+        run: deno lint --ignore=server/web/vendor/tabulator.min.js,server/web/vendor/tabulator.min.css,server/web/vendor/arrow-21.2.0.min.js server
+
+      - name: Check server entry point
+        run: deno check --no-lock server/main.ts
+
+      - name: Run Deno tests with Chromium
+        if: runner.os == 'Linux'
+        env:
+          JDV_TEST_BROWSER: ${{ steps.chrome.outputs.chrome-path }}
+        run: >-
+          deno test --no-lock -A
+          --ignore=server/tests/e2e_test.ts
+          --ignore=server/tests/cell_e2e_test.ts
+          --ignore=server/tests/tree_e2e_test.ts
+          server/tests
+
+      - name: Run Deno tests without arf-controlled E2E files
+        if: runner.os != 'Linux'
+        run: >-
+          deno test --no-lock -A
+          --ignore=server/tests/e2e_test.ts
+          --ignore=server/tests/cell_e2e_test.ts
+          --ignore=server/tests/tree_e2e_test.ts
+          server/tests
