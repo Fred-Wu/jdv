@@ -4,8 +4,10 @@
 #include <R_ext/Visibility.h>
 #include "int64.h"
 #include "transport.h"
+#include "arrow.h"
 
 static int module_depth = 0;
+static int module_unloading = 0;
 
 int jdv_module_depth(void)
 {
@@ -14,6 +16,8 @@ int jdv_module_depth(void)
 
 void jdv_module_enter(void)
 {
+    if (module_unloading)
+        Rf_error("The jdv native library is being unloaded.");
     module_depth++;
 }
 
@@ -144,7 +148,22 @@ JDV_WRAP_1(jdv_entry_tree_scalar_text, C_jdv_tree_scalar_text)
 JDV_WRAP_1(jdv_entry_tree_names, C_jdv_tree_names)
 JDV_WRAP_3(jdv_entry_tree_vector_names, C_jdv_tree_vector_names)
 
+JDV_WRAP_1(jdv_entry_arrow_move, C_jdv_arrow_move)
+JDV_WRAP_1(jdv_entry_arrow_schema, C_jdv_arrow_schema)
+JDV_WRAP_1(jdv_entry_arrow_next, C_jdv_arrow_next)
+JDV_WRAP_1(jdv_entry_arrow_close, C_jdv_arrow_close)
+JDV_WRAP_1(jdv_entry_arrow_info, C_jdv_arrow_info)
+JDV_WRAP_0(jdv_entry_arrow_cleanup, C_jdv_arrow_cleanup)
+JDV_WRAP_0(jdv_entry_arrow_status, C_jdv_arrow_status)
+
 static const R_CallMethodDef CallEntries[] = {
+    {"C_jdv_arrow_move", (DL_FUNC)&jdv_entry_arrow_move, 1},
+    {"C_jdv_arrow_schema", (DL_FUNC)&jdv_entry_arrow_schema, 1},
+    {"C_jdv_arrow_next", (DL_FUNC)&jdv_entry_arrow_next, 1},
+    {"C_jdv_arrow_close", (DL_FUNC)&jdv_entry_arrow_close, 1},
+    {"C_jdv_arrow_info", (DL_FUNC)&jdv_entry_arrow_info, 1},
+    {"C_jdv_arrow_cleanup", (DL_FUNC)&jdv_entry_arrow_cleanup, 0},
+    {"C_jdv_arrow_status", (DL_FUNC)&jdv_entry_arrow_status, 0},
     {"C_jdv_int64_is_na", (DL_FUNC)&jdv_entry_int64_is_na, 1},
     {"C_jdv_int64_values", (DL_FUNC)&jdv_entry_int64_values, 1},
     {"C_jdv_int64_rank", (DL_FUNC)&jdv_entry_int64_rank, 1},
@@ -182,8 +201,24 @@ void attribute_visible R_init_jdv(DllInfo *dll)
     R_forceSymbols(dll, TRUE);
 }
 
+static SEXP unload_body(void *data)
+{
+    (void)data;
+    jdv_transport_unload();
+    jdv_arrow_unload();
+    return R_NilValue;
+}
+
+static void unload_done(void *data)
+{
+    (void)data;
+    module_unloading = 0;
+}
+
 void R_unload_jdv(DllInfo *dll)
 {
-    (void)dll;
-    jdv_transport_unload();
+    if (module_unloading || module_depth || !jdv_arrow_can_unload())
+        Rf_error("Cannot unload jdv while native callbacks are active.");
+    module_unloading = 1;
+    (void)R_ExecWithCleanup(unload_body, dll, unload_done, dll);
 }

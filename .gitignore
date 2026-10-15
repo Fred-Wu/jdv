@@ -5,3 +5,4 @@ r-pkg/src/*.o
 r-pkg/src/*.so
 r-pkg/src/*.dll
 r-pkg/src/cjson/*.o
+r-pkg/src/nanoarrow/src/*.o

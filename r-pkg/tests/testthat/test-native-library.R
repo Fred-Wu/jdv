@@ -9,6 +9,10 @@ test_that("the native library registers only its private routines", {
         "C_jdv_int64_",
         c("is_na", "values", "rank", "order", "eq", "between")
       ),
+      paste0(
+        "C_jdv_arrow_",
+        c("move", "schema", "next", "close", "info", "cleanup", "status")
+      ),
       "C_jdv_json_parse",
       "C_jdv_json_encode",
       paste0(
