@@ -1,5 +1,12 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  assertServerReleased,
+  cleanupDeadline,
+  finishIntegrationCleanup,
+  removeCacheDirectory,
+  stopRChild,
+} from "./integration_cleanup.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -447,6 +454,9 @@ Deno.test({
     let rChild: Deno.ChildProcess | undefined;
     let outputReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let browser: RawWebSocket | undefined;
+    let stderrOutput: Promise<string> | undefined;
+    let rExited = false;
+    const originalFailure: unknown[] = [];
     try {
       const { startServer } = await import("../main.ts");
       server = await startServer({ mode: "default", httpPort: 0, cacheDir });
@@ -498,10 +508,12 @@ Deno.test({
         stderr: "piped",
       }).spawn();
       outputReader = rChild.stdout.getReader();
+      stderrOutput = new Response(rChild.stderr).text();
       const readyLine = await readLine(outputReader, 10_000);
       if (!readyLine?.startsWith("READY\t")) {
         const status = await rChild.status;
-        const error = await new Response(rChild.stderr).text();
+        rExited = true;
+        const error = await stderrOutput;
         throw new Error(
           `Installed R package did not start: ${status.code}: ${error}`,
         );
@@ -516,12 +528,18 @@ Deno.test({
         );
       } catch (error) {
         try {
-          rChild.kill("SIGTERM");
-        } catch {
-          // The R process may already have exited.
+          await stopRChild(rChild, rExited);
+          rExited = true;
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            "R session connection and termination failed.",
+            { cause: error },
+          );
         }
         const status = await rChild.status;
-        const stderr = await new Response(rChild.stderr).text();
+        rExited = true;
+        const stderr = await stderrOutput;
         const discovery = await Deno.readTextFile(server.discoveryPath)
           .catch(() => "unavailable");
         throw new Error(
@@ -566,31 +584,55 @@ Deno.test({
       const closedLine = await readLine(outputReader, 10_000);
       if (closedLine !== "CLOSED") {
         const status = await rChild.status;
-        const error = await new Response(rChild.stderr).text();
+        rExited = true;
+        const error = await stderrOutput;
         throw new Error(
           `Installed R package did not close cleanly: ${status.code}: ${error}`,
         );
       }
       const status = await rChild.status;
+      rExited = true;
       if (!status.success) {
-        const error = await new Response(rChild.stderr).text();
+        const error = await stderrOutput;
         throw new Error(`Installed R package exited ${status.code}: ${error}`);
       }
       assertMessage(await browserClient.read(), "view/closed");
       assertMessage(await browserClient.read(), "session/closed");
+    } catch (error) {
+      originalFailure.push(error);
+      throw error;
     } finally {
-      browser?.close();
-      if (rChild) {
-        try {
-          rChild.kill("SIGTERM");
-        } catch {
-          // The child may have exited after the request completed.
-        }
-        await rChild.status;
-      }
-      await outputReader?.cancel().catch(() => undefined);
-      await server?.close();
-      await Deno.remove(cacheRoot, { recursive: true });
+      await finishIntegrationCleanup([
+        () => browser?.close(),
+        () => rChild ? stopRChild(rChild, rExited) : undefined,
+        () =>
+          outputReader
+            ? cleanupDeadline(
+              outputReader.cancel(),
+              5_000,
+              "R stdout did not close during cleanup.",
+            )
+            : undefined,
+        () => outputReader?.releaseLock(),
+        () =>
+          stderrOutput
+            ? cleanupDeadline(
+              stderrOutput,
+              5_000,
+              "R stderr did not close during cleanup.",
+            )
+            : undefined,
+        () =>
+          server
+            ? cleanupDeadline(
+              server.close(),
+              5_000,
+              "Server shutdown did not finish during cleanup.",
+            )
+            : undefined,
+        () => server ? assertServerReleased(server) : undefined,
+        () => removeCacheDirectory(cacheRoot),
+      ], originalFailure);
     }
   },
 });
