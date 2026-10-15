@@ -1,5 +1,7 @@
 import { assert, assertEquals } from "./assert.ts";
+import { join } from "node:path";
 import { ArfSession } from "./helpers/arf_session.ts";
+import { removeCacheDirectory } from "./integration_cleanup.ts";
 import { type TestBrowser, TestServer } from "./helpers/test_server.ts";
 
 const testLibrary = Deno.env.get("JDV_TEST_R_LIB");
@@ -206,8 +208,9 @@ Deno.test({
   async fn() {
     const runtime = await startRuntime();
     const markerDir = await Deno.makeTempDir({ prefix: "jdv-cell-e2e-" });
-    const marker = `${markerDir}/busy-entered`;
-    const release = `${markerDir}/release`;
+    const marker = join(markerDir, "busy-entered");
+    const release = join(markerDir, "release");
+    let screenshotDir: string | undefined;
     let closeChromium: (() => Promise<void>) | undefined;
     let busy: {
       result: Promise<unknown>;
@@ -544,7 +547,12 @@ Deno.test({
         "Cell child labels containing HTML-like text must remain text.",
       );
       await page.screenshot({
-        path: "/tmp/jdv-20261015-cell-inspector.png",
+        path: join(
+          screenshotDir ??= await Deno.makeTempDir({
+            prefix: "jdv-cell-screenshot-",
+          }),
+          "cell-inspector.png",
+        ),
         fullPage: true,
       });
       await page.locator('#view-breadcrumb [data-view-depth="0"]').click();
@@ -560,7 +568,8 @@ Deno.test({
       await closeChromium?.().catch(() => undefined);
       runtime.browser.close();
       await Promise.allSettled([runtime.arf.close(), runtime.server.close()]);
-      await Deno.remove(markerDir, { recursive: true }).catch(() => undefined);
+      if (screenshotDir) await removeCacheDirectory(screenshotDir);
+      await removeCacheDirectory(markerDir);
     }
   },
 });

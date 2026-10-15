@@ -1,5 +1,6 @@
 /** Test-only control for a real arf headless R session. */
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { removeCacheDirectory } from "../integration_cleanup.ts";
 
 export interface ArfEvalResult {
   stdout: string | null;
@@ -27,6 +28,7 @@ const decoder = new TextDecoder();
 
 export class ArfSession {
   #process?: Deno.ChildProcess;
+  #stdinWriter?: WritableStreamDefaultWriter<Uint8Array>;
   #pid?: number;
   #ipcDirectory?: string;
   #ipcSocket?: string;
@@ -38,11 +40,19 @@ export class ArfSession {
   #evalProcesses = new Set<Deno.ChildProcess>();
 
   /** Wait for a marker created by an evaluation that is still running. */
-  async waitForFile(path: string, timeoutMs = 5_000): Promise<void> {
+  async waitForFile(
+    path: string,
+    timeoutMs = 5_000,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const target = resolve(path);
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     if (await fileExists(target)) return;
     const watcher = Deno.watchFs(dirname(target));
+    const onAbort = () => watcher.close();
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       if (await fileExists(target)) return;
       await withTimeout(
         (async () => {
@@ -50,6 +60,9 @@ export class ArfSession {
             if (event.paths.some((entry) => resolve(entry) === target)) {
               if (await fileExists(target)) return;
             }
+          }
+          if (signal?.aborted) {
+            throw new DOMException("Aborted", "AbortError");
           }
           throw new Error(
             "Filesystem watcher closed before the marker appeared.",
@@ -59,6 +72,7 @@ export class ArfSession {
         `R marker file did not appear within ${timeoutMs} ms.`,
       );
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       watcher.close();
     }
   }
@@ -70,10 +84,15 @@ export class ArfSession {
 
     const timeoutMs = options.timeoutMs ?? 30_000;
     this.#environment = options.env;
-    const ipcDirectory = await Deno.makeTempDir({ prefix: "jdv-arf-" });
+    const ipcDirectory = await Deno.makeTempDir({
+      prefix: "ja-",
+      ...(Deno.build.os === "darwin" ? { dir: "/tmp" } : {}),
+    });
     this.#ipcDirectory = ipcDirectory;
-    this.#ipcSocket = `${ipcDirectory}/arf.sock`;
-    this.#logFile = `${ipcDirectory}/arf.log`;
+    this.#ipcSocket = Deno.build.os === "windows"
+      ? `\\\\.\\pipe\\jdv-arf-${crypto.randomUUID()}`
+      : join(ipcDirectory, "a.sock");
+    this.#logFile = join(ipcDirectory, "arf.log");
 
     let process: Deno.ChildProcess | undefined;
     try {
@@ -93,10 +112,12 @@ export class ArfSession {
           this.#logFile,
         ],
         env: options.env,
+        stdin: "piped",
         stdout: "piped",
         stderr: "null",
       }).spawn();
       this.#process = process;
+      this.#stdinWriter = process.stdin.getWriter();
       this.#stdoutReader = process.stdout.getReader();
       const ready = await withTimeout(
         this.#readReady(process),
@@ -160,6 +181,13 @@ export class ArfSession {
     return result;
   }
 
+  /** Send one line to R's console input, for example `c` at a browser prompt. */
+  async sendConsoleInput(line: string): Promise<void> {
+    const writer = this.#stdinWriter;
+    if (!writer) throw new Error("ArfSession has no open console input.");
+    await writer.write(new TextEncoder().encode(`${line}\n`));
+  }
+
   async close(): Promise<void> {
     if (this.#closePromise) return await this.#closePromise;
     this.#closePromise = this.#closeSession();
@@ -171,6 +199,32 @@ export class ArfSession {
     const pid = this.#pid;
     this.#process = undefined;
     this.#pid = undefined;
+
+    // EOF releases a browser() console read before we ask the busy R process
+    // to shut down over IPC.
+    await this.#closeStdin();
+    if (this.#evalProcesses.size > 0) {
+      try {
+        await withTimeout(
+          Promise.all([...this.#evalProcesses].map((child) => child.status)),
+          5_000,
+          "R evaluations did not finish after console EOF.",
+        );
+      } catch {
+        for (const child of this.#evalProcesses) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // The IPC evaluation may already have exited.
+          }
+        }
+        await Promise.all(
+          [...this.#evalProcesses].map((child) =>
+            child.status.catch(() => undefined)
+          ),
+        );
+      }
+    }
 
     if (process && pid !== undefined) {
       try {
@@ -354,6 +408,23 @@ export class ArfSession {
     await this.#stdoutDrain?.catch(() => undefined);
     this.#stdoutDrain = undefined;
     this.#stdoutReader = undefined;
+    await this.#closeStdin();
+  }
+
+  async #closeStdin(): Promise<void> {
+    const writer = this.#stdinWriter;
+    this.#stdinWriter = undefined;
+    if (!writer) return;
+    try {
+      await writer.close();
+    } catch {
+      // The R process may already have exited or been killed.
+    }
+    try {
+      writer.releaseLock();
+    } catch {
+      // The stream may already be closed.
+    }
   }
 
   async #removePrivateFiles(): Promise<void> {
@@ -362,7 +433,7 @@ export class ArfSession {
     this.#ipcSocket = undefined;
     this.#logFile = undefined;
     if (directory) {
-      await Deno.remove(directory, { recursive: true }).catch(() => undefined);
+      await removeCacheDirectory(directory);
     }
   }
 }

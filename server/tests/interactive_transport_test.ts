@@ -1,4 +1,6 @@
 import { assert } from "./assert.ts";
+import { ArfSession } from "./helpers/arf_session.ts";
+import { removeCacheDirectory } from "./integration_cleanup.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -63,53 +65,6 @@ class BrowserMessages {
       const remaining = deadline - performance.now();
       if (remaining <= 0) {
         throw new Error(`Timed out waiting for ${description}.`);
-      }
-      await Promise.race([
-        new Promise<void>((resolve) => this.#waiters.push(resolve)),
-        delay(remaining).then(() => undefined),
-      ]);
-    }
-  }
-}
-
-class OutputLog {
-  text = "";
-  #chunks: Array<{ start: number; end: number; time: number }> = [];
-  #waiters: Array<() => void> = [];
-
-  add(value: string): void {
-    const start = this.text.length;
-    this.text += value;
-    this.#chunks.push({
-      start,
-      end: this.text.length,
-      time: performance.now(),
-    });
-    for (const wake of this.#waiters.splice(0)) wake();
-  }
-
-  timeAt(offset: number): number {
-    const chunk = this.#chunks.find(({ start, end }) =>
-      offset >= start && offset <= end
-    );
-    return chunk?.time ?? performance.now();
-  }
-
-  async waitFor(
-    predicate: (text: string) => boolean,
-    timeoutMs: number,
-    description: string,
-  ): Promise<void> {
-    const deadline = performance.now() + timeoutMs;
-    for (;;) {
-      if (predicate(this.text)) return;
-      const remaining = deadline - performance.now();
-      if (remaining <= 0) {
-        throw new Error(
-          `Timed out waiting for ${description}. Recent R output: ${
-            this.text.slice(-1000)
-          }`,
-        );
       }
       await Promise.race([
         new Promise<void>((resolve) => this.#waiters.push(resolve)),
@@ -240,6 +195,7 @@ Deno.test({
     });
     const serverCache = `${cacheRoot}/server`;
     await Deno.mkdir(serverCache, { recursive: true });
+    const markerDirs: string[] = [];
 
     let server:
       | Awaited<ReturnType<typeof import("../main.ts").startServer>>
@@ -247,12 +203,13 @@ Deno.test({
     let proxy: Deno.Listener | undefined;
     let proxyTask: Promise<void> | undefined;
     let browser: RawWebSocket | undefined;
-    let r: Deno.ChildProcess | undefined;
-    let rWriter: WritableStreamDefaultWriter<Uint8Array> | undefined;
-    let rStdoutTask: Promise<void> | undefined;
-    let rStderrTask: Promise<void> | undefined;
+    let arf: ArfSession | undefined;
     const proxyConnections = new Set<Deno.Conn>();
     const proxyErrors: string[] = [];
+    const markerObservers: Array<{
+      controller: AbortController;
+      observation: Promise<MarkerObservation>;
+    }> = [];
 
     try {
       const { startServer } = await import("../main.ts");
@@ -310,50 +267,26 @@ Deno.test({
       env.XDG_CACHE_HOME = cacheRoot;
       env.JDV_ADDRESS = `tcp://127.0.0.1:${proxyPort}`;
       if (testLibrary) env.R_LIBS_USER = testLibrary;
-      r = new Deno.Command("R", {
-        args: ["--interactive", "--no-readline", "--vanilla", "-q"],
-        env,
-        stdin: "piped",
-        stdout: "piped",
-        stderr: "piped",
-      }).spawn();
-      rWriter = r.stdin.getWriter();
-      const output = new OutputLog();
-      rStdoutTask = (async () => {
-        const reader = r!.stdout.getReader();
-        try {
-          for (;;) {
-            const next = await reader.read();
-            if (next.done) return;
-            output.add(decoder.decode(next.value));
-          }
-        } catch {
-          // Process shutdown closes the stream.
-        }
-      })();
-      rStderrTask = (async () => {
-        const reader = r!.stderr.getReader();
-        try {
-          for (;;) {
-            const next = await reader.read();
-            if (next.done) return;
-            output.add(`\n[R stderr] ${decoder.decode(next.value)}`);
-          }
-        } catch {
-          // Process shutdown closes the stream.
-        }
-      })();
-      const sendR = async (code: string) => {
-        await rWriter!.write(encoder.encode(`${code}\n`));
-      };
-
-      await sendR(
-        `library(jdv); id <- jdv_view(data.frame(x = 1:1000), mode = "paged"); cat("TABLE_READY\\n")`,
+      arf = new ArfSession();
+      await arf.start({ env });
+      const interactive = await arf.eval("interactive()");
+      assert(
+        interactive.value?.includes("TRUE"),
+        `Arf did not start an interactive R session: ${
+          JSON.stringify(interactive)
+        }`,
       );
-      await output.waitFor(
-        (text) => hasOutputLine(text, "TABLE_READY"),
-        15_000,
-        "R table setup",
+      if (testLibrary) {
+        await arf.eval(
+          `.libPaths(c(${
+            rQuote(testLibrary)
+          }, .libPaths())); library(jdv, lib.loc = ${rQuote(testLibrary)})`,
+        );
+      } else {
+        await arf.eval("library(jdv)");
+      }
+      await arf.eval(
+        'id <- jdv_view(data.frame(x = 1:1000), mode = "paged")',
       );
       const opened = await browserMessages.waitFor(
         (message) => message.type === "view/open",
@@ -413,7 +346,28 @@ Deno.test({
 
       const sleepId = "interactive-sleep-rows";
       const sleepCommandTime = performance.now();
-      await sendR('Sys.sleep(10); cat("SLEEP_DONE\\n")');
+      const sleepMarker = await markerPath();
+      markerDirs.push(sleepMarker.directory);
+      const sleepStartedPath = `${sleepMarker.directory}/started`;
+      const sleepDonePath = `${sleepMarker.directory}/done`;
+      const sleepObserverController = new AbortController();
+      const sleepPromptObserved = observeMarker(
+        arf,
+        sleepDonePath,
+        20_000,
+        sleepObserverController.signal,
+      );
+      markerObservers.push({
+        controller: sleepObserverController,
+        observation: sleepPromptObserved,
+      });
+      const sleeping = arf.send(
+        `writeLines("SLEEP_STARTED", ${
+          rQuote(sleepStartedPath)
+        }); Sys.sleep(10); writeLines("SLEEP_DONE", ${rQuote(sleepDonePath)})`,
+        { timeoutMs: 15_000 },
+      );
+      await arf.waitForFile(sleepStartedPath);
       await delay(500);
       await sendRows(sleepId, 0);
       await frameLog.waitFor(
@@ -428,17 +382,15 @@ Deno.test({
         ),
         "The sleep request unexpectedly ran while R was inside Sys.sleep().",
       );
-      await output.waitFor(
-        (text) => hasOutputLine(text, "SLEEP_DONE"),
-        15_000,
-        "Sys.sleep return marker",
+      const sleepResult = await sleeping.wait(17_000);
+      assert(
+        sleepResult.error === null,
+        `R sleep evaluation failed: ${sleepResult.error}`,
       );
-      const sleepMarkerIndex = output.text.lastIndexOf("SLEEP_DONE");
-      const sleepMarkerAt = output.timeAt(sleepMarkerIndex);
-      const sleepPromptAt = await waitForPromptAfter(
-        output,
-        "SLEEP_DONE",
-        5_000,
+      const sleepPromptAt = await markerTime(sleepPromptObserved);
+      assert(
+        await fileExists(sleepDonePath, "SLEEP_DONE"),
+        "R did not write the sleep completion marker.",
       );
       const sleepResponse = await browserMessages.waitFor(
         response(sleepId),
@@ -452,10 +404,6 @@ Deno.test({
           sleepDelay.toFixed(0)
         } ms after the R prompt.`,
       );
-      assert(
-        sleepPromptAt >= sleepMarkerAt,
-        "The R prompt preceded the sleep marker.",
-      );
       console.log(
         `interactive regression: Sys.sleep prompt-return response in ${
           sleepDelay.toFixed(0)
@@ -464,13 +412,30 @@ Deno.test({
         } s)`,
       );
 
-      const browserEntry = output.text.length;
-      await sendR('local({ browser(); cat("BROWSER_DONE\\n") })');
-      await output.waitFor(
-        (text) => text.slice(browserEntry).includes("Browse[1]>"),
-        10_000,
-        "function-scoped browser prompt",
+      const browserMarkers = await markerPath();
+      markerDirs.push(browserMarkers.directory);
+      const browserStartedPath = `${browserMarkers.directory}/started`;
+      const browserDonePath = `${browserMarkers.directory}/done`;
+      const browserObserverController = new AbortController();
+      const browserPromptObserved = observeMarker(
+        arf,
+        browserDonePath,
+        70_000,
+        browserObserverController.signal,
       );
+      markerObservers.push({
+        controller: browserObserverController,
+        observation: browserPromptObserved,
+      });
+      const browserEvaluation = arf.send(
+        `local({ writeLines("BROWSER_STARTED", ${
+          rQuote(browserStartedPath)
+        }); browser(); writeLines("BROWSER_DONE", ${
+          rQuote(browserDonePath)
+        }) })`,
+        { timeoutMs: 60_000 },
+      );
+      await arf.waitForFile(browserStartedPath);
       const browserStartedAt = performance.now();
 
       const browserRowsId = "interactive-browser-rows";
@@ -486,6 +451,10 @@ Deno.test({
           response(browserRowsId)(message.value)
         ),
         "The browser-frame request unexpectedly ran inside the function frame.",
+      );
+      assert(
+        !(await fileExists(browserDonePath, "BROWSER_DONE")),
+        "The browser() frame returned before console continuation input.",
       );
 
       const cycles = 50;
@@ -553,16 +522,16 @@ Deno.test({
         }.`,
       );
 
-      await sendR("c");
-      await output.waitFor(
-        (text) => hasOutputLine(text, "BROWSER_DONE"),
-        5_000,
-        "browser frame return marker",
+      await arf.sendConsoleInput("c");
+      const browserResult = await browserEvaluation.wait(10_000);
+      assert(
+        browserResult.error === null,
+        `R browser evaluation failed: ${browserResult.error}`,
       );
-      const browserPromptAt = await waitForPromptAfter(
-        output,
-        "BROWSER_DONE",
-        5_000,
+      const browserPromptAt = await markerTime(browserPromptObserved);
+      assert(
+        await fileExists(browserDonePath, "BROWSER_DONE"),
+        "The browser() frame did not return after console continuation input.",
       );
       const browserRowsResponse = await browserMessages.waitFor(
         response(browserRowsId),
@@ -627,60 +596,52 @@ Deno.test({
           acks.at(-1)
         } frames; fresh response in ${freshDelay.toFixed(0)} ms`,
       );
-      await sendR('q("no")');
-      const exitStatus = await Promise.race([
-        r.status,
-        delay(5_000).then(() => null),
-      ]);
-      assert(exitStatus, "The interactive R child did not exit after q().");
-      assert(
-        exitStatus.success,
-        `Interactive R exited with code ${exitStatus.code}.`,
-      );
     } finally {
+      for (const observer of markerObservers) observer.controller.abort();
+      await Promise.all(
+        markerObservers.map((observer) => observer.observation),
+      );
       browser?.close();
-      if (rWriter) {
-        try {
-          await Promise.race([
-            rWriter.write(encoder.encode('q("no")\n')),
-            delay(500),
-          ]);
-        } catch {
-          // Process may already have exited.
-        }
-        try {
-          await rWriter.close();
-        } catch {
-          // Child teardown closes stdin.
-        }
-      }
-      if (r) {
-        try {
-          const exited = await Promise.race([
-            r.status.then(() => true),
-            delay(2_000).then(() => false),
-          ]);
-          if (!exited) r.kill("SIGKILL");
-        } catch {
-          try {
-            r.kill("SIGKILL");
-          } catch {
-            // Child may already be reaped.
-          }
-        }
-        await r.status.catch(() => undefined);
-      }
+      await arf?.close();
       for (const connection of proxyConnections) {
         closeQuietly(connection);
       }
       proxy?.close();
       await proxyTask?.catch(() => undefined);
-      await rStdoutTask?.catch(() => undefined);
-      await rStderrTask?.catch(() => undefined);
       await server?.close();
-      await Deno.remove(cacheRoot, { recursive: true }).catch(() => undefined);
+      for (const directory of markerDirs) {
+        await removeCacheDirectory(directory);
+      }
+      await removeCacheDirectory(cacheRoot);
     }
   },
+});
+
+Deno.test("ArfSession marker observer cancellation closes its watcher", async () => {
+  const directory = await Deno.makeTempDir({ prefix: "jdv-marker-cancel-" });
+  const controller = new AbortController();
+  const waiting = new ArfSession().waitForFile(
+    `${directory}/never-created`,
+    60_000,
+    controller.signal,
+  ).then(
+    () => null,
+    (error: unknown) => error,
+  );
+  try {
+    controller.abort();
+    const result = await Promise.race([
+      waiting,
+      delay(1_000).then(() => new Error("Marker wait did not cancel.")),
+    ]);
+    assert(
+      result instanceof DOMException && result.name === "AbortError",
+      `Expected marker cancellation, got ${String(result)}.`,
+    );
+  } finally {
+    controller.abort();
+    await removeCacheDirectory(directory);
+  }
 });
 
 async function forward(
@@ -765,27 +726,46 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function waitForPromptAfter(
-  output: OutputLog,
-  marker: string,
+type MarkerObservation = { time: number } | { error: unknown };
+
+function observeMarker(
+  session: ArfSession,
+  path: string,
   timeoutMs: number,
-): Promise<number> {
-  const markerIndex = output.text.lastIndexOf(marker);
-  assert(markerIndex >= 0, `Missing R output marker ${marker}.`);
-  await output.waitFor(
-    (text) => /(?:^|\n)>\s*$/.test(text.slice(markerIndex + marker.length)),
-    timeoutMs,
-    `R prompt after ${marker}`,
-  );
-  const afterMarker = output.text.slice(markerIndex + marker.length);
-  const prompt = /(?:^|\n)>\s*$/.exec(afterMarker);
-  assert(prompt, `Missing R prompt after ${marker}.`);
-  const promptCharacter = prompt[0].lastIndexOf(">");
-  return output.timeAt(
-    markerIndex + marker.length + prompt.index + promptCharacter,
+  signal: AbortSignal,
+): Promise<MarkerObservation> {
+  return session.waitForFile(path, timeoutMs, signal).then(
+    () => ({ time: performance.now() }),
+    (error: unknown) => ({ error }),
   );
 }
 
-function hasOutputLine(text: string, marker: string): boolean {
-  return text.includes(`\n${marker}\n`) || text.startsWith(`${marker}\n`);
+async function markerTime(
+  observation: Promise<MarkerObservation>,
+): Promise<number> {
+  const result = await observation;
+  if ("error" in result) throw result.error;
+  return result.time;
+}
+
+async function markerPath(): Promise<{ directory: string; path: string }> {
+  const directory = await Deno.makeTempDir({ prefix: "jdv-interactive-" });
+  return { directory, path: `${directory}/marker` };
+}
+
+function rQuote(value: string): string {
+  return `"${
+    value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')
+      .replaceAll("\n", "\\n").replaceAll("\r", "\\r")
+  }"`;
+}
+
+async function fileExists(path: string, line?: string): Promise<boolean> {
+  try {
+    const contents = await Deno.readTextFile(path);
+    return line === undefined || contents.split(/\r?\n/).includes(line);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
 }

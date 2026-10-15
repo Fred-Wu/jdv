@@ -1,5 +1,7 @@
 import { assert, assertEquals } from "./assert.ts";
+import { join } from "node:path";
 import { ArfSession } from "./helpers/arf_session.ts";
+import { removeCacheDirectory } from "./integration_cleanup.ts";
 import { type TestBrowser, TestServer } from "./helpers/test_server.ts";
 
 const testLibrary = Deno.env.get("JDV_TEST_R_LIB");
@@ -213,6 +215,7 @@ Deno.test({
   sanitizeResources: false,
   async fn() {
     const runtime = await startRuntime();
+    let screenshotDir: string | undefined;
     try {
       const { server, arf, browser, session, root } = runtime;
       assertEquals(root.kind, "tree");
@@ -561,7 +564,12 @@ Deno.test({
             "#tree-viewer:not([hidden]) li[data-child-index]",
           );
           await page.screenshot({
-            path: "/tmp/jdv-20261014-tree-root.png",
+            path: join(
+              screenshotDir ??= await Deno.makeTempDir({
+                prefix: "jdv-tree-screenshot-",
+              }),
+              "tree-root.png",
+            ),
             fullPage: true,
           });
           assertEquals(await page.locator("#tree-child-list img").count(), 0);
@@ -684,7 +692,7 @@ Deno.test({
           ).click();
           await page.waitForSelector("#viewer:not([hidden]) .tabulator-row");
           await page.screenshot({
-            path: "/tmp/jdv-20261014-tree-nested-grid.png",
+            path: join(screenshotDir, "tree-nested-grid.png"),
             fullPage: true,
           });
           await page.locator("#tree-return").click();
@@ -705,6 +713,7 @@ Deno.test({
       await runtime.browser.close();
       await runtime.arf.close();
       await runtime.server.close();
+      if (screenshotDir) await removeCacheDirectory(screenshotDir);
     }
   },
 });

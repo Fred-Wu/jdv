@@ -1,4 +1,5 @@
 import { assert, assertEquals } from "./assert.ts";
+import { dirname, join } from "node:path";
 import { ArfSession } from "./helpers/arf_session.ts";
 import { type TestBrowser, TestServer } from "./helpers/test_server.ts";
 import { querySnapshot } from "../web/jdv_query.js";
@@ -155,7 +156,7 @@ async function request(
 
 async function waitForFile(path: string, timeoutMs = 10_000): Promise<void> {
   if (await Deno.stat(path).then(() => true, () => false)) return;
-  const watcher = Deno.watchFs(path.substring(0, path.lastIndexOf("/")));
+  const watcher = Deno.watchFs(dirname(path));
   try {
     if (await Deno.stat(path).then(() => true, () => false)) return;
     const wait = async () => {
@@ -188,7 +189,7 @@ async function waitForFile(path: string, timeoutMs = 10_000): Promise<void> {
 
 async function markerPath(): Promise<{ directory: string; path: string }> {
   const directory = await Deno.makeTempDir({ prefix: "jdv-e2e-marker-" });
-  return { directory, path: `${directory}/entered` };
+  return { directory, path: join(directory, "entered") };
 }
 
 function rQuote(value: string): string {
