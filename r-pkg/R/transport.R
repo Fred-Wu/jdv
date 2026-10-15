@@ -307,6 +307,9 @@
     .jdv_transport_disconnect(epoch)
     stop("The viewer transport disconnected during setup.", call. = FALSE)
   }
+  # A new connection must not inherit close events from an offline registry.
+  # Subsequent registration queues this connection's eviction notifications.
+  .jdv_state$outbox <- list()
   .jdv_state$transport_limits <- list(
     max_receive_frames = status$max_receive_frames,
     max_receive_bytes = status$max_receive_bytes,

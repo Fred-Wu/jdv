@@ -1,222 +1,262 @@
-transport_rpc_json <- function(value) {
-  jsonlite::fromJSON(value, simplifyVector = FALSE)
-}
+local({
+  # Restore file-owned notification state even when a test fails.
+  state <- jdv:::.jdv_state
+  initial_outbox <- state$outbox
+  on.exit(state$outbox <- initial_outbox, add = TRUE)
 
-transport_rpc_call <- function(
-  method,
-  params = list(),
-  id = 1,
-  extra = list()
-) {
-  request <- c(list(id = id, method = method, params = params), extra)
-  jdv_rpc(.jdv_json_encode(request))
-}
-
-expect_transport_rpc_code <- function(response, expected) {
-  parsed <- transport_rpc_json(response)
-  expect_identical(parsed$error$code, expected)
-  invisible(parsed)
-}
-
-transport_status_summary <- function() {
-  status <- tryCatch(.jdv_transport_status(), error = identity)
-  if (inherits(status, "error")) {
-    return(conditionMessage(status))
+  transport_rpc_json <- function(value) {
+    jsonlite::fromJSON(value, simplifyVector = FALSE)
   }
-  if (is.null(status)) {
-    return("NULL")
-  }
-  paste(
-    paste0(
-      names(status),
-      "=",
-      vapply(status, function(value) paste(value, collapse = ","), character(1))
-    ),
-    collapse = " "
-  )
-}
 
-run_mock_host <- function(
-  socket_path,
-  ready_path,
-  result_path,
-  scenario,
-  request_bytes,
-  queue_messages = 256L,
-  queue_bytes = 16 * 1024^2,
-  control_path = ""
-) {
-  python <- Sys.which("python3")
-  script <- test_path("fixtures", "transport-host.py")
-  callr::r_bg(
-    function(
-      script,
-      python,
+  transport_rpc_call <- function(
+    method,
+    params = list(),
+    id = 1,
+    extra = list()
+  ) {
+    request <- c(list(id = id, method = method, params = params), extra)
+    jdv_rpc(.jdv_json_encode(request))
+  }
+
+  expect_transport_rpc_code <- function(response, expected) {
+    parsed <- transport_rpc_json(response)
+    expect_identical(parsed$error$code, expected)
+    invisible(parsed)
+  }
+
+  transport_status_summary <- function() {
+    status <- tryCatch(.jdv_transport_status(), error = identity)
+    if (inherits(status, "error")) {
+      return(conditionMessage(status))
+    }
+    if (is.null(status)) {
+      return("NULL")
+    }
+    paste(
+      paste0(
+        names(status),
+        "=",
+        vapply(
+          status,
+          function(value) paste(value, collapse = ","),
+          character(1)
+        )
+      ),
+      collapse = " "
+    )
+  }
+
+  run_mock_host <- function(
+    socket_path,
+    ready_path,
+    result_path,
+    scenario,
+    request_bytes,
+    queue_messages = 256L,
+    queue_bytes = 16 * 1024^2,
+    control_path = ""
+  ) {
+    python <- Sys.which("python3")
+    script <- test_path("fixtures", "transport-host.py")
+    callr::r_bg(
+      function(
+        script,
+        python,
+        socket_path,
+        ready_path,
+        result_path,
+        scenario,
+        request_bytes,
+        queue_messages,
+        queue_bytes,
+        control_path
+      ) {
+        output <- system2(
+          python,
+          c(
+            shQuote(script),
+            "--socket",
+            shQuote(socket_path),
+            "--ready",
+            shQuote(ready_path),
+            "--result",
+            shQuote(result_path),
+            "--scenario",
+            shQuote(scenario),
+            "--request-bytes",
+            as.character(request_bytes),
+            "--queue-messages",
+            as.character(queue_messages),
+            "--queue-bytes",
+            as.character(queue_bytes),
+            "--control",
+            shQuote(control_path)
+          ),
+          stdout = TRUE,
+          stderr = TRUE
+        )
+        if (!is.null(attr(output, "status")) && attr(output, "status") != 0) {
+          stop(paste(output, collapse = "\n"))
+        }
+      },
+      args = list(
+        script = script,
+        python = python,
+        socket_path = socket_path,
+        ready_path = ready_path,
+        result_path = result_path,
+        scenario = scenario,
+        request_bytes = request_bytes,
+        queue_messages = queue_messages,
+        queue_bytes = queue_bytes,
+        control_path = control_path
+      ),
+      supervise = TRUE
+    )
+  }
+
+  run_tcp_unload_host <- function(ready_path, connected_path, eof_path) {
+    python <- Sys.which("python3")
+    script <- test_path("fixtures", "transport-tcp-unload-host.py")
+    callr::r_bg(
+      function(script, python, ready_path, connected_path, eof_path) {
+        output <- system2(
+          python,
+          c(
+            shQuote(script),
+            shQuote(ready_path),
+            shQuote(connected_path),
+            shQuote(eof_path)
+          ),
+          stdout = TRUE,
+          stderr = TRUE
+        )
+        if (!is.null(attr(output, "status")) && attr(output, "status") != 0) {
+          stop(paste(output, collapse = "\n"))
+        }
+      },
+      args = list(
+        script = script,
+        python = python,
+        ready_path = ready_path,
+        connected_path = connected_path,
+        eof_path = eof_path
+      ),
+      supervise = TRUE
+    )
+  }
+
+  wait_for_file <- function(path, timeout = 10) {
+    deadline <- Sys.time() + timeout
+    while (!file.exists(path) && Sys.time() < deadline) {
+      Sys.sleep(0.01)
+    }
+    file.exists(path)
+  }
+
+  wait_for_file_without_events <- function(path, timeout = 10) {
+    deadline <- Sys.time() + timeout
+    while (!file.exists(path) && Sys.time() < deadline) {
+      invisible(NULL)
+    }
+    file.exists(path)
+  }
+
+  with_mock_transport <- function(
+    scenario,
+    x,
+    request_bytes = 1024^2,
+    before_poll = NULL,
+    mode = "paged",
+    queue_messages = 256L,
+    queue_bytes = 16 * 1024^2
+  ) {
+    skip_on_os("windows")
+    skip_if_not_installed("callr")
+    python <- Sys.which("python3")
+    skip_if(!nzchar(python), "python3 is required for the local mock host")
+
+    socket_path <- tempfile("jdv-transport-")
+    ready_path <- tempfile("jdv-transport-ready-")
+    result_path <- tempfile("jdv-transport-result-")
+    host <- run_mock_host(
       socket_path,
       ready_path,
       result_path,
       scenario,
       request_bytes,
       queue_messages,
-      queue_bytes,
-      control_path
-    ) {
-      output <- system2(
-        python,
-        c(
-          shQuote(script),
-          "--socket",
-          shQuote(socket_path),
-          "--ready",
-          shQuote(ready_path),
-          "--result",
-          shQuote(result_path),
-          "--scenario",
-          shQuote(scenario),
-          "--request-bytes",
-          as.character(request_bytes),
-          "--queue-messages",
-          as.character(queue_messages),
-          "--queue-bytes",
-          as.character(queue_bytes),
-          "--control",
-          shQuote(control_path)
-        ),
-        stdout = TRUE,
-        stderr = TRUE
-      )
-      if (!is.null(attr(output, "status")) && attr(output, "status") != 0) {
-        stop(paste(output, collapse = "\n"))
+      queue_bytes
+    )
+    old_transport_options <- options(c(
+      "jdv.transport.queue_messages",
+      "jdv.transport.queue_bytes"
+    ))
+    old_address <- getOption("jdv.address")
+    options(
+      jdv.address = socket_path,
+      jdv.transport.queue_messages = queue_messages,
+      jdv.transport.queue_bytes = queue_bytes
+    )
+    on.exit(
+      {
+        try(jdv_close(), silent = TRUE)
+        options(c(old_transport_options, list(jdv.address = old_address)))
+        if (host$is_alive()) {
+          host$kill()
+        }
+        try(host$wait(), silent = TRUE)
+        unlink(c(
+          socket_path,
+          ready_path,
+          result_path,
+          paste0(result_path, ".closed")
+        ))
+      },
+      add = TRUE
+    )
+
+    expect_true(wait_for_file(ready_path))
+    id <- tryCatch(
+      jdv_view(x, mode = mode),
+      error = function(error) {
+        output <- tryCatch(
+          host$read_all_output(),
+          error = function(e) character()
+        )
+        stop(
+          paste(
+            conditionMessage(error),
+            "Transport status:",
+            transport_status_summary(),
+            "Host alive:",
+            host$is_alive(),
+            "Host output:",
+            paste(output, collapse = "\n"),
+            sep = "\n"
+          ),
+          call. = FALSE
+        )
       }
-    },
-    args = list(
-      script = script,
-      python = python,
-      socket_path = socket_path,
-      ready_path = ready_path,
-      result_path = result_path,
-      scenario = scenario,
-      request_bytes = request_bytes,
-      queue_messages = queue_messages,
-      queue_bytes = queue_bytes,
-      control_path = control_path
-    ),
-    supervise = TRUE
-  )
-}
-
-run_tcp_unload_host <- function(ready_path, connected_path, eof_path) {
-  python <- Sys.which("python3")
-  script <- test_path("fixtures", "transport-tcp-unload-host.py")
-  callr::r_bg(
-    function(script, python, ready_path, connected_path, eof_path) {
-      output <- system2(
-        python,
-        c(
-          shQuote(script),
-          shQuote(ready_path),
-          shQuote(connected_path),
-          shQuote(eof_path)
-        ),
-        stdout = TRUE,
-        stderr = TRUE
-      )
-      if (!is.null(attr(output, "status")) && attr(output, "status") != 0) {
-        stop(paste(output, collapse = "\n"))
-      }
-    },
-    args = list(
-      script = script,
-      python = python,
-      ready_path = ready_path,
-      connected_path = connected_path,
-      eof_path = eof_path
-    ),
-    supervise = TRUE
-  )
-}
-
-wait_for_file <- function(path, timeout = 10) {
-  deadline <- Sys.time() + timeout
-  while (!file.exists(path) && Sys.time() < deadline) {
-    Sys.sleep(0.01)
-  }
-  file.exists(path)
-}
-
-wait_for_file_without_events <- function(path, timeout = 10) {
-  deadline <- Sys.time() + timeout
-  while (!file.exists(path) && Sys.time() < deadline) {
-    invisible(NULL)
-  }
-  file.exists(path)
-}
-
-with_mock_transport <- function(
-  scenario,
-  x,
-  request_bytes = 1024^2,
-  before_poll = NULL,
-  mode = "paged",
-  queue_messages = 256L,
-  queue_bytes = 16 * 1024^2
-) {
-  skip_on_os("windows")
-  skip_if_not_installed("callr")
-  python <- Sys.which("python3")
-  skip_if(!nzchar(python), "python3 is required for the local mock host")
-
-  socket_path <- tempfile("jdv-transport-")
-  ready_path <- tempfile("jdv-transport-ready-")
-  result_path <- tempfile("jdv-transport-result-")
-  host <- run_mock_host(
-    socket_path,
-    ready_path,
-    result_path,
-    scenario,
-    request_bytes,
-    queue_messages,
-    queue_bytes
-  )
-  old_transport_options <- options(c(
-    "jdv.transport.queue_messages",
-    "jdv.transport.queue_bytes"
-  ))
-  old_address <- getOption("jdv.address")
-  options(
-    jdv.address = socket_path,
-    jdv.transport.queue_messages = queue_messages,
-    jdv.transport.queue_bytes = queue_bytes
-  )
-  on.exit(
-    {
-      try(jdv_close(), silent = TRUE)
-      options(c(old_transport_options, list(jdv.address = old_address)))
-      if (host$is_alive()) {
-        host$kill()
-      }
-      try(host$wait(), silent = TRUE)
-      unlink(c(
-        socket_path,
-        ready_path,
-        result_path,
-        paste0(result_path, ".closed")
-      ))
-    },
-    add = TRUE
-  )
-
-  expect_true(wait_for_file(ready_path))
-  id <- tryCatch(
-    jdv_view(x, mode = mode),
-    error = function(error) {
+    )
+    expect_type(id, "character")
+    if (!is.null(before_poll)) {
+      before_poll()
+    }
+    deadline <- Sys.time() + 10
+    while (!file.exists(result_path) && Sys.time() < deadline) {
+      jdv_rpc(NULL)
+      Sys.sleep(0.01)
+    }
+    expect_true(file.exists(result_path))
+    if (!file.exists(result_path)) {
       output <- tryCatch(
         host$read_all_output(),
         error = function(e) character()
       )
       stop(
         paste(
-          conditionMessage(error),
+          "Mock host did not write its result.",
           "Transport status:",
           transport_status_summary(),
           "Host alive:",
@@ -228,947 +268,1105 @@ with_mock_transport <- function(
         call. = FALSE
       )
     }
-  )
-  expect_type(id, "character")
-  if (!is.null(before_poll)) {
-    before_poll()
-  }
-  deadline <- Sys.time() + 10
-  while (!file.exists(result_path) && Sys.time() < deadline) {
-    jdv_rpc(NULL)
-    Sys.sleep(0.01)
-  }
-  expect_true(file.exists(result_path))
-  if (!file.exists(result_path)) {
-    output <- tryCatch(host$read_all_output(), error = function(e) character())
-    stop(
-      paste(
-        "Mock host did not write its result.",
-        "Transport status:",
-        transport_status_summary(),
-        "Host alive:",
-        host$is_alive(),
-        "Host output:",
-        paste(output, collapse = "\n"),
-        sep = "\n"
-      ),
-      call. = FALSE
-    )
-  }
-  received <- jsonlite::fromJSON(result_path, simplifyVector = FALSE)
-  received$debug_transport_status <- transport_status_summary()
-  expect_identical(received$hello$method, "hello")
-  expect_identical(received$open$method, "view/open")
-  expect_identical(received$open$params$view, id)
-  expect_identical(received$open$params$title, "x")
-  expect_setequal(
-    names(received$hello$params$limits),
-    c(
-      "max_receive_frames",
-      "max_receive_bytes",
-      "queue_messages",
-      "queue_bytes",
-      "max_request_bytes"
-    )
-  )
-  expect_gt(received$hello$params$limits$max_receive_frames, 0)
-  expect_gt(received$hello$params$limits$max_receive_bytes, 0)
-  expect_equal(
-    received$hello$params$limits$queue_messages,
-    as.numeric(queue_messages)
-  )
-  expect_equal(
-    received$hello$params$limits$queue_bytes,
-    as.numeric(queue_bytes)
-  )
-  expect_equal(
-    received$hello$params$limits$max_receive_frames,
-    as.numeric(
-      queue_messages + getOption("jdv.transport.max_drain_requests", 8)
-    )
-  )
-  expect_equal(
-    received$hello$params$limits$max_request_bytes,
-    as.numeric(.jdv_max_request_bytes())
-  )
-  expect_equal(
-    received$hello$params$limits$max_receive_bytes,
-    as.numeric(max(64 * 1024, .jdv_max_request_bytes() + 1))
-  )
-  if (scenario == "typed-id" && !length(received$responses)) {
-    expect_true(FALSE, info = received$debug_transport_status)
-  }
-  if (scenario %in% c("queue-overflow-count", "queue-overflow-bytes")) {
-    expect_length(
-      received$responses,
-      length(received$queue_accepted_ids) + length(received$queue_rejected_ids)
-    )
-  } else if (scenario != "duplicate-id") {
-    expect_length(
-      received$responses,
-      if (scenario %in% c("large-snapshot", "disconnect")) {
-        0L
-      } else if (
-        scenario %in%
-          c(
-            "invalid-encoding-cancel",
-            "invalid-compression-cancel",
-            "invalid-deadline-cancel",
-            "malformed-deadline-cancel",
-            "expired-cancel",
-            "ack-controls"
-          )
-      ) {
-        if (
-          scenario %in%
-            c("invalid-deadline-cancel", "malformed-deadline-cancel")
-        ) {
-          3L
-        } else {
-          2L
-        }
-      } else if (scenario %in% c("cancel", "expired")) {
-        2L
-      } else if (scenario == "cancel-id-reuse") {
-        3L
-      } else if (scenario == "invalid-cancel") {
-        2L
-      } else {
-        1L
-      }
-    )
-  }
-  expected_ids <- if (
-    scenario %in% c("invalid-deadline-cancel", "malformed-deadline-cancel")
-  ) {
-    list(NULL, "protected", "followup")
-  } else if (
-    scenario %in%
+    received <- jsonlite::fromJSON(result_path, simplifyVector = FALSE)
+    received$debug_transport_status <- transport_status_summary()
+    expect_identical(received$hello$method, "hello")
+    expect_identical(received$open$method, "view/open")
+    expect_identical(received$open$params$view, id)
+    expect_identical(received$open$params$title, "x")
+    expect_setequal(
+      names(received$hello$params$limits),
       c(
-        "invalid-encoding-cancel",
-        "invalid-compression-cancel",
-        "expired-cancel"
+        "max_receive_frames",
+        "max_receive_bytes",
+        "queue_messages",
+        "queue_bytes",
+        "max_request_bytes"
       )
-  ) {
-    list("protected", "followup")
-  } else if (scenario == "invalid-cancel") {
-    list(NULL, "must-survive")
-  } else if (scenario == "cancel") {
-    list("cancel-me", "followup")
-  } else if (scenario == "expired") {
-    list("expire-me", "followup")
-  } else if (scenario == "ack-controls") {
-    list(NULL, "ack-cancel")
-  } else if (scenario %in% c("stale-generation", "missing-table")) {
-    list(scenario)
-  } else if (scenario == "cancel-id-reuse") {
-    list("reused", "reused", "followup")
-  } else {
-    list(
-      if (scenario == "maximum-frame") {
-        "maximum-frame"
-      } else if (scenario == "numeric-id") {
-        1e15
-      } else if (scenario == "typed-id") {
-        1L
-      } else if (scenario == "invalid-control") {
-        "invalid-control"
-      } else if (scenario == "empty-registry-close") {
-        "close-table"
-      } else {
-        "mock-rows-1"
+    )
+    expect_gt(received$hello$params$limits$max_receive_frames, 0)
+    expect_gt(received$hello$params$limits$max_receive_bytes, 0)
+    expect_equal(
+      received$hello$params$limits$queue_messages,
+      as.numeric(queue_messages)
+    )
+    expect_equal(
+      received$hello$params$limits$queue_bytes,
+      as.numeric(queue_bytes)
+    )
+    expect_equal(
+      received$hello$params$limits$max_receive_frames,
+      as.numeric(
+        queue_messages + getOption("jdv.transport.max_drain_requests", 8)
+      )
+    )
+    expect_equal(
+      received$hello$params$limits$max_request_bytes,
+      as.numeric(.jdv_max_request_bytes())
+    )
+    expect_equal(
+      received$hello$params$limits$max_receive_bytes,
+      as.numeric(max(64 * 1024, .jdv_max_request_bytes() + 1))
+    )
+    if (scenario == "typed-id" && !length(received$responses)) {
+      expect_true(FALSE, info = received$debug_transport_status)
+    }
+    if (scenario %in% c("queue-overflow-count", "queue-overflow-bytes")) {
+      expect_length(
+        received$responses,
+        length(received$queue_accepted_ids) +
+          length(received$queue_rejected_ids)
+      )
+    } else if (scenario != "duplicate-id") {
+      expect_length(
+        received$responses,
+        if (scenario %in% c("large-snapshot", "disconnect")) {
+          0L
+        } else if (
+          scenario %in%
+            c(
+              "invalid-encoding-cancel",
+              "invalid-compression-cancel",
+              "invalid-deadline-cancel",
+              "malformed-deadline-cancel",
+              "expired-cancel",
+              "ack-controls"
+            )
+        ) {
+          if (
+            scenario %in%
+              c("invalid-deadline-cancel", "malformed-deadline-cancel")
+          ) {
+            3L
+          } else {
+            2L
+          }
+        } else if (scenario %in% c("cancel", "expired")) {
+          2L
+        } else if (scenario == "cancel-id-reuse") {
+          3L
+        } else if (scenario == "invalid-cancel") {
+          2L
+        } else {
+          1L
+        }
+      )
+    }
+    expected_ids <- if (
+      scenario %in% c("invalid-deadline-cancel", "malformed-deadline-cancel")
+    ) {
+      list(NULL, "protected", "followup")
+    } else if (
+      scenario %in%
+        c(
+          "invalid-encoding-cancel",
+          "invalid-compression-cancel",
+          "expired-cancel"
+        )
+    ) {
+      list("protected", "followup")
+    } else if (scenario == "invalid-cancel") {
+      list(NULL, "must-survive")
+    } else if (scenario == "cancel") {
+      list("cancel-me", "followup")
+    } else if (scenario == "expired") {
+      list("expire-me", "followup")
+    } else if (scenario == "ack-controls") {
+      list(NULL, "ack-cancel")
+    } else if (scenario %in% c("stale-generation", "missing-table")) {
+      list(scenario)
+    } else if (scenario == "cancel-id-reuse") {
+      list("reused", "reused", "followup")
+    } else {
+      list(
+        if (scenario == "maximum-frame") {
+          "maximum-frame"
+        } else if (scenario == "numeric-id") {
+          1e15
+        } else if (scenario == "typed-id") {
+          1L
+        } else if (scenario == "invalid-control") {
+          "invalid-control"
+        } else if (scenario == "empty-registry-close") {
+          "close-table"
+        } else {
+          "mock-rows-1"
+        }
+      )
+    }
+    if (scenario %in% c("queue-overflow-count", "queue-overflow-bytes")) {
+      expected_ids <- c(
+        received$queue_rejected_ids,
+        received$queue_accepted_ids
+      )
+      expect_identical(lapply(received$responses, `[[`, "id"), expected_ids)
+    } else if (
+      !scenario %in% c("large-snapshot", "disconnect", "duplicate-id")
+    ) {
+      expect_identical(lapply(received$responses, `[[`, "id"), expected_ids)
+    }
+    if (scenario == "ack-controls") {
+      ack_frames <- vapply(
+        received$acks,
+        function(message) message$params$frames,
+        numeric(1L)
+      )
+      expect_true(length(ack_frames) >= 1L)
+      expect_identical(ack_frames, sort(unique(ack_frames)))
+      expect_identical(tail(ack_frames, 1L), 4)
+      expect_identical(received$responses[[1L]]$error$code, "invalid_request")
+      expect_identical(received$responses[[2L]]$error$code, "cancelled")
+    }
+    if (scenario %in% c("stale-generation", "missing-table")) {
+      expect_identical(
+        received$responses[[1L]]$error$code,
+        if (scenario == "stale-generation") {
+          "stale_generation"
+        } else {
+          "view_not_found"
+        }
+      )
+    }
+    if (scenario == "fragmented") {
+      expect_identical(
+        received$responses[[1]]$result$data$row_index,
+        list(1L, 2L)
+      )
+    }
+
+    if (scenario %in% c("disconnect", "duplicate-id")) {
+      if (scenario == "duplicate-id") {
+        expect_true(received$disconnected)
+        expect_true(length(received$responses) <= 1L)
+        if (length(received$responses)) {
+          expect_identical(
+            received$responses[[1]]$error$code,
+            "invalid_request"
+          )
+        }
       }
-    )
-  }
-  if (scenario %in% c("queue-overflow-count", "queue-overflow-bytes")) {
-    expected_ids <- c(received$queue_rejected_ids, received$queue_accepted_ids)
-    expect_identical(lapply(received$responses, `[[`, "id"), expected_ids)
-  } else if (!scenario %in% c("large-snapshot", "disconnect", "duplicate-id")) {
-    expect_identical(lapply(received$responses, `[[`, "id"), expected_ids)
-  }
-  if (scenario == "ack-controls") {
-    ack_frames <- vapply(
-      received$acks,
-      function(message) message$params$frames,
-      numeric(1L)
-    )
-    expect_true(length(ack_frames) >= 1L)
-    expect_identical(ack_frames, sort(unique(ack_frames)))
-    expect_identical(tail(ack_frames, 1L), 4)
-    expect_identical(received$responses[[1L]]$error$code, "invalid_request")
-    expect_identical(received$responses[[2L]]$error$code, "cancelled")
-  }
-  if (scenario %in% c("stale-generation", "missing-table")) {
-    expect_identical(
-      received$responses[[1L]]$error$code,
-      if (scenario == "stale-generation") {
-        "stale_generation"
-      } else {
-        "view_not_found"
+      cleanup_deadline <- Sys.time() + 5
+      while (
+        (!is.null(.jdv_transport_status()) ||
+          length(ls(.jdv_state$entries, all.names = TRUE)) > 0L) &&
+          Sys.time() < cleanup_deadline
+      ) {
+        jdv_rpc(NULL)
+        Sys.sleep(0.01)
       }
+      expect_length(ls(.jdv_state$entries, all.names = TRUE), 0L)
+      expect_null(.jdv_transport_status())
+      return(invisible(received))
+    }
+
+    if (scenario == "empty-registry-close") {
+      expect_length(ls(.jdv_state$entries, all.names = TRUE), 0L)
+      expect_identical(jdv_close(), character())
+      expect_true(wait_for_file(paste0(result_path, ".closed"), timeout = 5))
+      expect_null(jsonlite::fromJSON(
+        paste0(result_path, ".closed"),
+        simplifyVector = FALSE
+      ))
+      expect_null(.jdv_transport_status())
+      return(invisible(received))
+    }
+
+    expect_identical(jdv_close(id), id)
+    expect_true(wait_for_file(paste0(result_path, ".closed"), timeout = 5))
+    closed <- jsonlite::fromJSON(
+      paste0(result_path, ".closed"),
+      simplifyVector = FALSE
     )
+    expect_identical(closed$method, "view/closed")
+    expect_identical(closed$params$view, id)
+    expect_identical(.jdv_transport_status(), NULL)
+    invisible(received)
   }
-  if (scenario == "fragmented") {
+
+  test_that("the local viewer sends hello/open, serves rows, and closes", {
+    received <- with_mock_transport("fragmented", data.frame(value = 11:13))
     expect_identical(
       received$responses[[1]]$result$data$row_index,
       list(1L, 2L)
     )
-  }
+  })
 
-  if (scenario %in% c("disconnect", "duplicate-id")) {
-    if (scenario == "duplicate-id") {
-      expect_true(received$disconnected)
-      expect_true(length(received$responses) <= 1L)
-      if (length(received$responses)) {
-        expect_identical(received$responses[[1]]$error$code, "invalid_request")
-      }
-    }
-    cleanup_deadline <- Sys.time() + 5
-    while (
-      (!is.null(.jdv_transport_status()) ||
-        length(ls(.jdv_state$entries, all.names = TRUE)) > 0L) &&
-        Sys.time() < cleanup_deadline
-    ) {
-      jdv_rpc(NULL)
-      Sys.sleep(0.01)
-    }
-    expect_length(ls(.jdv_state$entries, all.names = TRUE), 0L)
-    expect_null(.jdv_transport_status())
-    return(invisible(received))
-  }
-
-  if (scenario == "empty-registry-close") {
-    expect_length(ls(.jdv_state$entries, all.names = TRUE), 0L)
-    expect_identical(jdv_close(), character())
-    expect_true(wait_for_file(paste0(result_path, ".closed"), timeout = 5))
-    expect_null(jsonlite::fromJSON(
-      paste0(result_path, ".closed"),
-      simplifyVector = FALSE
-    ))
-    expect_null(.jdv_transport_status())
-    return(invisible(received))
-  }
-
-  expect_identical(jdv_close(id), id)
-  expect_true(wait_for_file(paste0(result_path, ".closed"), timeout = 5))
-  closed <- jsonlite::fromJSON(
-    paste0(result_path, ".closed"),
-    simplifyVector = FALSE
-  )
-  expect_identical(closed$method, "view/closed")
-  expect_identical(closed$params$view, id)
-  expect_identical(.jdv_transport_status(), NULL)
-  invisible(received)
-}
-
-test_that("the local viewer sends hello/open, serves rows, and closes", {
-  received <- with_mock_transport("fragmented", data.frame(value = 11:13))
-  expect_identical(received$responses[[1]]$result$data$row_index, list(1L, 2L))
-})
-
-test_that("the largest allowed request frame can arrive in one write", {
-  with_mock_transport(
-    "maximum-frame",
-    data.frame(value = 11:13),
-    request_bytes = .jdv_max_request_bytes()
-  )
-})
-
-test_that("full request queues reject only new work and stay connected", {
-  exercise_overflow <- function(scenario, queue_messages, queue_bytes) {
-    queued_during_busy <- NULL
-    received <- with_mock_transport(
-      scenario,
+  test_that("the largest allowed request frame can arrive in one write", {
+    with_mock_transport(
+      "maximum-frame",
       data.frame(value = 11:13),
-      before_poll = function() {
-        Sys.sleep(0.4)
-        queued_during_busy <<- .jdv_transport_status()
-      },
-      queue_messages = queue_messages,
-      queue_bytes = queue_bytes
+      request_bytes = .jdv_max_request_bytes()
     )
-    expect_identical(
-      queued_during_busy$queued_messages,
-      as.double(length(received$queue_accepted_ids))
-    )
-    expect_true(queued_during_busy$connected)
-    expect_lte(queued_during_busy$queued_bytes, queue_bytes)
-    expect_identical(
-      queued_during_busy$queued_bytes,
-      as.double(sum(unlist(received$queue_frame_bytes[
-        seq_along(received$queue_accepted_ids)
-      ])))
-    )
-    expect_gt(length(received$queue_rejected_ids), 0L)
-    rejected_count <- length(received$queue_rejected_ids)
-    for (index in seq_len(rejected_count)) {
-      expect_identical(
-        received$responses[[index]]$id,
-        received$queue_rejected_ids[[index]]
+  })
+
+  test_that("full request queues reject only new work and stay connected", {
+    exercise_overflow <- function(scenario, queue_messages, queue_bytes) {
+      queued_during_busy <- NULL
+      received <- with_mock_transport(
+        scenario,
+        data.frame(value = 11:13),
+        before_poll = function() {
+          Sys.sleep(0.4)
+          queued_during_busy <<- .jdv_transport_status()
+        },
+        queue_messages = queue_messages,
+        queue_bytes = queue_bytes
       )
-      expect_identical(received$responses[[index]]$error$code, "limit_exceeded")
-    }
-    for (index in seq_along(received$queue_accepted_ids)) {
-      response <- received$responses[[rejected_count + index]]
-      expect_identical(response$id, received$queue_accepted_ids[[index]])
-      expect_false("error" %in% names(response))
-      expect_identical(response$result$generation, 1L)
-    }
-  }
-
-  exercise_overflow(
-    "queue-overflow-count",
-    queue_messages = 2L,
-    queue_bytes = 4096L
-  )
-  exercise_overflow(
-    "queue-overflow-bytes",
-    queue_messages = 10L,
-    queue_bytes = 1100L
-  )
-})
-
-test_that("host EOF closes every registry entry", {
-  with_mock_transport("disconnect", data.frame(value = 11:13))
-})
-
-test_that("a new viewer API call detects EOF and reconnects without waiting", {
-  skip_on_os("windows")
-  skip_if_not_installed("callr")
-  python <- Sys.which("python3")
-  skip_if(!nzchar(python), "python3 is required for the local mock host")
-
-  old_socket <- tempfile("jdv-reconnect-old-")
-  old_ready <- tempfile("jdv-reconnect-old-ready-")
-  old_result <- tempfile("jdv-reconnect-old-result-")
-  close_command <- tempfile("jdv-reconnect-close-command-")
-  new_socket <- tempfile("jdv-reconnect-new-")
-  new_ready <- tempfile("jdv-reconnect-new-ready-")
-  new_result <- tempfile("jdv-reconnect-new-result-")
-  old_host <- run_mock_host(
-    old_socket,
-    old_ready,
-    old_result,
-    "close-on-command",
-    1024^2,
-    control_path = close_command
-  )
-  new_host <- NULL
-  old_options <- options(c(
-    "jdv.address",
-    "jdv.transport.queue_messages",
-    "jdv.transport.queue_bytes"
-  ))
-  on.exit(
-    {
-      try(jdv_close(), silent = TRUE)
-      options(old_options)
-      for (host in list(old_host, new_host)) {
-        if (!is.null(host)) {
-          if (host$is_alive()) {
-            host$kill()
-          }
-          try(host$wait(), silent = TRUE)
-        }
+      expect_identical(
+        queued_during_busy$queued_messages,
+        as.double(length(received$queue_accepted_ids))
+      )
+      expect_true(queued_during_busy$connected)
+      expect_lte(queued_during_busy$queued_bytes, queue_bytes)
+      expect_identical(
+        queued_during_busy$queued_bytes,
+        as.double(sum(unlist(received$queue_frame_bytes[
+          seq_along(received$queue_accepted_ids)
+        ])))
+      )
+      expect_gt(length(received$queue_rejected_ids), 0L)
+      rejected_count <- length(received$queue_rejected_ids)
+      for (index in seq_len(rejected_count)) {
+        expect_identical(
+          received$responses[[index]]$id,
+          received$queue_rejected_ids[[index]]
+        )
+        expect_identical(
+          received$responses[[index]]$error$code,
+          "limit_exceeded"
+        )
       }
-      unlink(c(
+      for (index in seq_along(received$queue_accepted_ids)) {
+        response <- received$responses[[rejected_count + index]]
+        expect_identical(response$id, received$queue_accepted_ids[[index]])
+        expect_false("error" %in% names(response))
+        expect_identical(response$result$generation, 1L)
+      }
+    }
+
+    exercise_overflow(
+      "queue-overflow-count",
+      queue_messages = 2L,
+      queue_bytes = 4096L
+    )
+    exercise_overflow(
+      "queue-overflow-bytes",
+      queue_messages = 10L,
+      queue_bytes = 1100L
+    )
+  })
+
+  test_that("host EOF closes every registry entry", {
+    with_mock_transport("disconnect", data.frame(value = 11:13))
+  })
+
+  test_that(
+    "a new viewer API call detects EOF and reconnects without waiting",
+    {
+      skip_on_os("windows")
+      skip_if_not_installed("callr")
+      python <- Sys.which("python3")
+      skip_if(!nzchar(python), "python3 is required for the local mock host")
+
+      old_socket <- tempfile("jdv-reconnect-old-")
+      old_ready <- tempfile("jdv-reconnect-old-ready-")
+      old_result <- tempfile("jdv-reconnect-old-result-")
+      close_command <- tempfile("jdv-reconnect-close-command-")
+      new_socket <- tempfile("jdv-reconnect-new-")
+      new_ready <- tempfile("jdv-reconnect-new-ready-")
+      new_result <- tempfile("jdv-reconnect-new-result-")
+      old_host <- run_mock_host(
         old_socket,
         old_ready,
         old_result,
-        paste0(old_result, ".closed"),
-        close_command,
+        "close-on-command",
+        1024^2,
+        control_path = close_command
+      )
+      new_host <- NULL
+      old_options <- options(c(
+        "jdv.address",
+        "jdv.transport.queue_messages",
+        "jdv.transport.queue_bytes"
+      ))
+      on.exit(
+        {
+          try(jdv_close(), silent = TRUE)
+          options(old_options)
+          for (host in list(old_host, new_host)) {
+            if (!is.null(host)) {
+              if (host$is_alive()) {
+                host$kill()
+              }
+              try(host$wait(), silent = TRUE)
+            }
+          }
+          unlink(c(
+            old_socket,
+            old_ready,
+            old_result,
+            paste0(old_result, ".closed"),
+            close_command,
+            new_socket,
+            new_ready,
+            new_result,
+            paste0(new_result, ".sent")
+          ))
+        },
+        add = TRUE
+      )
+
+      options(jdv.address = old_socket)
+      expect_true(wait_for_file(old_ready))
+      counter_before <- .jdv_state$session_counter
+      shared_id <- jdv_register(
+        data.frame(value = 99),
+        title = "registered-only",
+        mode = "paged"
+      )$id
+      old_id <- jdv_view(
+        data.frame(value = 11:13),
+        title = "reconnect",
+        mode = "paged"
+      )
+      expect_true(wait_for_file(old_result))
+      old_record <- jsonlite::fromJSON(old_result, simplifyVector = FALSE)
+      expect_identical(old_record$open$params$generation, 1L)
+
+      new_host <- run_mock_host(
         new_socket,
         new_ready,
         new_result,
-        paste0(new_result, ".sent")
-      ))
-    },
-    add = TRUE
-  )
-
-  options(jdv.address = old_socket)
-  expect_true(wait_for_file(old_ready))
-  counter_before <- .jdv_state$session_counter
-  shared_id <- jdv_register(
-    data.frame(value = 99),
-    title = "registered-only",
-    mode = "paged"
-  )$id
-  old_id <- jdv_view(
-    data.frame(value = 11:13),
-    title = "reconnect",
-    mode = "paged"
-  )
-  expect_true(wait_for_file(old_result))
-  old_record <- jsonlite::fromJSON(old_result, simplifyVector = FALSE)
-  expect_identical(old_record$open$params$generation, 1L)
-
-  new_host <- run_mock_host(
-    new_socket,
-    new_ready,
-    new_result,
-    "preflight-frame",
-    1024^2
-  )
-  expect_true(wait_for_file(new_ready))
-  observed <- local({
-    file.create(close_command)
-    expect_true(wait_for_file_without_events(paste0(old_result, ".closed")))
-    options(jdv.address = new_socket)
-    new_id <- jdv_view(
-      data.frame(value = 21:23),
-      title = "reconnect",
-      mode = "paged"
-    )
-    expect_false(identical(new_id, old_id))
-    entries <- ls(.jdv_state$entries, all.names = TRUE)
-    expect_false(old_id %in% entries)
-    expect_false(shared_id %in% entries)
-    expect_identical(entries, new_id)
-    expect_gt(sys.nframe(), 0L)
-    expect_true(wait_for_file_without_events(paste0(new_result, ".sent")))
-    third_id <- jdv_view(
-      data.frame(value = 31:33),
-      title = "preflight",
-      mode = "paged"
-    )
-    queued <- .jdv_transport_status()
-    expect_false(file.exists(new_result))
-    jdv_rpc(NULL)
-    list(third_id = third_id, queued = queued)
-  })
-  expect_identical(observed$queued$queued_messages, 1)
-  expect_type(observed$third_id, "character")
-  expect_identical(.jdv_state$session_counter, counter_before + 2L)
-  expect_false(exists(old_id, envir = .jdv_state$entries, inherits = FALSE))
-
-  expect_true(wait_for_file(new_result))
-  new_record <- jsonlite::fromJSON(new_result, simplifyVector = FALSE)
-  expect_identical(
-    new_record$hello$params$session,
-    paste0("r-", Sys.getpid(), "-", counter_before + 2L)
-  )
-  expect_identical(new_record$open$params$generation, 1L)
-  expect_identical(new_record$response$id, "preflight-schema-1")
-  expect_false("error" %in% names(new_record$response))
-})
-
-test_that("a finalizer cannot unload an active transport callback", {
-  skip_on_os("windows")
-  skip_if_not_installed("callr")
-  skip_if(
-    !file.exists(file.path(find.package("jdv"), "Meta", "package.rds")),
-    "Active unload requires an installed package"
-  )
-  python <- Sys.which("python3")
-  skip_if(!nzchar(python), "python3 is required for the local mock host")
-  socket_path <- tempfile("jdv-active-unload-")
-  ready_path <- tempfile("jdv-active-unload-ready-")
-  result_path <- tempfile("jdv-active-unload-result-")
-  host <- run_mock_host(
-    socket_path,
-    ready_path,
-    result_path,
-    "active-unload",
-    1024^2
-  )
-  on.exit(
-    {
-      if (host$is_alive()) {
-        host$kill()
-      }
-      try(host$wait(), silent = TRUE)
-      unlink(c(socket_path, ready_path, result_path))
-    },
-    add = TRUE
-  )
-  expect_true(wait_for_file(ready_path))
-
-  child <- callr::r(
-    function(libpath, address, result_path) {
-      .libPaths(libpath)
-      suppressPackageStartupMessages(loadNamespace("jdv"))
-      old_namespace <- asNamespace("jdv")
-      poll <- get("jdv_rpc", envir = old_namespace)
-      assign("jdv_old_namespace", old_namespace, envir = .GlobalEnv)
-      assign("jdv_unload_armed", FALSE, envir = .GlobalEnv)
-      assign("jdv_unload_reload_error", NULL, envir = .GlobalEnv)
-      assign("jdv_unload_method_calls", 0L, envir = .GlobalEnv)
-      assign("jdv_unload_attempts", 0L, envir = .GlobalEnv)
-      assign("jdv_unload_can_unload", NULL, envir = .GlobalEnv)
-      assign("jdv_unload_status", NULL, envir = .GlobalEnv)
-      assign("jdv_unload_finalizer_ran", FALSE, envir = .GlobalEnv)
-      assign("jdv_unload_parse_succeeded", FALSE, envir = .GlobalEnv)
-      finalizer <- local({
-        function(e) {
-          assign("jdv_unload_finalizer_ran", TRUE, envir = .GlobalEnv)
-          parsed <- .Call(
-            get("C_jdv_json_parse", envir = old_namespace),
-            '{"method":"view/schema","params":{}}',
-            1024^2
-          )
-          assign(
-            "jdv_unload_parse_succeeded",
-            is.list(parsed),
-            envir = .GlobalEnv
-          )
-          assign(
-            "jdv_unload_can_unload",
-            .Call(get("C_jdv_transport_can_unload", envir = old_namespace)),
-            envir = .GlobalEnv
-          )
-          assign(
-            "jdv_unload_status",
-            get(".jdv_transport_status", envir = old_namespace)(),
-            envir = .GlobalEnv
-          )
-          suppressWarnings(unloadNamespace("jdv"))
-          reload_error <- tryCatch(loadNamespace("jdv"), error = identity)
-          assign("jdv_unload_reload_error", reload_error, envir = .GlobalEnv)
-        }
+        "preflight-frame",
+        1024^2
+      )
+      expect_true(wait_for_file(new_ready))
+      observed <- local({
+        file.create(close_command)
+        expect_true(wait_for_file_without_events(paste0(old_result, ".closed")))
+        options(jdv.address = new_socket)
+        new_id <- jdv_view(
+          data.frame(value = 21:23),
+          title = "reconnect",
+          mode = "paged"
+        )
+        expect_false(identical(new_id, old_id))
+        entries <- ls(.jdv_state$entries, all.names = TRUE)
+        expect_false(old_id %in% entries)
+        expect_false(shared_id %in% entries)
+        expect_identical(entries, new_id)
+        expect_gt(sys.nframe(), 0L)
+        expect_true(wait_for_file_without_events(paste0(new_result, ".sent")))
+        third_id <- jdv_view(
+          data.frame(value = 31:33),
+          title = "preflight",
+          mode = "paged"
+        )
+        queued <- .jdv_transport_status()
+        expect_false(file.exists(new_result))
+        jdv_rpc(NULL)
+        list(third_id = third_id, queued = queued)
       })
-      token <- new.env(parent = emptyenv())
-      reg.finalizer(token, finalizer, onexit = TRUE)
-      assign(
-        "col_display.jdv_unload_vector",
-        function(x, ...) {
-          assign(
-            "jdv_unload_method_calls",
-            get("jdv_unload_method_calls", envir = .GlobalEnv) + 1L,
-            envir = .GlobalEnv
-          )
-          if (isTRUE(get("jdv_unload_armed", envir = .GlobalEnv))) {
-            assign("jdv_unload_armed", FALSE, envir = .GlobalEnv)
-            assign(
-              "jdv_unload_attempts",
-              get("jdv_unload_attempts", envir = .GlobalEnv) + 1L,
-              envir = .GlobalEnv
-            )
-            gc()
-          }
-          format(as.integer(x), ...)
-        },
-        envir = .GlobalEnv
+      expect_identical(observed$queued$queued_messages, 1)
+      expect_type(observed$third_id, "character")
+      expect_identical(.jdv_state$session_counter, counter_before + 2L)
+      expect_false(exists(old_id, envir = .jdv_state$entries, inherits = FALSE))
+
+      expect_true(wait_for_file(new_result))
+      new_record <- jsonlite::fromJSON(new_result, simplifyVector = FALSE)
+      expect_identical(
+        new_record$hello$params$session,
+        paste0("r-", Sys.getpid(), "-", counter_before + 2L)
       )
-      value <- data.frame(
-        value = structure(11:13, class = c("jdv_unload_vector", "integer"))
-      )
-      options(jdv.address = address)
-      jdv::jdv_view(value, mode = "paged")
-      rm(token)
-      assign("jdv_unload_armed", TRUE, envir = .GlobalEnv)
-      deadline <- Sys.time() + 10
-      while (
-        !file.exists(result_path) &&
-          "jdv" %in% loadedNamespaces() &&
-          Sys.time() < deadline
-      ) {
-        try(poll(NULL), silent = TRUE)
-        Sys.sleep(0.01)
-      }
-      while (!file.exists(result_path) && Sys.time() < deadline) {
-        Sys.sleep(0.01)
-      }
-      list(
-        namespace_loaded = "jdv" %in% loadedNamespaces(),
-        dll_loaded = "jdv" %in% names(getLoadedDLLs()),
-        method_calls = get("jdv_unload_method_calls", envir = .GlobalEnv),
-        unload_attempts = get("jdv_unload_attempts", envir = .GlobalEnv),
-        finalizer_ran = isTRUE(get("jdv_unload_finalizer_ran", .GlobalEnv)),
-        parse_succeeded = isTRUE(get("jdv_unload_parse_succeeded", .GlobalEnv)),
-        can_unload = get("jdv_unload_can_unload", envir = .GlobalEnv),
-        status = get("jdv_unload_status", envir = .GlobalEnv),
-        reload_rejected = inherits(
-          get("jdv_unload_reload_error", envir = .GlobalEnv),
-          "error"
-        ),
-        task_callback_present = any(startsWith(
-          getTaskCallbackNames(),
-          "jdv_transport_"
-        )),
-        registry_entries = length(ls(old_namespace$.jdv_state$entries))
-      )
-    },
-    args = list(
-      libpath = .libPaths(),
-      address = socket_path,
-      result_path = result_path
+      expect_identical(new_record$open$params$generation, 1L)
+      expect_identical(new_record$response$id, "preflight-schema-1")
+      expect_false("error" %in% names(new_record$response))
+    }
+  )
+
+  test_that("a finalizer cannot unload an active transport callback", {
+    skip_on_os("windows")
+    skip_if_not_installed("callr")
+    skip_if(
+      !file.exists(file.path(find.package("jdv"), "Meta", "package.rds")),
+      "Active unload requires an installed package"
     )
-  )
-  expect_true(wait_for_file(result_path))
-  host_result <- jsonlite::fromJSON(result_path, simplifyVector = FALSE)
-  expect_true(host_result$disconnected)
-  expect_identical(child$method_calls, 2L)
-  expect_identical(child$unload_attempts, 1L)
-  expect_true(child$finalizer_ran)
-  expect_true(child$parse_succeeded)
-  expect_false(child$can_unload)
-  expect_true(child$status$busy)
-  expect_length(host_result$responses, 0L)
-  expect_false(child$namespace_loaded)
-  expect_true(child$dll_loaded)
-  expect_true(child$reload_rejected)
-  expect_false(child$task_callback_present)
-  expect_identical(child$registry_entries, 0L)
-})
-
-test_that("native unload closes an active TCP transport", {
-  skip_on_os("windows")
-  skip_if_not_installed("callr")
-  skip_if(
-    !file.exists(file.path(find.package("jdv"), "Meta", "package.rds")),
-    "Active unload requires an installed package"
-  )
-  python <- Sys.which("python3")
-  skip_if(!nzchar(python), "python3 is required for the local TCP host")
-
-  run_case <- function(action) {
-    ready_path <- tempfile("jdv-tcp-unload-ready-")
-    connected_path <- paste0(ready_path, ".connected")
-    eof_path <- paste0(ready_path, ".eof")
-    host <- run_tcp_unload_host(ready_path, connected_path, eof_path)
+    python <- Sys.which("python3")
+    skip_if(!nzchar(python), "python3 is required for the local mock host")
+    socket_path <- tempfile("jdv-active-unload-")
+    ready_path <- tempfile("jdv-active-unload-ready-")
+    result_path <- tempfile("jdv-active-unload-result-")
+    host <- run_mock_host(
+      socket_path,
+      ready_path,
+      result_path,
+      "active-unload",
+      1024^2
+    )
     on.exit(
       {
         if (host$is_alive()) {
           host$kill()
         }
         try(host$wait(), silent = TRUE)
-        unlink(c(ready_path, connected_path, eof_path))
+        unlink(c(socket_path, ready_path, result_path))
       },
       add = TRUE
     )
     expect_true(wait_for_file(ready_path))
-    address <- readLines(ready_path, warn = FALSE)[[1]]
 
     child <- callr::r(
-      function(libpath, address, connected_path, eof_path, action) {
+      function(libpath, address, result_path) {
         .libPaths(libpath)
-        loadNamespace("jdv")
+        suppressPackageStartupMessages(loadNamespace("jdv"))
+        old_namespace <- asNamespace("jdv")
+        poll <- get("jdv_rpc", envir = old_namespace)
+        assign("jdv_old_namespace", old_namespace, envir = .GlobalEnv)
+        assign("jdv_unload_armed", FALSE, envir = .GlobalEnv)
+        assign("jdv_unload_reload_error", NULL, envir = .GlobalEnv)
+        assign("jdv_unload_method_calls", 0L, envir = .GlobalEnv)
+        assign("jdv_unload_attempts", 0L, envir = .GlobalEnv)
+        assign("jdv_unload_can_unload", NULL, envir = .GlobalEnv)
+        assign("jdv_unload_status", NULL, envir = .GlobalEnv)
+        assign("jdv_unload_finalizer_ran", FALSE, envir = .GlobalEnv)
+        assign("jdv_unload_parse_succeeded", FALSE, envir = .GlobalEnv)
+        finalizer <- local({
+          function(e) {
+            assign("jdv_unload_finalizer_ran", TRUE, envir = .GlobalEnv)
+            parsed <- .Call(
+              get("C_jdv_json_parse", envir = old_namespace),
+              '{"method":"view/schema","params":{}}',
+              1024^2
+            )
+            assign(
+              "jdv_unload_parse_succeeded",
+              is.list(parsed),
+              envir = .GlobalEnv
+            )
+            assign(
+              "jdv_unload_can_unload",
+              .Call(get("C_jdv_transport_can_unload", envir = old_namespace)),
+              envir = .GlobalEnv
+            )
+            assign(
+              "jdv_unload_status",
+              get(".jdv_transport_status", envir = old_namespace)(),
+              envir = .GlobalEnv
+            )
+            suppressWarnings(unloadNamespace("jdv"))
+            reload_error <- tryCatch(loadNamespace("jdv"), error = identity)
+            assign("jdv_unload_reload_error", reload_error, envir = .GlobalEnv)
+          }
+        })
+        token <- new.env(parent = emptyenv())
+        reg.finalizer(token, finalizer, onexit = TRUE)
+        assign(
+          "col_display.jdv_unload_vector",
+          function(x, ...) {
+            assign(
+              "jdv_unload_method_calls",
+              get("jdv_unload_method_calls", envir = .GlobalEnv) + 1L,
+              envir = .GlobalEnv
+            )
+            if (isTRUE(get("jdv_unload_armed", envir = .GlobalEnv))) {
+              assign("jdv_unload_armed", FALSE, envir = .GlobalEnv)
+              assign(
+                "jdv_unload_attempts",
+                get("jdv_unload_attempts", envir = .GlobalEnv) + 1L,
+                envir = .GlobalEnv
+              )
+              gc()
+            }
+            format(as.integer(x), ...)
+          },
+          envir = .GlobalEnv
+        )
+        value <- data.frame(
+          value = structure(11:13, class = c("jdv_unload_vector", "integer"))
+        )
         options(jdv.address = address)
-        jdv::jdv_view(data.frame(value = 1:3), mode = "paged")
-        deadline <- Sys.time() + 5
-        while (!file.exists(connected_path) && Sys.time() < deadline) {
+        jdv::jdv_view(value, mode = "paged")
+        rm(token)
+        assign("jdv_unload_armed", TRUE, envir = .GlobalEnv)
+        deadline <- Sys.time() + 10
+        while (
+          !file.exists(result_path) &&
+            "jdv" %in% loadedNamespaces() &&
+            Sys.time() < deadline
+        ) {
+          try(poll(NULL), silent = TRUE)
           Sys.sleep(0.01)
         }
-        stopifnot(file.exists(connected_path))
-
-        hook_eof_seen <- FALSE
-        if (action == "namespace") {
-          unloadNamespace("jdv")
-        } else {
-          if (action == "close") {
-            close <- get("C_jdv_transport_close", asNamespace("jdv"))
-            .Call(close)
-          }
-          if (action == "hook") {
-            unload_hook <- getDLLRegisteredRoutines(getLoadedDLLs()[["jdv"]])[[
-              ".C"
-            ]][["R_unload_jdv"]]
-            .C(unload_hook, 0L)
-            .C(unload_hook, 0L)
-            deadline <- Sys.time() + 2
-            while (!file.exists(eof_path) && Sys.time() < deadline) {
-              Sys.sleep(0.01)
-            }
-            hook_eof_seen <- file.exists(eof_path)
-          }
-          dyn.unload(getLoadedDLLs()[["jdv"]][["path"]])
-        }
-
-        deadline <- Sys.time() + 2
-        while (!file.exists(eof_path) && Sys.time() < deadline) {
+        while (!file.exists(result_path) && Sys.time() < deadline) {
           Sys.sleep(0.01)
         }
         list(
-          eof_seen = file.exists(eof_path),
-          hook_eof_seen = hook_eof_seen,
           namespace_loaded = "jdv" %in% loadedNamespaces(),
-          dll_loaded = "jdv" %in% names(getLoadedDLLs())
+          dll_loaded = "jdv" %in% names(getLoadedDLLs()),
+          method_calls = get("jdv_unload_method_calls", envir = .GlobalEnv),
+          unload_attempts = get("jdv_unload_attempts", envir = .GlobalEnv),
+          finalizer_ran = isTRUE(get("jdv_unload_finalizer_ran", .GlobalEnv)),
+          parse_succeeded = isTRUE(get(
+            "jdv_unload_parse_succeeded",
+            .GlobalEnv
+          )),
+          can_unload = get("jdv_unload_can_unload", envir = .GlobalEnv),
+          status = get("jdv_unload_status", envir = .GlobalEnv),
+          reload_rejected = inherits(
+            get("jdv_unload_reload_error", envir = .GlobalEnv),
+            "error"
+          ),
+          task_callback_present = any(startsWith(
+            getTaskCallbackNames(),
+            "jdv_transport_"
+          )),
+          registry_entries = length(ls(old_namespace$.jdv_state$entries))
         )
       },
       args = list(
         libpath = .libPaths(),
-        address = address,
-        connected_path = connected_path,
-        eof_path = eof_path,
-        action = action
+        address = socket_path,
+        result_path = result_path
       )
     )
-    child
-  }
+    expect_true(wait_for_file(result_path))
+    host_result <- jsonlite::fromJSON(result_path, simplifyVector = FALSE)
+    expect_true(host_result$disconnected)
+    expect_identical(child$method_calls, 2L)
+    expect_identical(child$unload_attempts, 1L)
+    expect_true(child$finalizer_ran)
+    expect_true(child$parse_succeeded)
+    expect_false(child$can_unload)
+    expect_true(child$status$busy)
+    expect_length(host_result$responses, 0L)
+    expect_false(child$namespace_loaded)
+    expect_true(child$dll_loaded)
+    expect_true(child$reload_rejected)
+    expect_false(child$task_callback_present)
+    expect_identical(child$registry_entries, 0L)
+  })
 
-  direct <- run_case("direct")
-  expect_true(direct$eof_seen)
-  expect_true(direct$namespace_loaded)
-  expect_false(direct$dll_loaded)
+  test_that("native unload closes an active TCP transport", {
+    skip_on_os("windows")
+    skip_if_not_installed("callr")
+    skip_if(
+      !file.exists(file.path(find.package("jdv"), "Meta", "package.rds")),
+      "Active unload requires an installed package"
+    )
+    python <- Sys.which("python3")
+    skip_if(!nzchar(python), "python3 is required for the local TCP host")
 
-  namespace <- run_case("namespace")
-  expect_true(namespace$eof_seen)
-  expect_false(namespace$namespace_loaded)
-  expect_false(namespace$dll_loaded)
+    run_case <- function(action) {
+      ready_path <- tempfile("jdv-tcp-unload-ready-")
+      connected_path <- paste0(ready_path, ".connected")
+      eof_path <- paste0(ready_path, ".eof")
+      host <- run_tcp_unload_host(ready_path, connected_path, eof_path)
+      on.exit(
+        {
+          if (host$is_alive()) {
+            host$kill()
+          }
+          try(host$wait(), silent = TRUE)
+          unlink(c(ready_path, connected_path, eof_path))
+        },
+        add = TRUE
+      )
+      expect_true(wait_for_file(ready_path))
+      address <- readLines(ready_path, warn = FALSE)[[1]]
 
-  closed <- run_case("close")
-  expect_true(closed$eof_seen)
-  expect_true(closed$namespace_loaded)
-  expect_false(closed$dll_loaded)
+      child <- callr::r(
+        function(libpath, address, connected_path, eof_path, action) {
+          .libPaths(libpath)
+          loadNamespace("jdv")
+          options(jdv.address = address)
+          jdv::jdv_view(data.frame(value = 1:3), mode = "paged")
+          deadline <- Sys.time() + 5
+          while (!file.exists(connected_path) && Sys.time() < deadline) {
+            Sys.sleep(0.01)
+          }
+          stopifnot(file.exists(connected_path))
 
-  registered <- run_case("hook")
-  expect_true(registered$hook_eof_seen)
-  expect_true(registered$eof_seen)
-  expect_true(registered$namespace_loaded)
-  expect_false(registered$dll_loaded)
-})
+          hook_eof_seen <- FALSE
+          if (action == "namespace") {
+            unloadNamespace("jdv")
+          } else {
+            if (action == "close") {
+              close <- get("C_jdv_transport_close", asNamespace("jdv"))
+              .Call(close)
+            }
+            if (action == "hook") {
+              unload_hook <- getDLLRegisteredRoutines(getLoadedDLLs()[[
+                "jdv"
+              ]])[[".C"]][["R_unload_jdv"]]
+              .C(unload_hook, 0L)
+              .C(unload_hook, 0L)
+              deadline <- Sys.time() + 2
+              while (!file.exists(eof_path) && Sys.time() < deadline) {
+                Sys.sleep(0.01)
+              }
+              hook_eof_seen <- file.exists(eof_path)
+            }
+            dyn.unload(getLoadedDLLs()[["jdv"]][["path"]])
+          }
 
-test_that("close-all stops an active transport with an empty registry", {
-  with_mock_transport("empty-registry-close", data.frame(value = 11:13))
-})
+          deadline <- Sys.time() + 2
+          while (!file.exists(eof_path) && Sys.time() < deadline) {
+            Sys.sleep(0.01)
+          }
+          list(
+            eof_seen = file.exists(eof_path),
+            hook_eof_seen = hook_eof_seen,
+            namespace_loaded = "jdv" %in% loadedNamespaces(),
+            dll_loaded = "jdv" %in% names(getLoadedDLLs())
+          )
+        },
+        args = list(
+          libpath = .libPaths(),
+          address = address,
+          connected_path = connected_path,
+          eof_path = eof_path,
+          action = action
+        )
+      )
+      child
+    }
 
-test_that("multi-megabyte row responses are fully framed", {
-  old_options <- options(
-    jdv.max_work_bytes = Inf,
-    jdv.max_message_bytes = 32 * 1024^2
-  )
-  on.exit(options(old_options), add = TRUE)
-  value <- strrep("z", 2 * 1024^2)
-  received <- with_mock_transport(
-    "large-response",
-    data.frame(value = c(value, value))
-  )
-  rows <- received$responses[[1]]$result$data$columns[[1]]$data$values
-  expect_length(rows, 2L)
-  expect_identical(nchar(rows[[1]], type = "bytes"), as.integer(2 * 1024^2))
-  expect_identical(rows[[1]], rows[[2]])
-})
+    direct <- run_case("direct")
+    expect_true(direct$eof_seen)
+    expect_true(direct$namespace_loaded)
+    expect_false(direct$dll_loaded)
 
-test_that(
-  "large forced snapshots send every value beyond request node limits",
-  {
+    namespace <- run_case("namespace")
+    expect_true(namespace$eof_seen)
+    expect_false(namespace$namespace_loaded)
+    expect_false(namespace$dll_loaded)
+
+    closed <- run_case("close")
+    expect_true(closed$eof_seen)
+    expect_true(closed$namespace_loaded)
+    expect_false(closed$dll_loaded)
+
+    registered <- run_case("hook")
+    expect_true(registered$hook_eof_seen)
+    expect_true(registered$eof_seen)
+    expect_true(registered$namespace_loaded)
+    expect_false(registered$dll_loaded)
+  })
+
+  test_that("close-all stops an active transport with an empty registry", {
+    with_mock_transport("empty-registry-close", data.frame(value = 11:13))
+  })
+
+  test_that("multi-megabyte row responses are fully framed", {
     old_options <- options(
       jdv.max_work_bytes = Inf,
       jdv.max_message_bytes = 32 * 1024^2
     )
     on.exit(options(old_options), add = TRUE)
+    value <- strrep("z", 2 * 1024^2)
     received <- with_mock_transport(
-      "large-snapshot",
-      data.frame(first = rep("a", 50000), second = rep("b", 50000)),
-      mode = "snapshot"
+      "large-response",
+      data.frame(value = c(value, value))
     )
-    expect_gt(received$open_wire_bytes, 500 * 1024)
-    expect_identical(received$open$params$nrow, 50000L)
-    expect_identical(received$snapshot_value_count, 100000L)
-    expect_gt(received$snapshot_node_count, 100000L)
-  }
-)
+    rows <- received$responses[[1]]$result$data$columns[[1]]$data$values
+    expect_length(rows, 2L)
+    expect_identical(nchar(rows[[1]], type = "bytes"), as.integer(2 * 1024^2))
+    expect_identical(rows[[1]], rows[[2]])
+  })
 
-test_that("safe numeric response ids remain valid when JSON uses an exponent", {
-  received <- with_mock_transport("numeric-id", data.frame(value = 11:13))
-  expect_identical(received$responses[[1]]$id, 1e15)
-})
-
-test_that("a host that does not read cannot block a large open indefinitely", {
-  skip_on_os("windows")
-  skip_if_not_installed("callr")
-  python <- Sys.which("python3")
-  skip_if(!nzchar(python), "python3 is required for the local mock host")
-  socket_path <- tempfile("jdv-transport-silent-")
-  ready_path <- tempfile("jdv-transport-ready-")
-  result_path <- tempfile("jdv-transport-result-")
-  host <- run_mock_host(socket_path, ready_path, result_path, "silent", 1024^2)
-  old_address <- getOption("jdv.address")
-  old_timeout <- getOption("jdv.transport.send_timeout_ms")
-  options(jdv.address = socket_path, jdv.transport.send_timeout_ms = 100)
-  on.exit(
+  test_that(
+    "large forced snapshots send every value beyond request node limits",
     {
-      try(jdv_close(), silent = TRUE)
-      options(
-        jdv.address = old_address,
-        jdv.transport.send_timeout_ms = old_timeout
+      old_options <- options(
+        jdv.max_work_bytes = Inf,
+        jdv.max_message_bytes = 32 * 1024^2
       )
-      if (host$is_alive()) {
-        host$kill()
-      }
-      try(host$wait(), silent = TRUE)
-      unlink(c(
+      on.exit(options(old_options), add = TRUE)
+      received <- with_mock_transport(
+        "large-snapshot",
+        data.frame(first = rep("a", 50000), second = rep("b", 50000)),
+        mode = "snapshot"
+      )
+      expect_gt(received$open_wire_bytes, 500 * 1024)
+      expect_identical(received$open$params$nrow, 50000L)
+      expect_identical(received$snapshot_value_count, 100000L)
+      expect_gt(received$snapshot_node_count, 100000L)
+    }
+  )
+
+  test_that(
+    "safe numeric response ids remain valid when JSON uses an exponent",
+    {
+      received <- with_mock_transport("numeric-id", data.frame(value = 11:13))
+      expect_identical(received$responses[[1]]$id, 1e15)
+    }
+  )
+
+  test_that(
+    "a host that does not read cannot block a large open indefinitely",
+    {
+      skip_on_os("windows")
+      skip_if_not_installed("callr")
+      python <- Sys.which("python3")
+      skip_if(!nzchar(python), "python3 is required for the local mock host")
+      socket_path <- tempfile("jdv-transport-silent-")
+      ready_path <- tempfile("jdv-transport-ready-")
+      result_path <- tempfile("jdv-transport-result-")
+      host <- run_mock_host(
         socket_path,
         ready_path,
         result_path,
-        paste0(result_path, ".closed")
-      ))
-    },
-    add = TRUE
+        "silent",
+        1024^2
+      )
+      old_address <- getOption("jdv.address")
+      old_timeout <- getOption("jdv.transport.send_timeout_ms")
+      options(jdv.address = socket_path, jdv.transport.send_timeout_ms = 100)
+      on.exit(
+        {
+          try(jdv_close(), silent = TRUE)
+          options(
+            jdv.address = old_address,
+            jdv.transport.send_timeout_ms = old_timeout
+          )
+          if (host$is_alive()) {
+            host$kill()
+          }
+          try(host$wait(), silent = TRUE)
+          unlink(c(
+            socket_path,
+            ready_path,
+            result_path,
+            paste0(result_path, ".closed")
+          ))
+        },
+        add = TRUE
+      )
+
+      expect_true(wait_for_file(ready_path))
+      started <- proc.time()[["elapsed"]]
+      error <- tryCatch(
+        jdv_view(
+          data.frame(value = strrep("x", 8 * 1024^2)),
+          mode = "snapshot"
+        ),
+        error = identity
+      )
+      elapsed <- proc.time()[["elapsed"]] - started
+      expect_s3_class(error, "error")
+      expect_lt(elapsed, 3)
+      expect_length(ls(.jdv_state$entries, all.names = TRUE), 0L)
+      jdv_rpc(NULL)
+      expect_length(ls(.jdv_state$entries, all.names = TRUE), 0L)
+    }
   )
 
-  expect_true(wait_for_file(ready_path))
-  started <- proc.time()[["elapsed"]]
-  error <- tryCatch(
-    jdv_view(data.frame(value = strrep("x", 8 * 1024^2)), mode = "snapshot"),
-    error = identity
-  )
-  elapsed <- proc.time()[["elapsed"]] - started
-  expect_s3_class(error, "error")
-  expect_lt(elapsed, 3)
-  expect_length(ls(.jdv_state$entries, all.names = TRUE), 0L)
-  jdv_rpc(NULL)
-  expect_length(ls(.jdv_state$entries, all.names = TRUE), 0L)
-})
-
-test_that("cancelled and expired queued work receive terminal responses", {
-  cancelled <- with_mock_transport("cancel", data.frame(value = 11:13))
-  expired <- with_mock_transport(
-    "expired",
-    data.frame(value = 11:13),
-    before_poll = function() Sys.sleep(0.3)
-  )
-  expect_identical(cancelled$responses[[1L]]$error$code, "cancelled")
-  expect_identical(expired$responses[[1L]]$error$code, "expired")
-})
-
-test_that("receiver acknowledges all complete frames cumulatively", {
-  received <- with_mock_transport("ack-controls", data.frame(value = 11:13))
-  expect_identical(tail(received$acks, 1L)[[1L]]$params$frames, 4L)
-})
-
-test_that("stale and closed table requests receive terminal errors", {
-  stale <- with_mock_transport("stale-generation", data.frame(value = 11:13))
-  missing <- with_mock_transport("missing-table", data.frame(value = 11:13))
-  expect_identical(stale$responses[[1L]]$error$code, "stale_generation")
-  expect_identical(missing$responses[[1L]]$error$code, "view_not_found")
-})
-
-test_that(
-  "validly framed requests with invalid parameters get an error reply",
-  {
-    received <- with_mock_transport(
-      "invalid-control",
-      data.frame(value = 11:13)
+  test_that("cancelled and expired queued work receive terminal responses", {
+    cancelled <- with_mock_transport("cancel", data.frame(value = 11:13))
+    expired <- with_mock_transport(
+      "expired",
+      data.frame(value = 11:13),
+      before_poll = function() Sys.sleep(0.3)
     )
+    expect_identical(cancelled$responses[[1L]]$error$code, "cancelled")
+    expect_identical(expired$responses[[1L]]$error$code, "expired")
+  })
+
+  test_that("receiver acknowledges all complete frames cumulatively", {
+    received <- with_mock_transport("ack-controls", data.frame(value = 11:13))
+    expect_identical(tail(received$acks, 1L)[[1L]]$params$frames, 4L)
+  })
+
+  test_that("stale and closed table requests receive terminal errors", {
+    stale <- with_mock_transport("stale-generation", data.frame(value = 11:13))
+    missing <- with_mock_transport("missing-table", data.frame(value = 11:13))
+    expect_identical(stale$responses[[1L]]$error$code, "stale_generation")
+    expect_identical(missing$responses[[1L]]$error$code, "view_not_found")
+  })
+
+  test_that(
+    "validly framed requests with invalid parameters get an error reply",
+    {
+      received <- with_mock_transport(
+        "invalid-control",
+        data.frame(value = 11:13)
+      )
+      expect_identical(received$responses[[1]]$error$code, "invalid_request")
+    }
+  )
+
+  test_that("an invalid cancel id does not cancel a valid queued request", {
+    received <- with_mock_transport("invalid-cancel", data.frame(value = 11:13))
     expect_identical(received$responses[[1]]$error$code, "invalid_request")
-  }
-)
+    expect_identical(received$responses[[2]]$id, "must-survive")
+  })
 
-test_that("an invalid cancel id does not cancel a valid queued request", {
-  received <- with_mock_transport("invalid-cancel", data.frame(value = 11:13))
-  expect_identical(received$responses[[1]]$error$code, "invalid_request")
-  expect_identical(received$responses[[2]]$id, "must-survive")
-})
-
-test_that(
-  "invalid and expired cancel controls do not cancel pending requests",
-  {
-    with_mock_transport("invalid-encoding-cancel", data.frame(value = 11:13))
-    with_mock_transport("invalid-compression-cancel", data.frame(value = 11:13))
-    with_mock_transport("invalid-deadline-cancel", data.frame(value = 11:13))
-    with_mock_transport("expired-cancel", data.frame(value = 11:13))
-    received <- with_mock_transport("typed-id", data.frame(value = 11:13))
-    expect_identical(received$responses[[1]]$id, 1L)
-  }
-)
-
-test_that("duplicate live request ids close the transport", {
-  with_mock_transport("duplicate-id", data.frame(value = 11:13))
-})
-
-test_that("synchronous expired requests return a typed error", {
-  registered <- jdv_register(data.frame(value = 1), mode = "paged")
-  on.exit(.jdv_close_internal(registered$id), add = TRUE)
-  response <- transport_rpc_call(
-    "view/schema",
-    list(view = registered$id, generation = 1),
-    extra = list(deadline = 1)
-  )
-  expect_transport_rpc_code(response, "expired")
-})
-
-test_that("explicit polling without a viewer connection is a no-op", {
-  expect_null(jdv_rpc(NULL))
-  expect_null(jdv_rpc())
-})
-
-test_that("closing an embedding-only registration does not connect", {
-  registered <- jdv_register(data.frame(value = 1), mode = "paged")
-  on.exit(
+  test_that(
+    "invalid and expired cancel controls do not cancel pending requests",
     {
-      .jdv_close_internal(registered$id)
-      .jdv_state$outbox <- list()
-    },
-    add = TRUE
-  )
-  expect_identical(jdv_close(registered$id), registered$id)
-  expect_identical(jdv_close(), character())
-  expect_null(.jdv_transport_status())
-  expect_null(.jdv_state$transport_task_callback)
-})
-
-test_that("a failed connection leaves the registry unchanged", {
-  skip_on_os("windows")
-  old_address <- getOption("jdv.address")
-  options(jdv.address = tempfile("jdv-missing-socket-"))
-  on.exit(options(jdv.address = old_address), add = TRUE)
-  before <- ls(.jdv_state$entries, all.names = TRUE)
-  expect_error(jdv_view(data.frame(value = 1), title = "connect-failure"))
-  expect_identical(ls(.jdv_state$entries, all.names = TRUE), before)
-  expect_null(.jdv_transport_status())
-})
-
-test_that("viewer discovery follows the user cache and address precedence", {
-  old_options <- options(c("jdv.address", "jdv.discovery_path"))
-  old_env <- Sys.getenv(
-    c("JDV_ADDRESS", "XDG_CACHE_HOME", "LOCALAPPDATA"),
-    unset = NA_character_
-  )
-  on.exit(
-    {
-      options(old_options)
-      for (name in names(old_env)) {
-        if (is.na(old_env[[name]])) {
-          Sys.unsetenv(name)
-        } else {
-          do.call(Sys.setenv, setNames(list(old_env[[name]]), name))
-        }
-      }
-    },
-    add = TRUE
+      with_mock_transport("invalid-encoding-cancel", data.frame(value = 11:13))
+      with_mock_transport(
+        "invalid-compression-cancel",
+        data.frame(value = 11:13)
+      )
+      with_mock_transport("invalid-deadline-cancel", data.frame(value = 11:13))
+      with_mock_transport("expired-cancel", data.frame(value = 11:13))
+      received <- with_mock_transport("typed-id", data.frame(value = 11:13))
+      expect_identical(received$responses[[1]]$id, 1L)
+    }
   )
 
-  discovery_dir <- tempfile("jdv-cache-")
-  dir.create(discovery_dir)
-  discovery_file <- file.path(discovery_dir, "discovery.json")
-  options(jdv.address = NULL, jdv.discovery_path = NULL)
-  Sys.unsetenv("JDV_ADDRESS")
-  if (identical(.Platform$OS.type, "windows")) {
-    Sys.setenv(LOCALAPPDATA = discovery_dir)
-    expected <- file.path(discovery_dir, "jdv", "discovery.json")
-  } else if (identical(Sys.info()[["sysname"]], "Darwin")) {
-    expected <- file.path(
-      path.expand("~"),
-      "Library",
-      "Caches",
-      "jdv",
-      "discovery.json"
+  test_that("duplicate live request ids close the transport", {
+    with_mock_transport("duplicate-id", data.frame(value = 11:13))
+  })
+
+  test_that("synchronous expired requests return a typed error", {
+    registered <- jdv_register(data.frame(value = 1), mode = "paged")
+    on.exit(.jdv_close_internal(registered$id), add = TRUE)
+    response <- transport_rpc_call(
+      "view/schema",
+      list(view = registered$id, generation = 1),
+      extra = list(deadline = 1)
     )
-  } else {
-    Sys.setenv(XDG_CACHE_HOME = discovery_dir)
-    expected <- file.path(discovery_dir, "jdv", "discovery.json")
-  }
-  expect_identical(.jdv_discovery_path(), expected)
+    expect_transport_rpc_code(response, "expired")
+  })
 
-  options(jdv.discovery_path = discovery_file)
-  writeLines('{"socketPath":"unix:///tmp/jdv-mock"}', discovery_file)
-  expect_identical(.jdv_resolve_address(), "unix:///tmp/jdv-mock")
-  Sys.setenv(JDV_ADDRESS = "tcp://127.0.0.1:43123")
-  expect_identical(.jdv_resolve_address(), "tcp://127.0.0.1:43123")
-  options(jdv.address = "unix:///tmp/option-address")
-  expect_identical(.jdv_resolve_address(), "unix:///tmp/option-address")
-  unlink(discovery_dir, recursive = TRUE)
-})
+  test_that("explicit polling without a viewer connection is a no-op", {
+    expect_null(jdv_rpc(NULL))
+    expect_null(jdv_rpc())
+  })
 
-test_that("cancel request ids use the same strict raw-token rules", {
-  for (request in c(
-    '{"method":"cancel","params":{"id":1.0}}',
-    '{"method":"cancel","params":{"id":1e0}}',
-    '{"method":"cancel","params":{"id":9007199254740992}}'
-  )) {
-    expect_transport_rpc_code(jdv_rpc(request), "invalid_request")
-  }
-  expect_null(jdv_rpc('{"method":"cancel","params":{"id":1}}'))
+  test_that("closing an embedding-only registration does not connect", {
+    registered <- jdv_register(data.frame(value = 1), mode = "paged")
+    on.exit(
+      {
+        .jdv_close_internal(registered$id)
+        .jdv_state$outbox <- list()
+      },
+      add = TRUE
+    )
+    expect_identical(jdv_close(registered$id), registered$id)
+    expect_identical(jdv_close(), character())
+    expect_null(.jdv_transport_status())
+    expect_null(.jdv_state$transport_task_callback)
+  })
+
+  test_that("a failed connection leaves the registry unchanged", {
+    skip_on_os("windows")
+    old_address <- getOption("jdv.address")
+    options(jdv.address = tempfile("jdv-missing-socket-"))
+    on.exit(options(jdv.address = old_address), add = TRUE)
+    before <- ls(.jdv_state$entries, all.names = TRUE)
+    expect_error(jdv_view(data.frame(value = 1), title = "connect-failure"))
+    expect_identical(ls(.jdv_state$entries, all.names = TRUE), before)
+    expect_null(.jdv_transport_status())
+  })
+
+  test_that("viewer discovery follows the user cache and address precedence", {
+    old_options <- options(c("jdv.address", "jdv.discovery_path"))
+    old_env <- Sys.getenv(
+      c("JDV_ADDRESS", "XDG_CACHE_HOME", "LOCALAPPDATA"),
+      unset = NA_character_
+    )
+    on.exit(
+      {
+        options(old_options)
+        for (name in names(old_env)) {
+          if (is.na(old_env[[name]])) {
+            Sys.unsetenv(name)
+          } else {
+            do.call(Sys.setenv, setNames(list(old_env[[name]]), name))
+          }
+        }
+      },
+      add = TRUE
+    )
+
+    discovery_dir <- tempfile("jdv-cache-")
+    dir.create(discovery_dir)
+    discovery_file <- file.path(discovery_dir, "discovery.json")
+    options(jdv.address = NULL, jdv.discovery_path = NULL)
+    Sys.unsetenv("JDV_ADDRESS")
+    if (identical(.Platform$OS.type, "windows")) {
+      Sys.setenv(LOCALAPPDATA = discovery_dir)
+      expected <- file.path(discovery_dir, "jdv", "discovery.json")
+    } else if (identical(Sys.info()[["sysname"]], "Darwin")) {
+      expected <- file.path(
+        path.expand("~"),
+        "Library",
+        "Caches",
+        "jdv",
+        "discovery.json"
+      )
+    } else {
+      Sys.setenv(XDG_CACHE_HOME = discovery_dir)
+      expected <- file.path(discovery_dir, "jdv", "discovery.json")
+    }
+    expect_identical(.jdv_discovery_path(), expected)
+
+    options(jdv.discovery_path = discovery_file)
+    writeLines('{"socketPath":"unix:///tmp/jdv-mock"}', discovery_file)
+    expect_identical(.jdv_resolve_address(), "unix:///tmp/jdv-mock")
+    Sys.setenv(JDV_ADDRESS = "tcp://127.0.0.1:43123")
+    expect_identical(.jdv_resolve_address(), "tcp://127.0.0.1:43123")
+    options(jdv.address = "unix:///tmp/option-address")
+    expect_identical(.jdv_resolve_address(), "unix:///tmp/option-address")
+    unlink(discovery_dir, recursive = TRUE)
+  })
+
+  test_that("cancel request ids use the same strict raw-token rules", {
+    for (request in c(
+      '{"method":"cancel","params":{"id":1.0}}',
+      '{"method":"cancel","params":{"id":1e0}}',
+      '{"method":"cancel","params":{"id":9007199254740992}}'
+    )) {
+      expect_transport_rpc_code(jdv_rpc(request), "invalid_request")
+    }
+    expect_null(jdv_rpc('{"method":"cancel","params":{"id":1}}'))
+  })
+
+  test_that("offline close, eviction, and cascade never reach a fresh viewer", {
+    for (action in c("close", "eviction", "cascade")) {
+      jdv_close()
+      old_options <- options(jdv.max_tables = 2L)
+      tryCatch(
+        {
+          root <- jdv_register(list(child = list(value = 1L)))
+          if (action != "close") {
+            child <- transport_rpc_json(transport_rpc_call(
+              "object/open",
+              list(
+                view = root$id,
+                generation = 1,
+                path = list(list(type = "index", index = 1))
+              )
+            ))$result
+          }
+          if (action == "eviction") {
+            replacement <- jdv_register(data.frame(value = 1L))
+            notices <- lapply(replacement$notifications, transport_rpc_json)
+            expect_setequal(
+              vapply(notices, function(x) x$params$view, ""),
+              c(root$id, child$view)
+            )
+            expect_false(exists(root$id, .jdv_state$entries, inherits = FALSE))
+          } else {
+            .jdv_close_internal(root$id, notify = TRUE)
+            expect_length(
+              .jdv_state$outbox,
+              if (action == "cascade") 2L else 1L
+            )
+          }
+          .jdv_close_internal()
+          expect_null(.jdv_transport_status())
+          received <- with_mock_transport(
+            "fragmented",
+            data.frame(value = 11:13)
+          )
+          expect_identical(received$open$method, "view/open")
+          expect_identical(
+            received$responses[[1L]]$result$data$row_index,
+            list(1L, 2L)
+          )
+          expect_length(.jdv_state$outbox, 0L)
+        },
+        finally = {
+          jdv_close()
+          options(old_options)
+        }
+      )
+    }
+  })
+
+  test_that(
+    "active connections retain cascade and eviction close notifications",
+    {
+      skip_on_os("windows")
+      skip_if_not_installed("callr")
+      skip_if(
+        !nzchar(Sys.which("python3")),
+        "python3 is required for the local mock host"
+      )
+      jdv_close()
+      socket_path <- tempfile("jdv-notifications-")
+      ready_path <- tempfile("jdv-notifications-ready-")
+      result_path <- tempfile("jdv-notifications-result-")
+      host <- run_mock_host(
+        socket_path,
+        ready_path,
+        result_path,
+        "notifications",
+        1024^2
+      )
+      old_options <- options(jdv.address = socket_path, jdv.max_tables = 64L)
+      on.exit(
+        {
+          try(jdv_close(), silent = TRUE)
+          options(old_options)
+          if (host$is_alive()) {
+            host$kill()
+          }
+          try(host$wait(), silent = TRUE)
+          unlink(c(socket_path, ready_path, result_path))
+        },
+        add = TRUE
+      )
+      expect_true(wait_for_file(ready_path))
+      anchor <- jdv_view(data.frame(value = 1L), title = "active-anchor")
+      root <- jdv_view(list(child = list(value = 2L)), title = "active-parent")
+      child <- transport_rpc_json(transport_rpc_call(
+        "object/open",
+        list(
+          view = root,
+          generation = 1,
+          path = list(list(type = "index", index = 1))
+        )
+      ))$result
+      jdv_close(root)
+      options(jdv.max_tables = 2L)
+      victim <- jdv_view(data.frame(value = 3L), title = "active-victim")
+      replacement <- jdv_view(
+        data.frame(value = 4L),
+        title = "active-replacement"
+      )
+      jdv_close()
+      expect_true(wait_for_file(result_path))
+      messages <- jsonlite::fromJSON(
+        result_path,
+        simplifyVector = FALSE
+      )$messages
+      closed <- Filter(
+        function(message) identical(message$method, "view/closed"),
+        messages
+      )
+      expect_setequal(
+        vapply(closed, function(message) message$params$view, ""),
+        c(child$view, root, anchor, victim, replacement)
+      )
+      expect_identical(
+        sum(vapply(
+          closed,
+          function(message) identical(message$params$view, child$view),
+          logical(1L)
+        )),
+        1L
+      )
+      child_notice <- closed[[
+        which(vapply(
+          closed,
+          function(message) identical(message$params$view, child$view),
+          logical(1L)
+        ))
+      ]]
+      expect_identical(child_notice$params$reason, "parent_closed")
+      opened <- Filter(
+        function(message) identical(message$method, "view/open"),
+        messages
+      )
+      expect_identical(
+        vapply(opened, function(message) message$params$view, ""),
+        c(anchor, root, victim, replacement)
+      )
+    }
+  )
 })

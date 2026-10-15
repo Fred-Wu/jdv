@@ -127,6 +127,17 @@ def main():
             if hello.get("method") != "hello" or opened.get("method") != "view/open":
                 raise RuntimeError("unexpected connection setup message order")
             params = opened["params"]
+            if args.scenario == "notifications":
+                messages = [hello, opened]
+                while True:
+                    message = stream.read_response(timeout=10)
+                    if message is False:
+                        break
+                    if message is None:
+                        raise RuntimeError("notification connection did not close")
+                    messages.append(message)
+                write_result(args.result, {"messages": messages})
+                return
             if args.scenario == "disconnect":
                 write_result(args.result, {"hello": hello, "open": opened, "responses": []})
                 return
