@@ -31,6 +31,14 @@
   )
 }
 
+.jdv_binary_body_cap <- function(params) {
+  cap <- max(0, min(.jdv_max_message_bytes(), 10 * 1024^2) - (64 * 1024 + 4))
+  if ("max_bytes" %in% names(params)) {
+    cap <- min(cap, .jdv_binary_integer(params$max_bytes, "max_bytes"))
+  }
+  cap
+}
+
 .jdv_binary_packet <- function(result, request, request_id, warnings) {
   if (!identical(names(result), c("metadata", "payload"))) {
     query_error("invalid_request", "Invalid binary result fields.")
@@ -72,10 +80,7 @@
     query_error("invalid_request", "Invalid binary transfer declaration.")
   }
   whole_cap <- min(.jdv_max_message_bytes(), 10 * 1024^2)
-  raw_cap <- max(0, whole_cap - (64 * 1024 + 4))
-  if ("max_bytes" %in% names(params)) {
-    raw_cap <- min(raw_cap, .jdv_binary_integer(params$max_bytes, "max_bytes"))
-  }
+  raw_cap <- .jdv_binary_body_cap(params)
   if (n > raw_cap) {
     query_error("limit_exceeded", "Binary payload exceeds the byte limit.")
   }

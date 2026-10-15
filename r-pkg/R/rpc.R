@@ -381,6 +381,14 @@ jdv_json_object <- function(x = list()) {
   entry$ncol <- content$ncol
   entry$schema <- content$schema
   entry$collation <- content$collation
+  if (identical(content$mode, "sequential")) {
+    entry$stream <- content$stream
+    entry$stream_busy <- FALSE
+    entry$stream_failure <- NULL
+    entry$arrow_schema <- content$arrow_schema
+    entry$mapping <- content$mapping
+    entry$page_rows <- content$page_rows
+  }
   entry$inflight <- 0L
   entry$close_pending <- FALSE
   entry$closed <- FALSE
@@ -402,6 +410,7 @@ jdv_json_object <- function(x = list()) {
     entry$tree_value <- NULL
     entry$fingerprint <- NULL
     entry$close_pending <- FALSE
+    if (identical(entry$mode, "sequential")) .jdv_sequential_release(entry)
   }
   invisible(NULL)
 }
@@ -521,8 +530,9 @@ jdv_json_object <- function(x = list()) {
 
 #' Register an object for a transport-independent viewer
 #'
-#' @param x A data frame or matrix for grid views, or an R object whose children
-#'   and attributes can be explored in a tree view.
+#' @param x A data frame or matrix for grid views; an Arrow Table or
+#'   RecordBatchReader, nanoarrow array stream, or Polars DataFrame for a
+#'   sequential grid; or an R object to explore in a tree view.
 #' @param title Optional title. Reusing a non-NULL title replaces its table
 #'   generation; NULL titles always create independent tables.
 #' @param mode Grid view mode: `"auto"`, `"snapshot"`, or `"paged"`.
@@ -530,6 +540,14 @@ jdv_json_object <- function(x = list()) {
 #'   omitted, `getOption("jdv.collation", "C")` supplies the default; an
 #'   explicit argument takes precedence.
 #' @details
+#' Sequential sources are exported through the optional nanoarrow package and
+#' moved into the viewer without fetching a record batch. Their total row count
+#' is unknown. They support forward-only pages, not Snapshot/Paged modes, random
+#' access, sorting, or filtering. The mode and collation arguments apply to
+#' ordinary R tables. Closing or replacing a view releases its stream and any
+#' retained batch. A string call to `jdv_rpc()` cannot consume a sequential
+#' page; those pages require the viewer binary transport.
+#'
 #' Re-registering a title that is still active reuses its view ID and increments
 #' its generation. Closing that view removes the title association, so a later
 #' registration starts with a new ID and generation one. Re-register after
@@ -578,6 +596,9 @@ jdv_register <- function(
   x <- source$data
   if (identical(source$kind, "tree")) {
     return(.jdv_tree_register(x, title = title))
+  }
+  if (identical(source$access, "sequential")) {
+    return(.jdv_sequential_register(x, title = title))
   }
   if (!is.null(title)) {
     title <- query_string(title, 4096L)
@@ -929,6 +950,24 @@ jdv_register <- function(
     )
   }
   params <- request$params
+  if (method == "stream/next") {
+    .jdv_fields(
+      params,
+      c("view", "generation", "max_rows", "max_bytes"),
+      c("view", "generation")
+    )
+    if (
+      any(!names(params) %in% c("view", "generation", "max_rows", "max_bytes"))
+    ) {
+      query_error(
+        "invalid_request",
+        "Sequential requests do not support random-access parameters."
+      )
+    }
+    entry <- .jdv_rpc_entry(params$view, params$generation)
+    on.exit(.jdv_release_entry(entry), add = TRUE)
+    return(.jdv_sequential_next(entry, params))
+  }
   if (method %in% c("object/children", "object/open")) {
     .jdv_fields(
       params,
@@ -942,6 +981,12 @@ jdv_register <- function(
       ancestry <- .jdv_tree_ancestry(entry)
       resolved <- .jdv_tree_resolve(entry$tree_value, path, ancestry)
     } else {
+      if (identical(entry$mode, "sequential")) {
+        query_error(
+          "unsupported",
+          "Sequential views do not support object paths."
+        )
+      }
       if (method == "object/children") {
         query_error("unsupported", "Object children requires a tree view.")
       }
@@ -1048,18 +1093,23 @@ jdv_register <- function(
     }
     .jdv_check_fingerprint(entry)
     if (method == "view/schema") {
-      return(list(
+      result <- list(
         view = entry$id,
         generation = entry$generation,
         nrow = entry$nrow,
         ncol = entry$ncol,
         columns = .jdv_schema(entry$schema)
-      ))
+      )
+      if (identical(entry$mode, "sequential")) {
+        result$schema <- entry$arrow_schema
+        result$mapping <- .jdv_json_values(entry$mapping)
+      }
+      return(result)
     }
     if (entry$mode != "paged" || is.null(entry$holder)) {
       query_error(
         "unsupported",
-        "Snapshot tables are cached by the host and have no row RPC."
+        "This view does not support random row requests."
       )
     }
     sort <- if (is.null(params$sort)) list() else params$sort
@@ -1207,7 +1257,15 @@ jdv_rpc <- function(request = NULL) {
   }
   result <- tryCatch(
     withCallingHandlers(
-      .jdv_process_request(parsed, request_id),
+      {
+        if (!allow_binary && identical(parsed$method, "stream/next")) {
+          query_error(
+            "unsupported",
+            "stream/next requires the viewer binary transport."
+          )
+        }
+        .jdv_process_request(parsed, request_id)
+      },
       warning = record_warning
     ),
     interrupt = function(e) {

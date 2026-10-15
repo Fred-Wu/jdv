@@ -234,7 +234,7 @@
   if (
     is.character(method) &&
       length(method) == 1L &&
-      method %in% c("table/rows", "view/schema", "view/close")
+      method %in% c("table/rows", "view/schema", "view/close", "stream/next")
   ) {
     params <- request$params
     if (
@@ -392,8 +392,9 @@
 
 #' Open an object in the local jdv viewer
 #'
-#' @param x A data frame or matrix for grid views, or an R object whose children
-#'   and attributes can be explored in a tree view.
+#' @param x A data frame or matrix for grid views; an Arrow Table or
+#'   RecordBatchReader, nanoarrow array stream, or Polars DataFrame for a
+#'   sequential grid; or an R object to explore in a tree view.
 #' @param title Display title. When omitted, the expression passed as `x` is
 #'   used; explicitly passing `NULL` creates an independent table slot.
 #' @param mode Grid view mode: `"auto"`, `"snapshot"`, or `"paged"`.

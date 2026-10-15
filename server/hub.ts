@@ -42,6 +42,7 @@ interface ViewRecord {
   generation: number;
   descriptor: JsonObject;
   parentView?: string;
+  sequentialOwner?: BrowserClient;
 }
 
 interface PendingRequest {
@@ -149,6 +150,9 @@ export class Hub {
   detach(client: BrowserClient): void {
     this.#clients.delete(client);
     for (const session of this.#sessions.values()) {
+      for (const view of session.views.values()) {
+        if (view.sequentialOwner === client) view.sequentialOwner = undefined;
+      }
       for (const pending of session.pending.values()) {
         if (pending.client === client) {
           this.#cancelPending(session, pending, "client_closed");
@@ -230,6 +234,7 @@ export class Hub {
         "view/close",
         "object/children",
         "object/open",
+        "stream/next",
       ].includes(method)
     ) {
       client.send({
@@ -270,6 +275,64 @@ export class Hub {
         message: "The view is no longer current.",
       });
       return;
+    }
+    if (method === "stream/next") {
+      const descriptor = current.descriptor.params;
+      if (
+        !isObject(descriptor) || descriptor.access !== "sequential" ||
+        descriptor.encoding !== "arrow-ipc"
+      ) {
+        client.send({
+          type: "error",
+          id: browserId,
+          code: "unsupported",
+          message: "This view is not sequential.",
+        });
+        return;
+      }
+      const advertisedCap = descriptor.max_page_rows;
+      const rowCap =
+        Number.isSafeInteger(advertisedCap) && Number(advertisedCap) >= 1 &&
+          Number(advertisedCap) <= 2000
+          ? Number(advertisedCap)
+          : 2000;
+      const rows = params.max_rows === undefined
+        ? Math.min(200, rowCap)
+        : params.max_rows;
+      if (
+        !Number.isSafeInteger(rows) || Number(rows) < 1 ||
+        Number(rows) > rowCap ||
+        (Object.hasOwn(params, "max_bytes") &&
+          (!Number.isSafeInteger(params.max_bytes) ||
+            Number(params.max_bytes) < 0)) ||
+        Object.keys(params).some((name) =>
+          !["view", "generation", "max_rows", "max_bytes"].includes(name)
+        )
+      ) {
+        client.send({
+          type: "error",
+          id: browserId,
+          code: "invalid_request",
+          message: "Invalid sequential request parameters.",
+        });
+        return;
+      }
+      if (
+        (current.sequentialOwner && current.sequentialOwner !== client) ||
+        [...session.pending.values()].some((pending) =>
+          pending.method === "stream/next" && pending.view === view &&
+          pending.generation === generation
+        )
+      ) {
+        client.send({
+          type: "error",
+          id: browserId,
+          code: "in_use",
+          message:
+            "The sequential view is owned by another browser or has a request in progress.",
+        });
+        return;
+      }
     }
     if (
       (method === "object/children" || method === "object/open") &&
@@ -386,6 +449,7 @@ export class Hub {
       });
       return;
     }
+    if (method === "stream/next") current.sequentialOwner = client;
     pending.timeoutTimer = setTimeout(
       () => this.#expire(session, pending),
       timeout,

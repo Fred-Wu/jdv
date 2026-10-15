@@ -2080,3 +2080,244 @@ Deno.test("grid cell opens validate original row selectors and tree suffixes", a
     hub.close();
   }
 });
+
+async function sequentialHubFixture(maxPageRows?: number) {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    method: "hello",
+    params: { protocol: 1, session: "r-9010-1", limits: { ...DEFAULT_LIMITS } },
+  });
+  const owner = new MemoryBrowser();
+  const other = new MemoryBrowser();
+  hub.attach(owner);
+  hub.attach(other);
+  const open = (generation = 1) =>
+    connection.inject(notification("view/open", {
+      view: "stream-1",
+      generation,
+      kind: "grid",
+      access: "sequential",
+      encoding: "arrow-ipc",
+      ...(maxPageRows === undefined ? {} : { max_page_rows: maxPageRows }),
+      capabilities: {
+        seek: false,
+        sort: false,
+        filter: false,
+        known_total: false,
+        next: true,
+        children: false,
+      },
+      nrow: null,
+      ncol: 0,
+      columns: [],
+      schema: { format: "+s", children: [] },
+      mapping: [],
+    }));
+  open();
+  await owner.nextMessage((m) => m.type === "view/open");
+  const request = (
+    browser: MemoryBrowser,
+    id: string,
+    params: JsonRecord = {},
+    timeoutMs?: number,
+  ) =>
+    hub.handleBrowser(browser, {
+      type: "request",
+      id,
+      session: "r-9010-1",
+      method: "stream/next",
+      timeoutMs,
+      params: { view: "stream-1", generation: 1, ...params },
+    });
+  const sent = () =>
+    connection.writes.map((line) => JSON.parse(line) as JsonRecord).filter((
+      m,
+    ) => m.method === "stream/next");
+  const finish = (id: unknown, firstRow: number, generation = 1) => {
+    const body = new Uint8Array([0, 10, 255]);
+    const header = new TextEncoder().encode(
+      JSON.stringify({
+        id,
+        result: {
+          view: "stream-1",
+          generation,
+          first_row: firstRow,
+          rows_fetched: 3,
+          rows_seen: firstRow + 3,
+          done: false,
+          transfer: { encoding: "arrow-ipc", byte_length: 3 },
+        },
+        warnings: [],
+      }) + "\n",
+    );
+    connection.injectRaw(concatBytes(header, body));
+  };
+  return { hub, connection, owner, other, request, sent, finish, open };
+}
+
+Deno.test("sequential lease survives replies and releases on detach after late completion", async () => {
+  const f = await sequentialHubFixture();
+  try {
+    f.request(f.owner, "first");
+    await waitFor(() => f.sent().length === 1);
+    f.request(f.owner, "concurrent");
+    f.request(f.other, "other");
+    assertEquals(
+      f.owner.messages.find((m) => m.id === "concurrent")?.code,
+      "in_use",
+    );
+    assertEquals(
+      f.other.messages.find((m) => m.id === "other")?.code,
+      "in_use",
+    );
+    f.finish(f.sent()[0].id, 0);
+    await waitFor(() => f.owner.binaryMessages.length === 1);
+    f.request(f.other, "still-owned");
+    assertEquals(
+      f.other.messages.find((m) => m.id === "still-owned")?.code,
+      "in_use",
+    );
+    f.request(f.owner, "detaching");
+    await waitFor(() => f.sent().length === 2);
+    f.hub.detach(f.owner);
+    f.request(f.other, "still-running");
+    assertEquals(
+      f.other.messages.find((m) => m.id === "still-running")?.code,
+      "in_use",
+    );
+    f.finish(f.sent()[1].id, 3);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    f.request(f.other, "continued");
+    await waitFor(() => f.sent().length === 3);
+    f.finish(f.sent()[2].id, 6);
+    await waitFor(() => f.other.binaryMessages.length === 1);
+    const delivered = decodeBrowserBinary(f.other.binaryMessages[0]);
+    assertEquals((delivered.envelope.result as JsonRecord).first_row, 6);
+    assertEquals(f.owner.binaryMessages.length, 1);
+    assertEquals(f.other.messages.some((m) => m.type === "view/closed"), false);
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("sequential cancel and timeout retain the slot until a late terminal", async () => {
+  const f = await sequentialHubFixture();
+  try {
+    f.request(f.owner, "cancelled");
+    await waitFor(() => f.sent().length === 1);
+    f.hub.handleBrowser(f.owner, {
+      type: "cancel",
+      id: "cancelled",
+      session: "r-9010-1",
+    });
+    f.request(f.owner, "before-terminal");
+    assertEquals(
+      f.owner.messages.find((m) => m.id === "before-terminal")?.code,
+      "in_use",
+    );
+    f.finish(f.sent()[0].id, 0);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    f.request(f.owner, "timeout", {}, 100);
+    await waitFor(() => f.sent().length === 2);
+    await f.owner.nextMessage((m) =>
+      m.id === "timeout" && m.code === "timeout"
+    );
+    f.request(f.owner, "after-timeout");
+    assertEquals(
+      f.owner.messages.find((m) => m.id === "after-timeout")?.code,
+      "in_use",
+    );
+    f.finish(f.sent()[1].id, 3);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    f.request(f.other, "sticky-owner");
+    assertEquals(
+      f.other.messages.find((m) => m.id === "sticky-owner")?.code,
+      "in_use",
+    );
+    f.request(f.owner, "recovered");
+    await waitFor(() => f.sent().length === 3);
+    f.finish(f.sent()[2].id, 6);
+    await waitFor(() => f.owner.binaryMessages.length === 1);
+    assertEquals(
+      f.connection.writes.some((line) =>
+        (JSON.parse(line) as JsonRecord).method === "stream/fail"
+      ),
+      false,
+    );
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("sequential validation precedes lease acquisition and generations reset ownership", async () => {
+  const f = await sequentialHubFixture();
+  try {
+    for (
+      const [i, params] of [
+        { offset: 0 },
+        { sort: [] },
+        { filter: null },
+        { count: true },
+        { max_rows: 0 },
+        { max_rows: 2001 },
+        { max_rows: null },
+        { max_bytes: null },
+        { max_bytes: -1 },
+        { max_bytes: 0.5 },
+        { max_bytes: "1" },
+        { max_bytes: Number.MAX_SAFE_INTEGER + 1 },
+      ].entries()
+    ) {
+      f.request(f.owner, `invalid-${i}`, params);
+      assertEquals(
+        f.owner.messages.find((m) => m.id === `invalid-${i}`)?.code,
+        "invalid_request",
+      );
+    }
+    f.request(f.other, "accepted");
+    await waitFor(() => f.sent().length === 1);
+    f.open(2);
+    await f.owner.nextMessage((m) =>
+      m.type === "view/open" &&
+      ((m.message as JsonRecord).params as JsonRecord).generation === 2
+    );
+    f.request(f.other, "stale");
+    assertEquals(
+      f.other.messages.find((m) => m.id === "stale")?.code,
+      "stale_generation",
+    );
+    f.request(f.owner, "new-generation", { generation: 2 });
+    await waitFor(() => f.sent().length === 2);
+    f.finish(f.sent()[0].id, 0);
+    f.finish(f.sent()[1].id, 0, 2);
+    await waitFor(() => f.owner.binaryMessages.length === 1);
+    assertEquals(f.other.binaryMessages.length, 0);
+    assertEquals(f.sent().length, 2);
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("sequential captured row caps are checked before acquiring a lease", async () => {
+  const f = await sequentialHubFixture(1);
+  try {
+    f.request(f.owner, "over-cap", { max_rows: 2 });
+    assertEquals(
+      f.owner.messages.find((m) => m.id === "over-cap")?.code,
+      "invalid_request",
+    );
+    assertEquals(f.sent().length, 0);
+    f.request(f.other, "default-within-cap");
+    await waitFor(() => f.sent().length === 1);
+    assertEquals(
+      f.other.messages.some((m) =>
+        m.id === "default-within-cap" && m.type === "error"
+      ),
+      false,
+    );
+  } finally {
+    f.hub.close();
+  }
+});

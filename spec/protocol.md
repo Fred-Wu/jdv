@@ -20,8 +20,9 @@ The envelope is JSON-RPC-like, but it is not JSON-RPC 2.0: messages use a
 - The only supported envelope encoding is `json`; the only supported compression
   is `none`. Both fields may be omitted to select those defaults. Unknown values
   produce an `unsupported` error.
-- A view id is a string. Only column positions are zero-based. `row_index` is
-  the original one-based R row number, including after filtering and sorting.
+- A view id is a string. Column positions and sequential `first_row` offsets are
+  zero-based. `row_index` is the original one-based R row number, including
+  after filtering and sorting.
 - Request ids are either strings of at most 128 UTF-8 bytes or JSON integer
   literal tokens from 0 through `2^53 - 1`. Fractional and exponent-form numeric
   ids are rejected, even when their mathematical value is integral. The same
@@ -29,8 +30,9 @@ The envelope is JSON-RPC-like, but it is not JSON-RPC 2.0: messages use a
   its JSON encoder may use exponent notation as long as the exact safe-integer
   value is preserved.
 - Envelope and method-parameter objects ignore unknown fields for forward
-  compatibility. Filter and sort objects remain strict. Duplicate object keys
-  are rejected. Unknown methods return `method_not_found`.
+  compatibility. Filter, sort, and `stream/next` parameter objects remain
+  strict. Duplicate object keys are rejected. Unknown methods return
+  `method_not_found`.
 - The page request method remains `table/rows` and identifies its owner with
   `params.view`. Lifecycle methods use the view names listed below; the former
   `table/open`, `table/closed`, `table/schema`, and `table/close` names are not
@@ -69,12 +71,16 @@ jdv_close(id = NULL)
 ```
 
 `x` may be a data frame, matrix, or another R object. Data frames and matrices
-register as grid views; other objects use the tree view by default.
-`jdv_register()` returns `list(id, open, notifications)`. `open` is a
-`view/open` JSON message. `notifications` is a character vector of pending
-notification JSON messages, or `character()` when there are none. The embedding
-host must deliver each notification in vector order before delivering `open`.
-Registration does not open a socket.
+register as grid views. Arrow Table and RecordBatchReader objects,
+`nanoarrow_array_stream` pointers, and Polars DataFrame objects register as
+forward-only Arrow grid views through the optional nanoarrow producer adapter.
+Their `mode` and `collation` arguments do not change sequential access. Other
+objects use the tree view by default. `jdv_register()` returns
+`list(id, open, notifications)`. `open` is a `view/open` JSON message.
+`notifications` is a character vector of pending notification JSON messages, or
+`character()` when there are none. The embedding host must deliver each
+notification in vector order before delivering `open`. Registration does not
+open a socket.
 
 `jdv_view()` registers the view, opens the local connection on first use, sends
 `hello`, pending `view/closed` notifications, then `view/open`, and returns the
@@ -373,12 +379,97 @@ it. This keeps the codec replaceable without changing those surrounding
 responsibilities. The function signature and encoder implementation are
 specified separately.
 
+### Sequential Arrow views
+
+Sequential descriptors have `kind: "grid"`, `access: "sequential"`,
+`encoding: "arrow-ipc"`, `mode: "sequential"`, `nrow: null`, and a known `ncol`.
+Only the `next` capability is true; `seek`, `sort`, `filter`, `known_total`, and
+`children` are false. Registration calls the producer's `get_schema` but never
+`get_next`. It moves one exported Arrow stream into native ownership. Close,
+replacement, eviction, parent cascade, namespace unload, and R disconnection
+release the stream and any carried batch exactly once. A release callback may
+execute R code; registry identity and generation are rechecked before publishing
+its result. Releases requested inside an active producer callback are deferred
+until that callback has finished.
+
+`schema` contains the original logical Arrow schema recursively: `format`,
+`name`, `flags`, `metadata`, `metadata_encoding`, `children`, and `dictionary`.
+Metadata is represented as hexadecimal bytes with `metadata_encoding: "hex"`.
+Each original top-level column has `index`, `name`, `type`, `unsupported`, and
+`ipc_index`; the added viewer fields `position`, `sortable`, `filterable`, and
+`drillable` preserve the ordinary grid shape. Both index fields are zero-based.
+`unsupported` is null for supported columns and otherwise explains why that
+column was omitted from IPC. Its `ipc_index` is null. The parallel `mapping`
+array maps original positions to IPC positions or null. Names may repeat and
+must never be used to recover the mapping. Even a page with no supported columns
+reports its row count in metadata.
+
+`stream/next` accepts only `view`, `generation`, `max_rows`, and `max_bytes`.
+`max_page_rows` is an optional descriptor field containing the positive safe
+integer row cap captured at registration, clamped to 2,000. Changing the R
+option later does not change an existing view's cap. `max_rows` defaults to
+`min(200, captured cap)` and must be a positive safe integer no larger than that
+cap. The viewer requests `min(200, descriptor.max_page_rows)` rows and validates
+returned row counts against that request. For older descriptors without this
+field it requests 200 rows; the host uses the legacy 2,000-row ceiling. When the
+field is valid, the host rejects requests above it before granting a lease.
+`max_bytes` uses the shared binary response budget above. Zero is a valid budget
+but returns `limit_exceeded` before fetching because it cannot hold an IPC
+stream. Offset, sorting, filtering, and count requests are rejected. The public
+synchronous `jdv_rpc(JSON)` entry rejects `stream/next` before consuming the
+producer; only the transport's private binary-capable entry can execute it.
+Random `table/rows` and object navigation are unavailable for sequential views.
+
+A successful binary response carries `view`, `generation`, `first_row`,
+`rows_fetched`, `rows_seen`, `done`, and the reserved `transfer` object.
+`first_row` is the zero-based source cursor before this page;
+`rows_seen = first_row + rows_fetched`. Each page is a self-contained IPC stream
+and never crosses an input batch boundary. `done` becomes true only after the
+producer's end-of-stream sentinel has been observed. A data page can therefore
+have `done: false` even when it contains the last rows. A following schema-only
+zero-row page can report `done: true`. Empty batches are skipped with bounded
+work; reaching that bound yields zero rows and `done: false`, which clients must
+not treat as EOF.
+
+The host leases a view generation to the first attached browser whose next
+request is accepted. Other browsers receive `in_use` while that owner remains
+attached, including between pages. At most one next request is pending per view
+generation. Cancellation, timeout, or owner detachment does not fail the R
+stream and does not rewind a sent request. Its slot remains reserved until the
+late terminal response is drained and discarded. Detachment releases the lease;
+a new owner then starts at the current source cursor. No additional host-to-R
+failure control is sent. The host validates current generation and budgets
+before granting a lease. An R connection loss closes all its views.
+
+Producer schema/array/next failures and a single row exceeding the page budget
+make the R stream terminally failed and release its resources. Later next
+requests return `stream_failed`. Ordinary encoder/allocation failures retain the
+carry and uncommitted offset for retry, as reported by the native boundary.
+Request cancellation and host timeout are separate from these producer failures.
+
+The viewer exposes Load next and an unknown total, without random navigation,
+sorting, or filtering. It displays gaps between the last received cursor and a
+new `first_row` as rows advanced but not displayed, including a skipped prefix
+when a new browser takes over. Per-view-generation progress survives selecting
+another view and display-cache eviction; zero-row non-EOF pages do not advance
+that cursor. EOF pages still report any skipped prefix. The display cache counts
+UTF-16 text bytes plus 64 bytes per row and 16 per cell, capped at 8 MiB and 32
+pages. It retains formatted rows rather than both raw IPC and decoded vectors.
+This accounting is not a JavaScript heap guarantee. Cell strings and binary hex
+are visibly truncated beyond 4,096 code units; exact decimal and timestamp
+formatting is unaffected. Evicted ranges cannot be fetched again. Decimal
+coefficients and signed/unsigned 64-bit integers are formatted exactly;
+timestamps use raw integer ticks, including negative fractions and declared time
+zones, rather than rounded millisecond getters. Nested values show a summary,
+and omitted columns display their unsupported reason.
+
 ## Methods
 
 | Method            | Direction        | Kind         | Result                                                                              |
 | ----------------- | ---------------- | ------------ | ----------------------------------------------------------------------------------- |
 | `view/open`       | R/host to viewer | Notification | Descriptor and, for Snapshot, all column payloads. Returned by `jdv_register()`.    |
 | `view/schema`     | Host to R        | Request      | Current dimensions and schema.                                                      |
+| `stream/next`     | Host to R        | Request      | One forward-only Arrow IPC page and cursor metadata.                                |
 | `table/rows`      | Host to R        | Request      | One selected page from a Paged view.                                                |
 | `object/children` | Host to R        | Request      | One page of children at a typed object path.                                        |
 | `object/open`     | Host to R        | Request      | Registers the captured value at a typed path as a child view.                       |
@@ -762,6 +853,8 @@ Error codes are stable machine-readable values. The `error` object contains
 | `unavailable`      | A well-formed object path no longer resolves or cannot be read safely.                                                                                          |
 | `stale_generation` | The request names a generation that is no longer active.                                                                                                        |
 | `view_not_found`   | The view id is missing or closed.                                                                                                                               |
+| `in_use`           | Another browser owns the sequential lease, a next request is still pending, or a reentrant operation cannot proceed.                                            |
+| `stream_failed`    | A sequential producer encountered a terminal failure; close or register a new stream to continue.                                                               |
 | `method_not_found` | No implementation exists for the requested method.                                                                                                              |
 
 Per-column channel failures are represented in the page payload and do not
