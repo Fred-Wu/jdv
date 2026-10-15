@@ -1,3 +1,4 @@
+import { type StreamCacheOptions } from "./stream_cache.ts";
 import page from "./web/index.html" with { type: "text" };
 import app from "./web/app.js" with { type: "text" };
 import styles from "./web/style.css" with { type: "text" };
@@ -32,7 +33,7 @@ import {
   writeAtomicPrivate,
 } from "./platform.ts";
 
-interface Options {
+interface Options extends StreamCacheOptions {
   mode: "default" | "tcp";
   httpPort: number;
   cacheDir: string;
@@ -41,6 +42,63 @@ interface Options {
 
 const encoder = new TextEncoder();
 const MAX_BROWSER_MESSAGE_BYTES = 64 * 1024;
+const MAX_BROWSER_BUFFERED_BYTES = 32 * 1024 * 1024;
+
+interface BrowserSocket {
+  readonly readyState: number;
+  readonly bufferedAmount: number;
+  send(value: string | Uint8Array): void;
+  close(code?: number, reason?: string): void;
+}
+
+export function createBrowserClient(
+  socket: BrowserSocket,
+  detach: (client: BrowserClient) => void,
+): BrowserClient {
+  let stopped = false;
+  const stop = (code?: number, reason?: string) => {
+    if (stopped) return;
+    stopped = true;
+    try {
+      socket.close(code, reason);
+    } finally {
+      detach(client);
+    }
+  };
+  const send = (value: string | Uint8Array, cacheReply: boolean) => {
+    if (stopped || socket.readyState !== WebSocket.OPEN) return;
+    // Cache reads bypass R credit; limit only their additional send queue.
+    if (cacheReply) {
+      const bytes = typeof value === "string"
+        ? encoder.encode(value).byteLength
+        : value.byteLength;
+      if (socket.bufferedAmount + bytes > MAX_BROWSER_BUFFERED_BYTES) {
+        stop(1013, "Cache reply send queue limit exceeded");
+        return;
+      }
+    }
+    try {
+      socket.send(value);
+    } catch {
+      stop();
+    }
+  };
+  const client: BrowserClient = {
+    send(value, cacheReply = false) {
+      send(JSON.stringify(value), cacheReply);
+    },
+    sendBinary(bytes, cacheReply = false) {
+      send(bytes, cacheReply);
+    },
+    close() {
+      if (
+        socket.readyState === WebSocket.OPEN ||
+        socket.readyState === WebSocket.CONNECTING
+      ) socket.close();
+    },
+  };
+  return client;
+}
 
 export async function startServer(options: Options = parseOptions()): Promise<{
   url: string;
@@ -48,9 +106,9 @@ export async function startServer(options: Options = parseOptions()): Promise<{
   discoveryPath: string;
   close: () => Promise<void>;
 }> {
+  const hub = new Hub(options);
   await preparePrivateDirectory(options.cacheDir);
   const r = await listenR({ mode: options.mode, cacheDir: options.cacheDir });
-  const hub = new Hub();
   let stopped = false;
   const instance = crypto.randomUUID();
   const pid = Deno.pid;
@@ -200,22 +258,7 @@ function handleHttp(
     }
     const { socket, response } = Deno.upgradeWebSocket(request);
     socket.binaryType = "arraybuffer";
-    const client: BrowserClient = {
-      send(value) {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify(value));
-        }
-      },
-      sendBinary(bytes) {
-        if (socket.readyState === WebSocket.OPEN) socket.send(bytes);
-      },
-      close() {
-        if (
-          socket.readyState === WebSocket.OPEN ||
-          socket.readyState === WebSocket.CONNECTING
-        ) socket.close();
-      },
-    };
+    const client = createBrowserClient(socket, (client) => hub.detach(client));
     socket.onopen = () => hub.attach(client);
     socket.onmessage = (event) => {
       if (
@@ -314,11 +357,13 @@ function validHost(host: string | null, port: number): boolean {
   return accepted.has(host.toLowerCase());
 }
 
-function parseOptions(args = Deno.args): Options {
+export function parseOptions(args = Deno.args): Options {
   let mode: Options["mode"] = "default";
   let httpPort = 0;
   let cacheDir = Deno.env.get("JDV_CACHE_DIR") ?? cacheDirectory();
   let token: string | undefined;
+  let streamCacheBytes: number | undefined;
+  let streamCacheViewBytes: number | undefined;
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (arg === "--tcp") {
@@ -329,6 +374,10 @@ function parseOptions(args = Deno.args): Options {
       const value = args[++index];
       if (!value) throw new Error("--cache-dir requires a path.");
       cacheDir = value;
+    } else if (arg === "--stream-cache-bytes") {
+      streamCacheBytes = parseCacheBytes(args[++index], arg);
+    } else if (arg === "--stream-cache-view-bytes") {
+      streamCacheViewBytes = parseCacheBytes(args[++index], arg);
     } else if (arg === "--token") {
       token = args[++index];
       if (!token || token.length < 16) {
@@ -336,14 +385,30 @@ function parseOptions(args = Deno.args): Options {
       }
     } else if (arg === "--help" || arg === "-h") {
       console.log(
-        "Usage: deno run [permissions] <URL>/server/main.ts [--tcp] [--http-port PORT] [--cache-dir PATH] [--token TOKEN]",
+        "Usage: deno run [permissions] <URL>/server/main.ts [--tcp] [--http-port PORT] [--cache-dir PATH] [--token TOKEN] [--stream-cache-bytes BYTES] [--stream-cache-view-bytes BYTES]",
       );
       Deno.exit(0);
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
   }
-  return { mode, httpPort, cacheDir, token };
+  return {
+    mode,
+    httpPort,
+    cacheDir,
+    token,
+    streamCacheBytes,
+    streamCacheViewBytes,
+  };
+}
+
+function parseCacheBytes(value: string | undefined, label: string): number {
+  if (!value || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) {
+    throw new Error(
+      `${label} requires a non-negative safe integer byte count.`,
+    );
+  }
+  return Number(value);
 }
 
 function parsePort(value: string | undefined, label: string): number {

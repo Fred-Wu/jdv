@@ -41,6 +41,50 @@ When using a custom host cache directory, configure R with the matching
 the same discovery address. On shutdown the server removes the discovery file
 only when it still contains that server's process id and private instance id.
 
+## Sequential page cache
+
+The host retains opaque Arrow IPC pages per R session, view, and generation, so
+switching views, reloading, or opening another tab can restore received rows
+without another R request. Valid late replies after cancellation, timeout, or
+browser detachment are also retained. Reading cached pages does not take the
+stream's owner lease; advancing the R stream still does.
+
+The default memory budget is 256 MiB total and 64 MiB per view. Each page costs
+its raw byte length plus 1,024 bytes for bounded metadata, including zero-row
+pages. Oldest pages are evicted first. This is accounting for retained pages,
+not a JavaScript process-heap guarantee. An oversized page can be evicted
+immediately; its page index, row watermark, and EOF state remain available so
+the viewer can identify rows no longer retained. Closing a view, replacing its
+generation, cascading a parent close, or disconnecting R clears its cache.
+
+Set byte counts with `--stream-cache-bytes` and `--stream-cache-view-bytes`; a
+zero value disables the feature. For example:
+
+```sh
+deno run -A server/main.ts --stream-cache-bytes 134217728 --stream-cache-view-bytes 33554432
+```
+
+Embedders can use `streamCacheBytes` and `streamCacheViewBytes` in
+`startServer()` options. The viewer detects `welcome.capabilities.stream_cache`
+and uses the host-only `stream/cache/info` and `stream/cache/get` methods.
+Catalogs default to 64 pages, are capped at 128, and paginate with a monotonic
+page cursor. The catalog reports lost prefixes and gaps. Cache gets use the
+ordinary bounded binary frame and carry their page metadata in
+`result.cache_page`. A new append sends `after_page`; a stale cursor returns
+`cache_changed` before R is contacted. Older hosts without the capability keep
+the existing forward-only behavior. See
+[the protocol](../spec/protocol.md#host-cache-for-sequential-pages) for
+parameters and response fields.
+
+The browser retains formatted display pages separately, with 8 MiB and 32 pages
+per view and 32 MiB across views. Host-retained pages can be decoded again after
+display eviction. Cache replies have a separate 32 MiB WebSocket queue admission
+limit; exceeding it closes and detaches that browser without clearing the R
+session or host page cache. Existing welcome messages, notifications, and live R
+replies retain their delivery behavior. A send failure detaches the browser on
+any output path. Once a range is no longer retained by the host, the
+forward-only R source cannot fetch it again.
+
 ## Browser WebSocket protocol
 
 The WebSocket endpoint is `/ws`. It accepts frames only when `Host` names the
@@ -68,17 +112,17 @@ Send requests with a unique string id per WebSocket client and session:
 ```
 
 The server accepts `table/rows`, `view/schema`, `object/children`,
-`object/open`, and `view/close`. Object requests carry the view generation and a
-typed path rooted at that view. `object/children` is tree-only. Grid
-`object/open` paths start with `{"kind":"cell","row_index":205,"column":2}`: the
-row is the original one-based R index and the column is its zero-based schema
-position. Optional suffix steps use tree path forms. The column must have
-`drillable: true`, and the grid's `capabilities.children` must be true. Object
-child pages are capped at 500 entries; paths are capped at 32 steps. Opening a
-child registers a captured value as a new view. Closing a child releases that
-view without closing its parent. Responses use `type: "response"` and carry the
-original client id. A `busy` event is informational and does not cancel the
-request. A client may send
+`object/open`, `view/close`, `stream/next`, `stream/cache/info`, and
+`stream/cache/get`. Object requests carry the view generation and a typed path
+rooted at that view. `object/children` is tree-only. Grid `object/open` paths
+start with `{"kind":"cell","row_index":205,"column":2}`: the row is the original
+one-based R index and the column is its zero-based schema position. Optional
+suffix steps use tree path forms. The column must have `drillable: true`, and
+the grid's `capabilities.children` must be true. Object child pages are capped
+at 500 entries; paths are capped at 32 steps. Opening a child registers a
+captured value as a new view. Closing a child releases that view without closing
+its parent. Responses use `type: "response"` and carry the original client id. A
+`busy` event is informational and does not cancel the request. A client may send
 `{"type":"cancel","id":"page-1","session":"r-1234-1"}`; it is forwarded as an R
 `cancel` notification when the request was already sent. Unsent `table/rows` and
 `object/children` requests use separate coalescing rules. For the same client,

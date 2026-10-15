@@ -1,3 +1,9 @@
+import {
+  STREAM_CACHE_INFO_LIMIT,
+  type StreamCacheOptions,
+  StreamPageCache,
+  type StreamProgress,
+} from "./stream_cache.ts";
 import { type JsonObject, type RPeer, startRPeer } from "./r_listener.ts";
 import {
   MAX_R_BINARY_FRAME_BYTES,
@@ -33,8 +39,8 @@ interface RLimits {
 }
 
 export interface BrowserClient {
-  send(value: JsonObject): void;
-  sendBinary(bytes: Uint8Array): void;
+  send(value: JsonObject, cacheReply?: boolean): void;
+  sendBinary(bytes: Uint8Array, cacheReply?: boolean): void;
   close(): void;
 }
 
@@ -64,6 +70,7 @@ interface PendingRequest {
   busyTimer: ReturnType<typeof setTimeout> | undefined;
   cancelSent: boolean;
   maxBytes: number;
+  streamMaxRows?: number;
 }
 
 interface OutboundFrame {
@@ -112,6 +119,11 @@ export class Hub {
   readonly #clients = new Set<BrowserClient>();
   readonly #sessions = new Map<string, RSession>();
   readonly #peers = new Set<RPeer>();
+  readonly #streamCache: StreamPageCache;
+
+  constructor(options: StreamCacheOptions = {}) {
+    this.#streamCache = new StreamPageCache(options);
+  }
 
   acceptR(connection: ByteConnection): void {
     let session: RSession | null = null;
@@ -140,6 +152,7 @@ export class Hub {
     client.send({
       type: "welcome",
       protocol: 1,
+      capabilities: { stream_cache: this.#streamCache.capability() },
       sessions: [...this.#sessions.values()].map((session) => ({
         hello: session.hello,
         views: [...session.views.values()].map((view) => view.descriptor),
@@ -235,6 +248,8 @@ export class Hub {
         "object/children",
         "object/open",
         "stream/next",
+        "stream/cache/info",
+        "stream/cache/get",
       ].includes(method)
     ) {
       client.send({
@@ -276,6 +291,18 @@ export class Hub {
       });
       return;
     }
+    if (method === "stream/cache/info" || method === "stream/cache/get") {
+      this.#readStreamCache(
+        client,
+        browserId,
+        session,
+        current,
+        method,
+        params,
+      );
+      return;
+    }
+    let streamMaxRows: number | undefined;
     if (method === "stream/next") {
       const descriptor = current.descriptor.params;
       if (
@@ -306,7 +333,8 @@ export class Hub {
           (!Number.isSafeInteger(params.max_bytes) ||
             Number(params.max_bytes) < 0)) ||
         Object.keys(params).some((name) =>
-          !["view", "generation", "max_rows", "max_bytes"].includes(name)
+          !["view", "generation", "max_rows", "max_bytes", "after_page"]
+            .includes(name)
         )
       ) {
         client.send({
@@ -316,6 +344,37 @@ export class Hub {
           message: "Invalid sequential request parameters.",
         });
         return;
+      }
+      streamMaxRows = Number(rows);
+      if (Object.hasOwn(params, "after_page")) {
+        if (
+          !Number.isSafeInteger(params.after_page) ||
+          Number(params.after_page) < -1
+        ) {
+          client.send({
+            type: "error",
+            id: browserId,
+            session: session.id,
+            code: "invalid_request",
+            message: "after_page must be a safe integer at least -1.",
+          });
+          return;
+        }
+        if (
+          this.#streamCache.enabled &&
+          params.after_page !== this.#streamCache.tail(current).last_page
+        ) {
+          client.send({
+            type: "error",
+            id: browserId,
+            session: session.id,
+            code: "cache_changed",
+            message:
+              "The sequential cache tail changed; refresh the cache before advancing.",
+            details: this.#streamCache.tail(current),
+          });
+          return;
+        }
       }
       if (
         (current.sequentialOwner && current.sequentialOwner !== client) ||
@@ -384,6 +443,7 @@ export class Hub {
       busyTimer: undefined,
       cancelSent: false,
       maxBytes: Math.min(Number(maxBytes), effectiveBinaryByteLimit(session)),
+      streamMaxRows,
     };
     pending.requestFrame = {
       kind: "request",
@@ -392,7 +452,11 @@ export class Hub {
       value: {
         id,
         method,
-        params,
+        params: method === "stream/next" && Object.hasOwn(params, "after_page")
+          ? Object.fromEntries(
+            Object.entries(params).filter(([name]) => name !== "after_page"),
+          )
+          : params,
         encoding: "json",
         compression: "none",
         deadline: pending.deadline / 1000,
@@ -455,6 +519,131 @@ export class Hub {
       timeout,
     );
     this.#scheduleDrain(session);
+  }
+
+  #readStreamCache(
+    client: BrowserClient,
+    id: string,
+    session: RSession,
+    view: ViewRecord,
+    method: string,
+    params: JsonObject,
+  ): void {
+    const fail = (code: string, message: string) =>
+      client.send(
+        { type: "error", id, session: session.id, code, message },
+        true,
+      );
+    if (!this.#streamCache.enabled) {
+      fail("unsupported", "The host stream cache is disabled.");
+      return;
+    }
+    const descriptor = view.descriptor.params;
+    if (
+      !isObject(descriptor) || descriptor.access !== "sequential" ||
+      descriptor.encoding !== "arrow-ipc"
+    ) {
+      fail("unsupported", "This view is not sequential.");
+      return;
+    }
+    const allowed = method === "stream/cache/info"
+      ? ["view", "generation", "after_page", "limit"]
+      : ["view", "generation", "page", "max_bytes"];
+    if (Object.keys(params).some((name) => !allowed.includes(name))) {
+      fail("invalid_request", "Unknown stream cache parameter.");
+      return;
+    }
+    if (method === "stream/cache/info") {
+      const after = Object.hasOwn(params, "after_page")
+        ? params.after_page
+        : -1;
+      const limit = Object.hasOwn(params, "limit") ? params.limit : 64;
+      if (
+        (Object.hasOwn(params, "after_page") &&
+          (!Number.isSafeInteger(after) || Number(after) < 0)) ||
+        !Number.isSafeInteger(limit) || Number(limit) < 1 ||
+        Number(limit) > STREAM_CACHE_INFO_LIMIT
+      ) {
+        fail(
+          "invalid_request",
+          "Invalid stream cache cursor or catalog limit.",
+        );
+        return;
+      }
+      const response = {
+        type: "response",
+        id,
+        session: session.id,
+        result: {
+          view: params.view,
+          generation: view.generation,
+          ...this.#streamCache.info(view, Number(after), Number(limit)),
+        },
+        warnings: [],
+      };
+      if (
+        encoder.encode(JSON.stringify(response)).byteLength >
+          MAX_R_BINARY_HEADER_BYTES
+      ) {
+        fail(
+          "limit_exceeded",
+          "The cache catalog exceeds the JSON header limit.",
+        );
+        return;
+      }
+      client.send(response, true);
+      return;
+    }
+    const budget = Object.hasOwn(params, "max_bytes")
+      ? params.max_bytes
+      : effectiveBinaryByteLimit(session);
+    if (
+      !Number.isSafeInteger(params.page) || Number(params.page) < 0 ||
+      !Number.isSafeInteger(budget) || Number(budget) < 0
+    ) {
+      fail("invalid_request", "Invalid cache page index or byte budget.");
+      return;
+    }
+    const page = this.#streamCache.get(view, Number(params.page));
+    if (!page) {
+      fail(
+        "unavailable",
+        "This stream page is not retained in the host cache.",
+      );
+      return;
+    }
+    if (
+      page.body.byteLength >
+        Math.min(Number(budget), effectiveBinaryByteLimit(session))
+    ) {
+      fail(
+        "limit_exceeded",
+        "The cached page exceeds the requested byte budget.",
+      );
+      return;
+    }
+    const { first_row, rows_fetched, rows_seen, done } = page.metadata;
+    const frame = encodeBrowserBinary({
+      type: "response",
+      id,
+      session: session.id,
+      result: {
+        view: params.view,
+        generation: view.generation,
+        first_row,
+        rows_fetched,
+        rows_seen,
+        done,
+        transfer: { encoding: "arrow-ipc", byte_length: page.body.byteLength },
+        cache_page: page.metadata,
+      },
+      warnings: [],
+    }, page.body);
+    if (!frame) {
+      fail("limit_exceeded", "The cached page exceeds the binary frame limit.");
+      return;
+    }
+    client.sendBinary(frame, true);
   }
 
   close(): void {
@@ -551,23 +740,58 @@ export class Hub {
     const deliver = !pending.localEnded && pending.state === "live" &&
       currentGeneration && Date.now() < pending.deadline;
     if (
-      deliver && body && isObject(message.result) &&
+      body && isObject(message.result) &&
       (message.result.view !== pending.view ||
         message.result.generation !== pending.generation)
     ) {
-      pending.client?.send({
-        type: "error",
-        id: pending.browserId,
-        session: session.id,
-        code: message.result.view !== pending.view
-          ? "invalid_request"
-          : "stale_generation",
-        message:
-          "R returned a binary response for a different view generation.",
-      });
+      if (deliver) {
+        pending.client?.send({
+          type: "error",
+          id: pending.browserId,
+          session: session.id,
+          code: message.result.view !== pending.view
+            ? "invalid_request"
+            : "stale_generation",
+          message:
+            "R returned a binary response for a different view generation.",
+        });
+      }
       this.#finishPending(session, pending);
       this.#scheduleDrain(session);
       return;
+    }
+    let cachedPage;
+    if (
+      this.#streamCache.enabled && pending.method === "stream/next" &&
+      currentGeneration && body && isObject(message.result)
+    ) {
+      const progress = validStreamProgress(
+        message.result,
+        pending.streamMaxRows!,
+      );
+      const transfer = message.result.transfer;
+      const valid = progress && body.byteLength <= pending.maxBytes &&
+        isObject(transfer) &&
+        transfer.encoding === "arrow-ipc" &&
+        transfer.byte_length === body.byteLength;
+      if (valid) cachedPage = this.#streamCache.record(view!, progress, body);
+      if (!valid || !cachedPage) {
+        if (deliver) {
+          pending.client?.send({
+            type: "error",
+            id: pending.browserId,
+            session: session.id,
+            code: body.byteLength > pending.maxBytes
+              ? "limit_exceeded"
+              : "invalid_request",
+            message:
+              "R returned invalid sequential page metadata, cursor, or byte length.",
+          });
+        }
+        this.#finishPending(session, pending);
+        this.#scheduleDrain(session);
+        return;
+      }
     }
     if (
       pending.method === "object/open" && isObject(message.result) &&
@@ -585,6 +809,9 @@ export class Hub {
         session: session.id,
         id: pending.browserId,
       };
+      if (cachedPage && isObject(message.result)) {
+        response.result = { ...message.result, cache_page: cachedPage };
+      }
       if (body) {
         if (body.byteLength > pending.maxBytes) {
           pending.client?.send({
@@ -662,6 +889,7 @@ export class Hub {
     const previous = session.views.get(viewId);
     if (previous && generation <= previous.generation) return;
     if (previous) {
+      this.#streamCache.drop(previous);
       this.#closeDescendants(session, viewId);
       this.#cancelViewGeneration(session, viewId, previous.generation);
     }
@@ -683,6 +911,7 @@ export class Hub {
     if (!view || view.generation !== generation) return;
     this.#closeDescendants(session, viewId);
     this.#cancelViewGeneration(session, viewId, generation);
+    this.#streamCache.drop(view);
     session.views.delete(viewId);
     this.#broadcast({
       type: "view/closed",
@@ -711,6 +940,7 @@ export class Hub {
       visited.add(viewId);
       this.#closeDescendantsVisited(session, viewId, visited);
       this.#cancelViewGeneration(session, viewId, view.generation);
+      this.#streamCache.drop(view);
       session.views.delete(viewId);
       this.#broadcast({
         type: "view/closed",
@@ -1128,6 +1358,8 @@ export class Hub {
       });
       this.#finishPending(session, pending);
     }
+    for (const view of session.views.values()) this.#streamCache.drop(view);
+    session.views.clear();
     this.#sessions.delete(session.id);
     this.#broadcast({
       type: "session/closed",
@@ -1445,4 +1677,25 @@ function isTerminalResponse(message: JsonObject): boolean {
   if (hasResult === hasError) return false;
   if (hasResult) return true;
   return isObject(message.error) && typeof message.error.code === "string";
+}
+
+function validStreamProgress(
+  value: JsonObject,
+  maxRows: number,
+): StreamProgress | null {
+  const first = value.first_row,
+    count = value.rows_fetched,
+    seen = value.rows_seen;
+  if (
+    ![first, count, seen].every((item) =>
+      Number.isSafeInteger(item) && Number(item) >= 0
+    ) || Number(count) > maxRows || Number(first) + Number(count) !== seen ||
+    typeof value.done !== "boolean"
+  ) return null;
+  return {
+    first_row: Number(first),
+    rows_fetched: Number(count),
+    rows_seen: Number(seen),
+    done: value.done,
+  };
 }

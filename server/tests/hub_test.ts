@@ -62,15 +62,19 @@ const DEFAULT_LIMITS = {
 class MemoryBrowser implements BrowserClient {
   readonly messages: JsonRecord[] = [];
   readonly binaryMessages: Uint8Array[] = [];
+  readonly messageCacheReplies: boolean[] = [];
+  readonly binaryCacheReplies: boolean[] = [];
   #waiters: Array<() => void> = [];
 
-  send(value: JsonRecord): void {
+  send(value: JsonRecord, cacheReply = false): void {
     this.messages.push(value);
+    this.messageCacheReplies.push(cacheReply);
     for (const wake of this.#waiters.splice(0)) wake();
   }
 
-  sendBinary(bytes: Uint8Array): void {
+  sendBinary(bytes: Uint8Array, cacheReply = false): void {
     this.binaryMessages.push(bytes.slice());
+    this.binaryCacheReplies.push(cacheReply);
     for (const wake of this.#waiters.splice(0)) wake();
   }
 
@@ -2081,8 +2085,11 @@ Deno.test("grid cell opens validate original row selectors and tree suffixes", a
   }
 });
 
-async function sequentialHubFixture(maxPageRows?: number) {
-  const hub = new Hub();
+async function sequentialHubFixture(
+  maxPageRows?: number,
+  options: ConstructorParameters<typeof Hub>[0] = {},
+) {
+  const hub = new Hub(options);
   const connection = new MemoryConnection();
   hub.acceptR(connection);
   connection.inject({
@@ -2093,7 +2100,7 @@ async function sequentialHubFixture(maxPageRows?: number) {
   const other = new MemoryBrowser();
   hub.attach(owner);
   hub.attach(other);
-  const open = (generation = 1) =>
+  const open = (generation = 1, parent?: string) =>
     connection.inject(notification("view/open", {
       view: "stream-1",
       generation,
@@ -2114,6 +2121,7 @@ async function sequentialHubFixture(maxPageRows?: number) {
       columns: [],
       schema: { format: "+s", children: [] },
       mapping: [],
+      ...(parent === undefined ? {} : { parent }),
     }));
   open();
   await owner.nextMessage((m) => m.type === "view/open");
@@ -2317,6 +2325,457 @@ Deno.test("sequential captured row caps are checked before acquiring a lease", a
       ),
       false,
     );
+  } finally {
+    f.hub.close();
+  }
+});
+
+function cacheRequest(
+  f: Awaited<ReturnType<typeof sequentialHubFixture>>,
+  client: MemoryBrowser,
+  id: string,
+  method = "stream/cache/info",
+  params: JsonRecord = {},
+) {
+  f.hub.handleBrowser(client, {
+    type: "request",
+    id,
+    session: "r-9010-1",
+    method,
+    params: { view: "stream-1", generation: 1, ...params },
+  });
+  return client.messages.findLast((m) => m.id === id);
+}
+function cachedResult(value: JsonRecord | undefined): JsonRecord {
+  return value?.result as JsonRecord;
+}
+function injectStreamResult(
+  f: Awaited<ReturnType<typeof sequentialHubFixture>>,
+  id: unknown,
+  overrides: JsonRecord = {},
+  bytes = new Uint8Array([0, 10, 255]),
+) {
+  const header = new TextEncoder().encode(
+    JSON.stringify({
+      id,
+      result: {
+        view: "stream-1",
+        generation: 1,
+        first_row: 0,
+        rows_fetched: 3,
+        rows_seen: 3,
+        done: false,
+        ...overrides,
+        transfer: { encoding: "arrow-ipc", byte_length: bytes.length },
+      },
+      warnings: ["not retained in cache"],
+    }) + "\n",
+  );
+  f.connection.injectRaw(concatBytes(header, bytes));
+}
+async function streamBarrier(
+  f: Awaited<ReturnType<typeof sequentialHubFixture>>,
+  nonce: string,
+) {
+  f.connection.inject({ method: "fixture/barrier", params: { nonce } });
+  await f.other.nextMessage((m) =>
+    m.type === "notification" &&
+    ((m.message as JsonRecord)?.params as JsonRecord)?.nonce === nonce
+  );
+}
+
+Deno.test("host cache serves any browser without R traffic or a lease and guards stale append cursors", async () => {
+  const f = await sequentialHubFixture();
+  try {
+    const capability = (f.owner.messages[0].capabilities as JsonRecord)
+      .stream_cache as JsonRecord;
+    assertEquals(capability.version, 1);
+    f.request(f.owner, "live", { after_page: -1 });
+    await waitFor(() => f.sent().length === 1);
+    assertEquals(
+      Object.hasOwn(f.sent()[0].params as JsonRecord, "after_page"),
+      false,
+    );
+    injectStreamResult(f, f.sent()[0].id);
+    await waitFor(() => f.owner.binaryMessages.length === 1);
+    assertEquals(f.owner.binaryCacheReplies[0], false);
+    assertEquals(f.owner.messageCacheReplies[0], false);
+    const live = decodeBrowserBinary(f.owner.binaryMessages[0]).envelope;
+    assertEquals(
+      ((live.result as JsonRecord).cache_page as JsonRecord).page,
+      0,
+    );
+    const info = cachedResult(cacheRequest(f, f.other, "info"));
+    assertEquals(f.other.messageCacheReplies.at(-1), true);
+    assertEquals(info.last_page, 0);
+    assertEquals(info.rows_seen, 3);
+    assertEquals((info.pages as JsonRecord[])[0].byte_length, 3);
+    cacheRequest(f, f.other, "get", "stream/cache/get", {
+      page: 0,
+      max_bytes: 3,
+    });
+    assertEquals(f.other.binaryMessages.length, 1);
+    assertEquals(f.other.binaryCacheReplies[0], true);
+    cacheRequest(f, f.other, "missing-page", "stream/cache/get", { page: 99 });
+    assertEquals(f.other.messages.at(-1)?.code, "unavailable");
+    assertEquals(f.other.messageCacheReplies.at(-1), true);
+    const cached = decodeBrowserBinary(f.other.binaryMessages[0]);
+    assertEquals([...cached.body], [0, 10, 255]);
+    assertEquals(cached.envelope.warnings, []);
+    assertEquals(
+      (cached.envelope.result as JsonRecord).cache_page,
+      (info.pages as JsonRecord[])[0],
+    );
+    assertEquals(f.sent().length, 1);
+    f.request(f.other, "owned", { after_page: 0 });
+    assertEquals(
+      f.other.messages.find((m) => m.id === "owned")?.code,
+      "in_use",
+    );
+    f.hub.detach(f.owner);
+    f.request(f.other, "stale-tail", { after_page: -1 });
+    assertEquals(
+      f.other.messages.find((m) => m.id === "stale-tail")?.code,
+      "cache_changed",
+    );
+    assertEquals(f.other.messages.find((m) => m.id === "stale-tail")?.details, {
+      last_page: 0,
+      rows_seen: 3,
+      done: false,
+    });
+    assertEquals(f.sent().length, 1);
+    const newcomer = new MemoryBrowser();
+    f.hub.attach(newcomer);
+    f.request(newcomer, "next", { after_page: 0 });
+    await waitFor(() => f.sent().length === 2);
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("cancelled timed-out and detached valid stream pages enter the host cache", async () => {
+  for (const scenario of ["cancel", "timeout", "detach"]) {
+    const f = await sequentialHubFixture();
+    try {
+      f.request(
+        f.owner,
+        "pending",
+        {},
+        scenario === "timeout" ? 100 : undefined,
+      );
+      await waitFor(() => f.sent().length === 1);
+      if (scenario === "cancel") {
+        f.hub.handleBrowser(f.owner, {
+          type: "cancel",
+          id: "pending",
+          session: "r-9010-1",
+        });
+      }
+      if (scenario === "detach") f.hub.detach(f.owner);
+      if (scenario === "timeout") {
+        await f.owner.nextMessage((m) =>
+          m.id === "pending" && m.code === "timeout"
+        );
+      }
+      injectStreamResult(f, f.sent()[0].id);
+      await streamBarrier(f, scenario);
+      assertEquals(f.owner.binaryMessages.length, 0);
+      const info = cachedResult(cacheRequest(f, f.other, `info-${scenario}`));
+      assertEquals(info.last_page, 0);
+      assertEquals(info.rows_seen, 3);
+      cacheRequest(f, f.other, `get-${scenario}`, "stream/cache/get", {
+        page: 0,
+      });
+      assertEquals(f.other.binaryMessages.length, 1);
+      assertEquals(f.sent().length, 1);
+    } finally {
+      f.hub.close();
+    }
+  }
+});
+
+Deno.test("invalid late sequential bodies never populate cache or resurrect replaced generations", async () => {
+  for (
+    const scenario of [
+      "view",
+      "generation",
+      "budget",
+      "rows",
+      "regression",
+      "replacement",
+    ]
+  ) {
+    const f = await sequentialHubFixture();
+    try {
+      if (scenario === "regression") {
+        f.request(f.owner, "first");
+        await waitFor(() => f.sent().length === 1);
+        injectStreamResult(f, f.sent()[0].id);
+        await streamBarrier(f, "first");
+      }
+      const index = f.sent().length;
+      f.request(f.owner, "late", scenario === "budget" ? { max_bytes: 2 } : {});
+      await waitFor(() => f.sent().length === index + 1);
+      f.hub.handleBrowser(f.owner, {
+        type: "cancel",
+        id: "late",
+        session: "r-9010-1",
+      });
+      if (scenario === "replacement") {
+        f.open(2);
+        await f.other.nextMessage((m) =>
+          m.type === "view/open" &&
+          ((m.message as JsonRecord).params as JsonRecord).generation === 2
+        );
+      }
+      const override = scenario === "view"
+        ? { view: "different" }
+        : scenario === "generation"
+        ? { generation: 2 }
+        : scenario === "rows"
+        ? { rows_seen: 9 }
+        : {};
+      injectStreamResult(f, f.sent()[index].id, override);
+      await streamBarrier(f, scenario);
+      const info = cachedResult(
+        cacheRequest(f, f.other, "info", "stream/cache/info", {
+          generation: scenario === "replacement" ? 2 : 1,
+        }),
+      );
+      assertEquals(info.last_page, scenario === "regression" ? 0 : -1);
+      assertEquals(
+        (info.pages as JsonRecord[]).length,
+        scenario === "regression" ? 1 : 0,
+      );
+    } finally {
+      f.hub.close();
+    }
+  }
+});
+
+Deno.test("host cache validates catalog and get budgets and keeps disabled legacy behavior", async () => {
+  const f = await sequentialHubFixture();
+  try {
+    for (
+      const [index, params] of [
+        { after_page: -1 },
+        { after_page: null },
+        { limit: 0 },
+        { limit: 129 },
+        { limit: "2" },
+        { unexpected: true },
+      ].entries()
+    ) {
+      assertEquals(
+        cacheRequest(
+          f,
+          f.other,
+          `invalid-${index}`,
+          "stream/cache/info",
+          params,
+        )?.code,
+        "invalid_request",
+      );
+    }
+    f.request(f.owner, "live");
+    await waitFor(() => f.sent().length === 1);
+    injectStreamResult(f, f.sent()[0].id);
+    await streamBarrier(f, "stored");
+    assertEquals(
+      cacheRequest(f, f.other, "small", "stream/cache/get", {
+        page: 0,
+        max_bytes: 2,
+      })?.code,
+      "limit_exceeded",
+    );
+    for (
+      const [index, params] of [
+        { page: -1 },
+        { page: 0.5 },
+        { page: 0, max_bytes: null },
+        { page: 0, max_bytes: -1 },
+        { page: 0, extra: true },
+      ].entries()
+    ) {
+      assertEquals(
+        cacheRequest(
+          f,
+          f.other,
+          `invalid-get-${index}`,
+          "stream/cache/get",
+          params,
+        )?.code,
+        "invalid_request",
+      );
+    }
+    assertEquals(
+      cacheRequest(f, f.other, "missing", "stream/cache/get", { page: 99 })
+        ?.code,
+      "unavailable",
+    );
+    assertEquals(f.sent().length, 1);
+  } finally {
+    f.hub.close();
+  }
+  const disabled = await sequentialHubFixture(undefined, {
+    streamCacheBytes: 0,
+  });
+  try {
+    assertEquals(
+      (disabled.owner.messages[0].capabilities as JsonRecord).stream_cache,
+      false,
+    );
+    assertEquals(
+      cacheRequest(disabled, disabled.other, "info")?.code,
+      "unsupported",
+    );
+    disabled.request(disabled.owner, "legacy");
+    await waitFor(() => disabled.sent().length === 1);
+    injectStreamResult(disabled, disabled.sent()[0].id);
+    await waitFor(() => disabled.owner.binaryMessages.length === 1);
+    assertEquals(
+      (decodeBrowserBinary(disabled.owner.binaryMessages[0]).envelope
+        .result as JsonRecord).cache_page,
+      undefined,
+    );
+  } finally {
+    disabled.hub.close();
+  }
+});
+
+Deno.test("stream cache invalidates on generation close cascade and session disconnect", async () => {
+  const f = await sequentialHubFixture();
+  try {
+    f.request(f.owner, "old");
+    await waitFor(() => f.sent().length === 1);
+    injectStreamResult(f, f.sent()[0].id);
+    await streamBarrier(f, "old");
+    f.open(2);
+    await f.other.nextMessage((m) =>
+      m.type === "view/open" &&
+      ((m.message as JsonRecord).params as JsonRecord).generation === 2
+    );
+    assertEquals(
+      cacheRequest(f, f.other, "old-get", "stream/cache/get", { page: 0 })
+        ?.code,
+      "stale_generation",
+    );
+    assertEquals(
+      cachedResult(
+        cacheRequest(f, f.other, "fresh", "stream/cache/info", {
+          generation: 2,
+        }),
+      ).last_page,
+      -1,
+    );
+    f.request(f.owner, "new", { generation: 2 });
+    await waitFor(() => f.sent().length === 2);
+    injectStreamResult(f, f.sent()[1].id, { generation: 2 });
+    await streamBarrier(f, "new");
+    f.connection.inject(
+      notification("view/closed", { view: "stream-1", generation: 2 }),
+    );
+    await f.other.nextMessage((m) => m.type === "view/closed");
+    assertEquals(
+      cacheRequest(f, f.other, "closed", "stream/cache/get", {
+        page: 0,
+        generation: 2,
+      })?.code,
+      "view_not_found",
+    );
+    openTable(f.connection);
+    await f.other.nextMessage((m) =>
+      m.type === "view/open" &&
+      ((m.message as JsonRecord).params as JsonRecord).view === "table-1"
+    );
+    f.open(3, "table-1");
+    await f.other.nextMessage((m) =>
+      m.type === "view/open" &&
+      ((m.message as JsonRecord).params as JsonRecord).generation === 3
+    );
+    f.request(f.owner, "child", { generation: 3 });
+    await waitFor(() => f.sent().length === 3);
+    injectStreamResult(f, f.sent()[2].id, { generation: 3 });
+    await streamBarrier(f, "child");
+    assertEquals(
+      cachedResult(
+        cacheRequest(f, f.other, "child-info", "stream/cache/info", {
+          generation: 3,
+        }),
+      ).last_page,
+      0,
+    );
+    f.connection.inject(
+      notification("view/closed", { view: "table-1", generation: 1 }),
+    );
+    await f.other.nextMessage((m) =>
+      m.type === "view/closed" &&
+      ((m.message as JsonRecord).params as JsonRecord).view === "stream-1" &&
+      ((m.message as JsonRecord).params as JsonRecord).generation === 3
+    );
+    assertEquals(
+      cacheRequest(f, f.other, "cascade", "stream/cache/get", {
+        page: 0,
+        generation: 3,
+      })?.code,
+      "view_not_found",
+    );
+    f.open(4);
+    await f.other.nextMessage((m) =>
+      m.type === "view/open" &&
+      ((m.message as JsonRecord).params as JsonRecord).generation === 4
+    );
+    f.connection.close();
+    await f.other.nextMessage((m) => m.type === "session/closed");
+    assertEquals(
+      cacheRequest(f, f.other, "disconnected", "stream/cache/info", {
+        generation: 3,
+      })?.code,
+      "session_not_found",
+    );
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("host cache keeps progress after immediate eviction and accepts legacy repeated EOF", async () => {
+  const f = await sequentialHubFixture(undefined, {
+    streamCacheBytes: 1024,
+    streamCacheViewBytes: 1024,
+  });
+  try {
+    f.request(f.owner, "eof", { after_page: -1 });
+    await waitFor(() => f.sent().length === 1);
+    injectStreamResult(f, f.sent()[0].id, { done: true });
+    await streamBarrier(f, "eof");
+    assertEquals(cachedResult(cacheRequest(f, f.other, "info")), {
+      view: "stream-1",
+      generation: 1,
+      pages: [],
+      next_after: null,
+      last_page: 0,
+      rows_seen: 3,
+      done: true,
+      unavailable_before: 3,
+    });
+    assertEquals(
+      cacheRequest(f, f.other, "get", "stream/cache/get", { page: 0 })?.code,
+      "unavailable",
+    );
+    f.request(f.owner, "repeat");
+    await waitFor(() => f.sent().length === 2);
+    injectStreamResult(f, f.sent()[1].id, {
+      first_row: 3,
+      rows_fetched: 0,
+      rows_seen: 3,
+      done: true,
+    }, new Uint8Array());
+    await streamBarrier(f, "repeat");
+    assertEquals(f.owner.binaryMessages.length, 2);
+    const info = cachedResult(cacheRequest(f, f.other, "repeat-info"));
+    assertEquals(info.last_page, 1);
+    assertEquals(info.rows_seen, 3);
+    assertEquals(info.done, true);
   } finally {
     f.hub.close();
   }

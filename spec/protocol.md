@@ -454,17 +454,123 @@ when a new browser takes over. Per-view-generation progress survives selecting
 another view and display-cache eviction; zero-row non-EOF pages do not advance
 that cursor. EOF pages still report any skipped prefix. The display cache counts
 UTF-16 text bytes plus 64 bytes per row and 16 per cell, capped at 8 MiB and 32
-pages. It retains formatted rows rather than both raw IPC and decoded vectors.
-This accounting is not a JavaScript heap guarantee. Cell strings and binary hex
-are visibly truncated beyond 4,096 code units. Decimal fixed-point output that
-would exceed this limit uses exact coefficient/exponent notation, such as
-`123e-2147483647`, without expanding the scale. Invalid non-integer or unsafe
-scales produce an explicit error. Timestamp formatting remains exact. Evicted
-ranges cannot be fetched again. Decimal coefficients and signed/unsigned 64-bit
-integers are formatted exactly; timestamps use raw integer ticks, including
-negative fractions and declared time zones, rather than rounded millisecond
-getters. Nested values show a summary, and omitted columns display their
-unsupported reason.
+pages per view, with a 32 MiB aggregate display budget. View selection preserves
+these per-generation caches while they fit. They retain formatted rows rather
+than both raw IPC and decoded vectors. These counts are separate from the host
+IPC cache described below and are not a JavaScript heap guarantee. Cell strings
+and binary hex are visibly truncated beyond 4,096 code units. Decimal
+fixed-point output that would exceed this limit uses exact coefficient/exponent
+notation, such as `123e-2147483647`, without expanding the scale. Invalid
+non-integer or unsafe scales produce an explicit error. Timestamp formatting
+remains exact. Rows no longer retained by the host cannot be fetched from R
+again. Decimal coefficients and signed/unsigned 64-bit integers are formatted
+exactly; timestamps use raw integer ticks, including negative fractions and
+declared time zones, rather than rounded millisecond getters. Nested values show
+a summary, and omitted columns display their unsupported reason.
+
+### Host cache for sequential pages
+
+The reference host caches opaque IPC bytes per R session, view, and generation.
+It does not parse Arrow. Valid pages are saved before delivery decisions, so a
+reply arriving after cancellation, timeout, or owner detachment can still be
+read later. Old-generation, over-budget, malformed, or regressing replies are
+not cached. Page metadata must have non-negative safe-integer row counts,
+`rows_seen = first_row + rows_fetched`, a Boolean `done`, and no more rows than
+requested. After EOF, another legacy next may return a zero-row EOF at the same
+cursor; it may not introduce data or reverse EOF.
+
+`welcome.capabilities.stream_cache` advertises the host feature:
+
+```json
+{
+  "version": 1,
+  "max_total_bytes": 268435456,
+  "max_view_bytes": 67108864,
+  "page_overhead_bytes": 1024
+}
+```
+
+A false or absent capability selects the legacy forward-only behavior. The
+reference host defaults to 256 MiB across sessions and views, and 64 MiB per
+view, clamped to the total limit. Startup options `--stream-cache-bytes` and
+`--stream-cache-view-bytes` accept non-negative safe-integer byte counts; zero
+for either disables the feature. The corresponding `startServer()` options are
+`streamCacheBytes` and `streamCacheViewBytes`.
+
+Every page, including an empty page, is charged its IPC body length plus 1,024
+bytes. Only a copy of that body and the explicit metadata below are retained;
+full response headers and warnings are not saved. The copy does not retain a
+larger receive buffer. Both global and per-view limits evict oldest pages first,
+without refreshing FIFO order on reads. A view's retained pages therefore form a
+suffix of its observed pages. An oversized insertion can evict the complete
+suffix including itself. The page counter, row watermark, and EOF flag still
+advance. Fixed charges bound empty-page metadata as well as payload bytes; this
+accounting is not an exact process-heap limit.
+
+Cache calls use the ordinary browser request envelope, with `session`, `id`,
+`method`, and `params`, but are handled locally and never forwarded to R:
+
+| Method              | Parameters beyond `view` and `generation` | Result                                                    |
+| ------------------- | ----------------------------------------- | --------------------------------------------------------- |
+| `stream/cache/info` | Optional `after_page`, optional `limit`   | Bounded JSON page catalog and cursor state.               |
+| `stream/cache/get`  | Required `page`, optional `max_bytes`     | One cached page in the existing binary response envelope. |
+
+Both methods require the current view generation and strict parameter objects.
+They need no lease, including while another browser owns the stream. Existing
+active-request id checks run before these operations. Disabled hosts return
+`unsupported`; a missing retained page returns `unavailable`. A missing or stale
+view keeps the usual `view_not_found` or `stale_generation` error.
+
+The catalog defaults to 64 entries and allows `limit` from 1 through 128.
+Omitting `after_page` starts at the first retained page (internal cursor -1);
+when supplied, it must be a non-negative safe integer. Entries are ordered by
+monotonic, zero-based page number, including distinct zero-row pages. Each entry
+has `page`, `first_row`, `rows_fetched`, `rows_seen`, `done`, and `byte_length`.
+An optional `unavailable_before_range: [start, end]` identifies a source-row gap
+immediately before that page, using zero-based half-open row coordinates. No
+unbounded history of gaps is kept. Gaps preceding the retained suffix are
+covered by the lost prefix below. These ranges can overlap that prefix; clients
+combine them as a union rather than counting overlapping rows twice.
+
+The result also contains `view`, `generation`, `next_after` (the last returned
+page number when more entries exist, otherwise null), `last_page` (-1 before any
+observed page), `rows_seen`, `done`, and `unavailable_before`. The latter means
+rows in `[0, unavailable_before)` are no longer held by the host. When all pages
+have been evicted, it equals the watermark even if the catalog is empty.
+`last_page`, `rows_seen`, and `done` distinguish this state from a new stream.
+Catalog JSON is limited to 64 KiB; clients paginate rather than requesting an
+unbounded index. Eviction between catalog lookup and get returns `unavailable`;
+clients can refresh the catalog.
+
+Get accepts a non-negative safe-integer `page`. Its optional non-negative
+safe-integer `max_bytes` uses the existing effective binary budget; zero can
+retrieve a zero-byte body. Insufficient budget returns one `limit_exceeded`
+error without sending a partial body or consulting R. Binary JSON headers stay
+within 64 KiB and whole frames within 10 MiB. The result preserves the existing
+`view`, `generation`, row metadata, and `transfer` fields and adds `cache_page`,
+an object with the same metadata as a catalog entry. A live cached `stream/next`
+response gets the same object, even if that page was immediately evicted. Cache
+reads use an empty warnings array rather than replaying old R warnings.
+
+New browsers send the latest observed `after_page` on `stream/next`. Here -1 is
+valid and means the initial tail. When caching is enabled, the host compares a
+supplied safe-integer cursor against `last_page` before granting a lease or
+sending an R frame. A mismatch returns `type: "error"`, `code: "cache_changed"`,
+and `details: {last_page, rows_seen, done}`; the browser refreshes info/get
+before advancing. The host removes `after_page` before forwarding to R, so the R
+protocol is unchanged. A legacy browser that omits the field retains its
+explicit-next behavior at the current R cursor. Reading an older cached page
+does not rewind the append cursor. Cache reads do not claim a lease, and append
+requests retain the existing owner and single-pending-request rules.
+
+View close, ancestor cascade, generation replacement, and R session disconnect
+invalidate the corresponding bytes and metadata; late replies cannot resurrect
+them. The cache is memory-only and is cleared at host shutdown. Cache info/get
+replies have a separate 32 MiB queued-byte admission limit: exceeding it closes
+and detaches that browser while the R session and host cache remain available to
+other browsers. This limit does not apply to existing welcome messages,
+notifications, or live R replies. Send failures on any output path detach the
+browser. Repeated close/detach is harmless.
 
 ## Methods
 
@@ -856,6 +962,7 @@ Error codes are stable machine-readable values. The `error` object contains
 | `unavailable`      | A well-formed object path no longer resolves or cannot be read safely.                                                                                          |
 | `stale_generation` | The request names a generation that is no longer active.                                                                                                        |
 | `view_not_found`   | The view id is missing or closed.                                                                                                                               |
+| `cache_changed`    | A host-only sequential append cursor differs from the observed tail; refresh the host page catalog before advancing.                                            |
 | `in_use`           | Another browser owns the sequential lease, a next request is still pending, or a reentrant operation cannot proceed.                                            |
 | `stream_failed`    | A sequential producer encountered a terminal failure; close or register a new stream to continue.                                                               |
 | `method_not_found` | No implementation exists for the requested method.                                                                                                              |
