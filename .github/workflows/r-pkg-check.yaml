@@ -41,6 +41,7 @@ jobs:
         with:
           r-version: ${{ matrix.r }}
           use-public-rspm: true
+          extra-repositories: https://community.r-multiverse.org
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           working-directory: r-pkg
