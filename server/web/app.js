@@ -1399,6 +1399,7 @@ function requestColumnWindowPage() {
     : Math.floor(viewport.scrollLeft / COLUMN_WIDTH) * COLUMN_WIDTH;
   if (alignedScrollLeft !== viewport.scrollLeft) {
     viewport.scrollLeft = alignedScrollLeft;
+    updateRowColumnCompensation();
     return;
   }
   if (!pendingColumnQuery || !selected.table) return;

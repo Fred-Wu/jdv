@@ -41,6 +41,7 @@ type BrowserElement = {
   className: string;
   contains(element: BrowserElement): boolean;
   dispatchEvent(event: unknown): boolean;
+  id: string;
   getBoundingClientRect(): {
     bottom: number;
     left: number;
@@ -56,7 +57,12 @@ type BrowserElement = {
   scrollHeight: number;
   scrollTop: number;
   scrollWidth: number;
-  style: { transform: string; width: string };
+  style: {
+    getPropertyValue(name: string): string;
+    transform: string;
+    width: string;
+  };
+  tagName: string;
   textContent: string | null;
 };
 
@@ -71,8 +77,11 @@ type BrowserRuntime = {
   getComputedStyle(element: BrowserElement): {
     borderLeftWidth: string;
     left: string;
+    overflowX: string;
     position: string;
     transform: string;
+    zIndex: string;
+    getPropertyValue(name: string): string;
   };
   requestAnimationFrame(callback: () => void): number;
 };
@@ -384,6 +393,69 @@ Deno.test({
           const viewportRect = viewport.getBoundingClientRect();
           const headerRect = rowHeader?.getBoundingClientRect();
           const cellRect = rowCell?.getBoundingClientRect();
+          const describe = (node: BrowserElement | null) => {
+            if (!node) return null;
+            const rect = node.getBoundingClientRect();
+            const computed = runtime.getComputedStyle(node);
+            const ancestors = [];
+            let ancestor = node.parentElement;
+            for (let depth = 0; ancestor && depth < 5; depth++) {
+              const ancestorRect = ancestor.getBoundingClientRect();
+              const ancestorComputed = runtime.getComputedStyle(ancestor);
+              ancestors.push({
+                id: ancestor.id,
+                className: ancestor.className,
+                field: ancestor.getAttribute("tabulator-field"),
+                frozen: ancestor.getAttribute("frozen"),
+                tabulatorFrozen: ancestor.className.split(/\s+/).includes(
+                  "tabulator-frozen",
+                ),
+                left: ancestorRect.left,
+                right: ancestorRect.right,
+                position: ancestorComputed.position,
+                leftStyle: ancestorComputed.left,
+                transform: ancestorComputed.transform,
+                scrollLeft: ancestor.scrollLeft,
+                scrollWidth: ancestor.scrollWidth,
+              });
+              ancestor = ancestor.parentElement;
+            }
+            return {
+              tagName: node.tagName,
+              id: node.id,
+              className: node.className,
+              field: node.getAttribute("tabulator-field"),
+              frozen: node.getAttribute("frozen"),
+              tabulatorFrozen: node.className.split(/\s+/).includes(
+                "tabulator-frozen",
+              ),
+              left: rect.left,
+              right: rect.right,
+              width: rect.right - rect.left,
+              inlineTransform: node.style.transform,
+              inlineLeft: node.style.getPropertyValue("left"),
+              position: computed.position,
+              computedLeft: computed.left,
+              transform: computed.transform,
+              zIndex: computed.zIndex,
+              overflowX: computed.overflowX,
+              scrollLeft: node.scrollLeft,
+              scrollWidth: node.scrollWidth,
+              ancestors,
+            };
+          };
+          const headerHolder = viewport.querySelector(
+            ".tabulator-header",
+          );
+          const tableHolder = viewport.querySelector(
+            ".tabulator-tableholder",
+          );
+          const tabulatorColumns = [...viewport.querySelectorAll(
+            ".tabulator-header .tabulator-col",
+          )];
+          const tabulatorRowIndexes = [...viewport.querySelectorAll(
+            '.tabulator-row [tabulator-field="row_index"]',
+          )];
           const scrollWidth = viewport.scrollWidth;
           const clientWidth = viewport.clientWidth;
           const maximumScrollLeft = Math.max(0, scrollWidth - clientWidth);
@@ -419,6 +491,25 @@ Deno.test({
             headerRight: headerRect?.right ?? Number.NaN,
             cellLeft: cellRect?.left ?? Number.NaN,
             cellRight: cellRect?.right ?? Number.NaN,
+            viewportScrollLeft: viewport.scrollLeft,
+            columnWindow: table
+              ? {
+                className: table.className,
+                width: table.style.width,
+                transform: table.style.transform,
+                compensation: runtime.getComputedStyle(table).getPropertyValue(
+                  "--row-horizontal-compensation",
+                ),
+              }
+              : null,
+            headerHolder: describe(headerHolder),
+            tableHolder: describe(tableHolder),
+            rowHeader: describe(rowHeader),
+            rowIndexCount: tabulatorRowIndexes.length,
+            rowIndexes: tabulatorRowIndexes.slice(0, 3).map(describe),
+            columnFields: tabulatorColumns.map((node) =>
+              node.getAttribute("tabulator-field")
+            ),
           };
         });
         assert(
@@ -500,6 +591,189 @@ Deno.test({
           settledScrollLeft === heldScrollGeometry.alignedScrollLeft,
           `The scroll position should settle on the virtual column grid: ${
             JSON.stringify({ ...heldScrollGeometry, settledScrollLeft })
+          }`,
+        );
+        const controlledAlignment = await evaluate(page, async () => {
+          const runtime = globalThis as unknown as BrowserRuntime & {
+            clearTimeout: (id: number) => void;
+            document: BrowserDocument;
+            setTimeout: (callback: () => void, delay?: number) => number;
+          };
+          const viewport = runtime.document.querySelector("#column-viewport");
+          const table = runtime.document.querySelector("#column-window");
+          if (!viewport || !table) {
+            throw new Error("The column viewport was not found.");
+          }
+          const originalSetTimeout = runtime.setTimeout.bind(globalThis);
+          const originalClearTimeout = runtime.clearTimeout.bind(globalThis);
+          const originalRequestAnimationFrame = runtime.requestAnimationFrame
+            .bind(globalThis);
+          const capturedTimers = new Map<number, () => void>();
+          let nextTimerId = -1;
+          const deferredFrames: Array<() => void> = [];
+          await new Promise<void>((resolve) =>
+            originalSetTimeout(resolve, 100)
+          );
+          const beforeViewport = viewport.getBoundingClientRect();
+          const beforeHeader = viewport.querySelector(
+            '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+          );
+          const beforeCell = viewport.querySelector(
+            '.tabulator-row [tabulator-field="row_index"]',
+          );
+          if (!beforeHeader || !beforeCell) {
+            throw new Error("The row index column was not rendered.");
+          }
+          const beforeHeaderLeft = beforeHeader.getBoundingClientRect().left;
+          const beforeCellLeft = beforeCell.getBoundingClientRect().left;
+
+          runtime.setTimeout = ((callback: () => void, delay = 0) => {
+            if (delay === 80) {
+              const id = nextTimerId--;
+              capturedTimers.set(id, callback);
+              return id;
+            }
+            return originalSetTimeout(callback, delay);
+          }) as typeof runtime.setTimeout;
+          runtime.clearTimeout = ((id: number) => {
+            if (capturedTimers.delete(id)) return;
+            originalClearTimeout(id);
+          }) as typeof runtime.clearTimeout;
+          try {
+            const requested = 86 + 290 * 180;
+            viewport.scrollLeft = requested;
+            viewport.dispatchEvent(new Event("scroll"));
+            await new Promise<void>((resolve) =>
+              originalRequestAnimationFrame(() => resolve())
+            );
+            if (capturedTimers.size === 0) {
+              throw new Error(
+                "The column-window debounce was not captured after scrolling.",
+              );
+            }
+            runtime.requestAnimationFrame = (callback: () => void) => {
+              deferredFrames.push(callback);
+              return deferredFrames.length;
+            };
+            const scheduledPageRequest = [...capturedTimers.values()].at(-1);
+            if (!scheduledPageRequest) {
+              throw new Error("No scheduled column-window request was found.");
+            }
+            capturedTimers.clear();
+            const beforeScrollLeft = viewport.scrollLeft;
+            const scrollWidth = viewport.scrollWidth;
+            const clientWidth = viewport.clientWidth;
+            const maximumScrollLeft = Math.max(0, scrollWidth - clientWidth);
+            const nearRightEdge = maximumScrollLeft - beforeScrollLeft <= 180;
+            const alignedScrollLeft = nearRightEdge
+              ? maximumScrollLeft
+              : Math.floor(beforeScrollLeft / 180) * 180;
+            scheduledPageRequest();
+
+            const header = viewport.querySelector(
+              '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+            );
+            const cell = viewport.querySelector(
+              '.tabulator-row [tabulator-field="row_index"]',
+            );
+            const viewportRect = viewport.getBoundingClientRect();
+            const headerRect = header?.getBoundingClientRect();
+            const cellRect = cell?.getBoundingClientRect();
+            const describe = (node: BrowserElement | null) => {
+              if (!node) return null;
+              const rect = node.getBoundingClientRect();
+              const computed = runtime.getComputedStyle(node);
+              const ancestor = node.parentElement;
+              const ancestorRect = ancestor?.getBoundingClientRect();
+              const ancestorStyle = ancestor
+                ? runtime.getComputedStyle(ancestor)
+                : null;
+              return {
+                id: node.id,
+                className: node.className,
+                field: node.getAttribute("tabulator-field"),
+                frozen: node.getAttribute("frozen"),
+                tabulatorFrozen: node.className.split(/\s+/).includes(
+                  "tabulator-frozen",
+                ),
+                left: rect.left,
+                right: rect.right,
+                transform: computed.transform,
+                position: computed.position,
+                zIndex: computed.zIndex,
+                parentClass: ancestor?.className ?? null,
+                parentLeft: ancestorRect?.left ?? null,
+                parentTransform: ancestorStyle?.transform ?? null,
+              };
+            };
+            return {
+              beforeScrollLeft,
+              afterScrollLeft: viewport.scrollLeft,
+              requestedScrollLeft: requested,
+              alignedScrollLeft,
+              viewportContentLeft: viewportRect.left + viewport.clientLeft,
+              beforeViewportContentLeft: beforeViewport.left +
+                viewport.clientLeft,
+              beforeHeaderLeft,
+              beforeCellLeft,
+              headerLeft: headerRect?.left ?? Number.NaN,
+              cellLeft: cellRect?.left ?? Number.NaN,
+              header: describe(header),
+              cell: describe(cell),
+              viewportScrollLeft: viewport.scrollLeft,
+              headerScrollLeft: viewport.querySelector(
+                ".tabulator-header",
+              )?.scrollLeft,
+              tableHolderScrollLeft: viewport.querySelector(
+                ".tabulator-tableholder",
+              )?.scrollLeft,
+              columnWindow: {
+                className: table.className,
+                width: table.style.width,
+                transform: table.style.transform,
+                compensation: runtime.getComputedStyle(table).getPropertyValue(
+                  "--row-horizontal-compensation",
+                ),
+                firstFields: [...viewport.querySelectorAll(
+                  ".tabulator-header .tabulator-col",
+                )].slice(0, 5).map((node) =>
+                  node.getAttribute("tabulator-field")
+                ),
+              },
+              deferredFrameCount: deferredFrames.length,
+            };
+          } finally {
+            runtime.setTimeout =
+              originalSetTimeout as typeof runtime.setTimeout;
+            runtime.clearTimeout =
+              originalClearTimeout as typeof runtime.clearTimeout;
+            runtime.requestAnimationFrame = originalRequestAnimationFrame;
+            for (const callback of deferredFrames) callback();
+          }
+        });
+        console.log(
+          "controlled-horizontal-alignment",
+          JSON.stringify(controlledAlignment),
+        );
+        assert(
+          controlledAlignment.beforeScrollLeft ===
+              controlledAlignment.requestedScrollLeft &&
+            controlledAlignment.afterScrollLeft ===
+              controlledAlignment.alignedScrollLeft &&
+            Math.abs(
+                controlledAlignment.headerLeft -
+                  controlledAlignment.viewportContentLeft -
+                  (controlledAlignment.beforeHeaderLeft -
+                    controlledAlignment.beforeViewportContentLeft),
+              ) <= 1 &&
+            Math.abs(
+                controlledAlignment.cellLeft -
+                  controlledAlignment.viewportContentLeft -
+                  (controlledAlignment.beforeCellLeft -
+                    controlledAlignment.beforeViewportContentLeft),
+              ) <= 1,
+          `The row index moved during controlled programmatic scroll alignment: ${
+            JSON.stringify(controlledAlignment)
           }`,
         );
         console.log(
