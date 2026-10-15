@@ -516,9 +516,9 @@ export class Hub {
       message.result.generation === pending.generation;
     if (deliver) {
       const response: JsonObject = {
+        ...message,
         type: "response",
         session: session.id,
-        ...message,
         id: pending.browserId,
       };
       if (body) {

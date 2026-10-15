@@ -166,9 +166,11 @@ function encodeRBinaryResponse(
   body: Uint8Array,
   view = "table-1",
   generation = 1,
+  envelopeFields: JsonRecord = {},
 ): Uint8Array {
   const header = new TextEncoder().encode(`${
     JSON.stringify({
+      ...envelopeFields,
       id,
       result: {
         view,
@@ -306,7 +308,14 @@ Deno.test("Hub relays a bounded Arrow IPC body in one browser binary frame", asy
     assertEquals((request.params as JsonRecord).max_bytes, 5);
     const body = new Uint8Array([0x00, 0x0a, 0xff, 0x00, 0x7f]);
     connection.injectRaw(
-      encodeRBinaryResponse(request.id as string, body.length, body),
+      encodeRBinaryResponse(
+        request.id as string,
+        body.length,
+        body,
+        "table-1",
+        1,
+        { type: "r-internal-response", session: "r-forged-session" },
+      ),
     );
     await waitFor(() => browser.binaryMessages.length === 1);
     const decoded = decodeBrowserBinary(browser.binaryMessages[0]);
