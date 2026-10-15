@@ -4,7 +4,7 @@ JSON Data Viewer is under development. The package provides a local viewer
 transport for a separately running viewer host and a dependency-free table
 registry and query API; the server and browser viewer are still under
 development. See the repository README for local development commands and
-[`../spec/protocol.md`](../spec/protocol.md) for the protocol contract.
+`?jdv_spec` for the protocol contract.
 
 ## Open a table in the viewer
 
@@ -85,9 +85,8 @@ total, 64 MiB per view). Configure it with `--stream-cache-bytes` and
 `--stream-cache-view-bytes`; setting either value to `0` disables the host
 cache. The browser also keeps bounded display and raw IPC caches. A page that
 has been evicted from both the browser and host cannot be requested again from
-the forward-only R source. See the
-[protocol](../spec/protocol.md#sequential-arrow-views) for page, cache, and
-binary framing details.
+the forward-only R source. See `?jdv_spec` for page, cache, and binary framing
+details.
 
 ## Register and query a table
 

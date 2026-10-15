@@ -12,7 +12,7 @@ import { querySnapshot } from "../web/jdv_query.js";
 const testLibrary = Deno.env.get("JDV_TEST_R_LIB");
 const fixture = JSON.parse(
   await Deno.readTextFile(
-    new URL("../../spec/query-fixtures.json", import.meta.url),
+    new URL("../../r-pkg/inst/spec/query-fixtures.json", import.meta.url),
   ),
 );
 

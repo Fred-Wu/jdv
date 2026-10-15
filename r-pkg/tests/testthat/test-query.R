@@ -1,19 +1,4 @@
 test_that(
-  "the canonical fixture is shipped without hand-edited package copies",
-  {
-    path <- system.file("spec", "query-fixtures.json", package = "jdv")
-    expect_true(file.exists(path))
-    canonical <- test_path("..", "..", "..", "spec", "query-fixtures.json")
-    if (file.exists(canonical)) {
-      expect_identical(
-        readBin(path, "raw", file.info(path)$size),
-        readBin(canonical, "raw", file.info(canonical)$size)
-      )
-    }
-  }
-)
-
-test_that(
   "shared fixtures agree across Paged and an independent wire Snapshot",
   {
     skip_if_not_installed("jsonlite")

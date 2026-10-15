@@ -8,7 +8,7 @@ APIs are available through `jdv_view()` and `jdv_close()`.
 - `r-pkg/`: R package and bundled native code.
 - `server/`: reference host for R sessions and browser clients, developed
   alongside the browser interface in `server/web/`.
-- `spec/`: protocol contracts and shared semantic fixtures.
+- `r-pkg/inst/spec/`: shared semantic query fixtures (the protocol is in `?jdv_spec`).
 - `tests/`: repository-level validation and integration checks.
 
 ## Start the local viewer

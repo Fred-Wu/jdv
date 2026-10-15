@@ -2,7 +2,10 @@ import { assert, assertEquals } from "./assert.ts";
 import { asciiFold, decodeRows, querySnapshot } from "../web/jdv_query.js";
 import { fileURLToPath } from "node:url";
 
-const fixturePath = new URL("../../spec/query-fixtures.json", import.meta.url);
+const fixturePath = new URL(
+  "../../r-pkg/inst/spec/query-fixtures.json",
+  import.meta.url,
+);
 const exporterPath = new URL("./fixtures/export-query.R", import.meta.url);
 const fixture = JSON.parse(await Deno.readTextFile(fixturePath));
 const temp = await Deno.makeTempDir({ prefix: "jdv-query-fixtures-" });

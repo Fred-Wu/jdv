@@ -85,9 +85,8 @@ page cursor. The catalog reports lost prefixes and gaps. Cache gets use the
 ordinary bounded binary frame and carry their page metadata in
 `result.cache_page`. A new append sends `after_page`; a stale cursor returns
 `cache_changed` before R is contacted. Older hosts without the capability keep
-the existing forward-only behavior. See
-[the protocol](../spec/protocol.md#host-cache-for-sequential-pages) for
-parameters and response fields.
+the existing forward-only behavior. See `?jdv_spec` in R
+for parameters and response fields.
 
 The browser retains formatted display pages separately, with 8 MiB and 32 pages
 per view and 32 MiB across views. Host-retained pages can be decoded again after
