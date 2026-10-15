@@ -351,7 +351,7 @@ Deno.test({
       const sleepStartedPath = `${sleepMarker.directory}/started`;
       const sleepDonePath = `${sleepMarker.directory}/done`;
       const sleepObserverController = new AbortController();
-      const sleepPromptObserved = observeMarker(
+      const sleepCompletionMarkerObserved = observeMarker(
         arf,
         sleepDonePath,
         20_000,
@@ -359,7 +359,7 @@ Deno.test({
       );
       markerObservers.push({
         controller: sleepObserverController,
-        observation: sleepPromptObserved,
+        observation: sleepCompletionMarkerObserved,
       });
       const sleeping = arf.send(
         `writeLines("SLEEP_STARTED", ${
@@ -387,7 +387,9 @@ Deno.test({
         sleepResult.error === null,
         `R sleep evaluation failed: ${sleepResult.error}`,
       );
-      const sleepPromptAt = await markerTime(sleepPromptObserved);
+      const sleepCompletionMarkerAt = await markerTime(
+        sleepCompletionMarkerObserved,
+      );
       assert(
         await fileExists(sleepDonePath, "SLEEP_DONE"),
         "R did not write the sleep completion marker.",
@@ -395,20 +397,20 @@ Deno.test({
       const sleepResponse = await browserMessages.waitFor(
         response(sleepId),
         1_000,
-        "automatic response after Sys.sleep returns",
+        "automatic response after the SLEEP_DONE marker",
       );
-      const sleepDelay = sleepResponse.time - sleepPromptAt;
+      const sleepDelay = sleepResponse.time - sleepCompletionMarkerAt;
       assert(
         sleepDelay <= 1_000,
         `Sleep response arrived ${
           sleepDelay.toFixed(0)
-        } ms after the R prompt.`,
+        } ms after the SLEEP_DONE marker was observed.`,
       );
       console.log(
-        `interactive regression: Sys.sleep prompt-return response in ${
+        `interactive regression: response after SLEEP_DONE marker in ${
           sleepDelay.toFixed(0)
         } ms (command ${
-          ((sleepPromptAt - sleepCommandTime) / 1000).toFixed(2)
+          ((sleepCompletionMarkerAt - sleepCommandTime) / 1000).toFixed(2)
         } s)`,
       );
 
@@ -417,7 +419,7 @@ Deno.test({
       const browserStartedPath = `${browserMarkers.directory}/started`;
       const browserDonePath = `${browserMarkers.directory}/done`;
       const browserObserverController = new AbortController();
-      const browserPromptObserved = observeMarker(
+      const browserCompletionMarkerObserved = observeMarker(
         arf,
         browserDonePath,
         70_000,
@@ -425,7 +427,7 @@ Deno.test({
       );
       markerObservers.push({
         controller: browserObserverController,
-        observation: browserPromptObserved,
+        observation: browserCompletionMarkerObserved,
       });
       const browserEvaluation = arf.send(
         `local({ writeLines("BROWSER_STARTED", ${
@@ -528,7 +530,9 @@ Deno.test({
         browserResult.error === null,
         `R browser evaluation failed: ${browserResult.error}`,
       );
-      const browserPromptAt = await markerTime(browserPromptObserved);
+      const browserCompletionMarkerAt = await markerTime(
+        browserCompletionMarkerObserved,
+      );
       assert(
         await fileExists(browserDonePath, "BROWSER_DONE"),
         "The browser() frame did not return after console continuation input.",
@@ -536,15 +540,17 @@ Deno.test({
       const browserRowsResponse = await browserMessages.waitFor(
         response(browserRowsId),
         1_000,
-        "automatic response after leaving function-scoped browser",
+        "automatic response after the BROWSER_DONE marker",
       );
-      const browserDelay = browserRowsResponse.time - browserPromptAt;
-      const browserHeldMs = browserPromptAt - browserStartedAt;
+      const browserDelay = browserRowsResponse.time -
+        browserCompletionMarkerAt;
+      const browserFrameUntilCompletionMarkerMs = browserCompletionMarkerAt -
+        browserStartedAt;
       assert(
         browserDelay <= 1_000,
         `Browser-frame response arrived ${
           browserDelay.toFixed(0)
-        } ms after the R prompt.`,
+        } ms after the BROWSER_DONE marker was observed.`,
       );
 
       for (const wireId of cancelWireIds) {
@@ -588,11 +594,11 @@ Deno.test({
       );
 
       console.log(
-        `interactive regression: browser prompt-return response in ${
+        `interactive regression: response after BROWSER_DONE marker in ${
           browserDelay.toFixed(0)
-        } ms after holding the function frame for ${
-          browserHeldMs.toFixed(0)
-        } ms; ${cycles}/${cycles} R cancellation terminals exactly once; ACK reached ${
+        } ms; function frame lasted ${
+          browserFrameUntilCompletionMarkerMs.toFixed(0)
+        } ms from BROWSER_STARTED to BROWSER_DONE observation; ${cycles}/${cycles} R cancellation terminals exactly once; ACK reached ${
           acks.at(-1)
         } frames; fresh response in ${freshDelay.toFixed(0)} ms`,
       );
