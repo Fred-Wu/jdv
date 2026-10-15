@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/assets/vendor/tabulator.min.css">
     <link rel="stylesheet" href="/assets/style.css">
     <script defer src="/assets/vendor/tabulator.min.js"></script>
+    <script defer src="/assets/vendor/arrow-21.2.0.min.js"></script>
     <script type="module" src="/assets/app.js"></script>
   </head>
   <body>
@@ -66,6 +67,11 @@
             </div>
             <p id="filter-help" class="muted" aria-live="polite"></p>
           </fieldset>
+        </div>
+        <div id="sequential-controls" hidden>
+          <button id="sequential-next" type="button">Load next</button>
+          <span id="sequential-progress" aria-live="polite"></span>
+          <p id="sequential-notice" class="muted" aria-live="polite"></p>
         </div>
         <ul id="warnings" aria-live="polite"></ul>
         <div class="column-scroller" id="column-viewport"

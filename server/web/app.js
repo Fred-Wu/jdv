@@ -1,3 +1,9 @@
+import {
+  createSequentialCache,
+  decodeArrowPage,
+  recordSequentialProgress,
+  sequentialPageRows,
+} from "/assets/sequential.js";
 import { decodeRows, querySnapshot } from "/assets/jdv_query.js";
 import {
   columnWindow,
@@ -39,6 +45,10 @@ const treeReturn = $("#tree-return");
 const treeParentReturn = $("#tree-parent-return");
 const viewBreadcrumb = $("#view-breadcrumb");
 const childOpenStatus = $("#child-open-status");
+const sequentialControls = $("#sequential-controls");
+const sequentialNext = $("#sequential-next");
+const sequentialProgress = $("#sequential-progress");
+const sequentialNotice = $("#sequential-notice");
 const PAGE_SIZE = 200;
 const TREE_PAGE_SIZE = 200;
 const COLUMN_WIDTH = 180;
@@ -155,6 +165,10 @@ socket.addEventListener("message", (event) => {
   }
 });
 
+sequentialNext.addEventListener("click", () => {
+  if (selected?.kind === "sequential") loadSequentialPage(selected);
+});
+
 $("#sort-add").addEventListener("click", addSortTerm);
 $("#filter-apply").addEventListener("click", applyFilter);
 $("#filter-clear").addEventListener("click", clearFilter);
@@ -224,10 +238,22 @@ function viewSupport(descriptor) {
     "children",
   ];
   if (
-    descriptor?.encoding !== "r-json" ||
     capabilities === null || typeof capabilities !== "object" ||
     !capabilityNames.every((name) => typeof capabilities[name] === "boolean")
   ) return false;
+  if (descriptor.kind === "grid" && descriptor.access === "sequential") {
+    try {
+      sequentialPageRows(descriptor);
+    } catch {
+      return false;
+    }
+    return descriptor.encoding === "arrow-ipc" &&
+      Array.isArray(descriptor.columns) &&
+      capabilities.next === true && capabilities.seek === false &&
+      capabilities.sort === false && capabilities.filter === false &&
+      capabilities.known_total === false && capabilities.children === false;
+  }
+  if (descriptor.encoding !== "r-json") return false;
   if (descriptor.kind === "tree") {
     return descriptor.access === "random" &&
       capabilities.seek === true && capabilities.sort === false &&
@@ -335,7 +361,13 @@ function openView(session, descriptor, returnTree = null, restored = null) {
     openTree(session, descriptor, returnTree);
     return;
   }
+  if (descriptor.access === "sequential") {
+    openSequential(session, descriptor, returnTree);
+    return;
+  }
   closeSelectedTable();
+  sequentialControls.hidden = true;
+  $(".query-tools").hidden = false;
   const columns = Array.isArray(descriptor.columns) ? descriptor.columns : [];
   selected = restored ?? {
     kind: "grid",
@@ -424,6 +456,16 @@ function closeSelectedTable() {
     "The selected table was closed.",
   );
   selected.table?.destroy();
+  if (selected.kind === "sequential" && isKnownView(selected)) {
+    const progress = sequentialRecord(selected);
+    progress.evictedThrough = Math.max(
+      progress.evictedThrough ?? 0,
+      selected.cache.rows().at(-1)?.row_index ?? 0,
+      selected.cache.evictedThrough,
+    );
+  }
+  selected.cache?.clear();
+  sequentialControls.hidden = true;
   paginationElement.replaceChildren();
   selected = null;
   viewer.hidden = true;
@@ -1324,4 +1366,151 @@ function showNotice(message, state) {
 
 function abortError(message) {
   return new DOMException(message, "AbortError");
+}
+
+function sequentialRecord(state) {
+  const record = knownTables.get(`${state.session}\0${state.descriptor.view}`);
+  if (!record || record.descriptor.generation !== state.descriptor.generation) {
+    throw abortError("The stream generation was closed.");
+  }
+  record.progress ??= { watermark: 0, received: 0, done: false, gap: null };
+  return record.progress;
+}
+
+function openSequential(session, descriptor, returnTree) {
+  closeSelectedTable();
+  const state = {
+    kind: "sequential",
+    session,
+    descriptor,
+    columns: descriptor.columns,
+    epoch: 0,
+    activeRequestIds: new Set(),
+    queryRequestIds: new Set(),
+    returnTree,
+    table: null,
+    cache: createSequentialCache(),
+    loading: false,
+  };
+  selected = state;
+  state.cache.discard(sequentialRecord(state).evictedThrough ?? 0);
+  renderViewBreadcrumbs();
+  viewer.hidden = false;
+  treeViewer.hidden = true;
+  treeReturn.hidden = returnTree === null;
+  treeParentReturn.hidden = true;
+  titleElement.textContent = descriptor.title ?? "Untitled stream";
+  warningsElement.replaceChildren();
+  paginationElement.replaceChildren();
+  $(".query-tools").hidden = true;
+  sequentialControls.hidden = false;
+  viewport.scrollLeft = 0;
+  spacer.style.width = `${ROW_WIDTH + state.columns.length * COLUMN_WIDTH}px`;
+  windowElement.style.transform = "";
+  windowElement.style.width = "100%";
+  windowElement.style.setProperty("--row-horizontal-compensation", "0px");
+  state.table = new globalThis.Tabulator(windowElement, {
+    height: "460px",
+    layout: "fitData",
+    index: "row_index",
+    data: [],
+    columnDefaults: { width: COLUMN_WIDTH, resizable: false },
+    columns: buildTableColumns(state.columns.map((_, i) => i)),
+    placeholder:
+      "Load the next rows. Previously consumed rows cannot be fetched again.",
+  });
+  updateSequentialProgress(state);
+  setStatus(
+    "Forward-only stream ready. Load the next rows to continue.",
+    "connected",
+  );
+}
+
+function updateSequentialProgress(state) {
+  const progress = sequentialRecord(state);
+  metaElement.textContent =
+    `${progress.received} rows received · total unknown · sequential · ${state.session}`;
+  sequentialProgress.textContent =
+    `${progress.received} rows received; ${progress.watermark} rows advanced${
+      progress.done ? "; end of stream" : "; total unknown"
+    }.`;
+  sequentialNext.disabled = state.loading || progress.done;
+  sequentialNext.textContent = state.loading
+    ? "Loading…"
+    : progress.done
+    ? "End of stream"
+    : "Load next";
+  const notices = [];
+  if (progress.gap) {
+    notices.push(
+      `${progress.gap[0]}–${progress.gap[1]} rows advanced but not displayed.`,
+    );
+  }
+  if (state.cache.evictedThrough > 0) {
+    notices.push(
+      `Rows through ${state.cache.evictedThrough} were evicted from the display cache and cannot be fetched again.`,
+    );
+  }
+  if (progress.received > 0 && state.cache.rows().length === 0) {
+    notices.push(
+      "Previously received rows are no longer in the display cache; this stream cannot rewind.",
+    );
+  }
+  sequentialNotice.textContent = notices.join(" ");
+}
+
+async function loadSequentialPage(state) {
+  if (selected !== state || state.loading || sequentialRecord(state).done) {
+    return;
+  }
+  state.loading = true;
+  updateSequentialProgress(state);
+  const epoch = state.epoch;
+  const maxRows = sequentialPageRows(state.descriptor, PAGE_SIZE);
+  const promise = transport.request(state.session, "stream/next", {
+    view: state.descriptor.view,
+    generation: state.descriptor.generation,
+    max_rows: maxRows,
+    max_bytes: 4 * 1024 * 1024,
+  }, 60_000);
+  if (promise.id) state.activeRequestIds.add(promise.id);
+  try {
+    const response = await promise;
+    if (!isCurrent(state, epoch)) return;
+    const metadata = response.result;
+    if (
+      !metadata || metadata.view !== state.descriptor.view ||
+      metadata.generation !== state.descriptor.generation ||
+      !Number.isSafeInteger(metadata.rows_fetched) ||
+      metadata.rows_fetched < 0 || metadata.rows_fetched > maxRows ||
+      !response.binary
+    ) throw new Error("R returned an invalid sequential page.");
+    const progress = sequentialRecord(state);
+    const nextProgress = { ...progress };
+    recordSequentialProgress(nextProgress, metadata);
+    const decoded = decodeArrowPage(
+      response.binary,
+      state.descriptor,
+      metadata,
+    );
+    Object.assign(progress, nextProgress);
+    state.cache.discard(decoded.discardedThrough);
+    state.cache.append(decoded.rows);
+    await state.table.setData(state.cache.rows());
+    showWarnings(response.warnings ?? []);
+    setStatus(
+      metadata.done ? "End of stream." : "Connected. Load next to continue.",
+      "connected",
+    );
+  } catch (error) {
+    if (selected === state && error?.name !== "AbortError") {
+      showTableError(error);
+    }
+  } finally {
+    if (promise.id) state.activeRequestIds.delete(promise.id);
+    state.loading = false;
+    if (selected === state && isKnownView(state)) {
+      updateSequentialProgress(state);
+    }
+  }
 }
