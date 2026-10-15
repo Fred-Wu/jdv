@@ -4,6 +4,8 @@ local({
   initial_outbox <- state$outbox
   on.exit(state$outbox <- initial_outbox, add = TRUE)
 
+  has_binding_api <- getRversion() >= "4.6.0"
+
   tree_rpc <- function(method, params, id = 1) {
     request <- list(id = id, method = method, params = params)
     jdv:::.jdv_json_parse(jdv_rpc(jdv:::.jdv_json_encode(request)))
@@ -154,18 +156,33 @@ local({
         match("active", vapply(env_page$children, `[[`, "", "label"))
       ]]
       expect_false(lazy$viewable)
-      expect_identical(lazy$unavailable, "delayed_binding")
+      expect_identical(
+        lazy$unavailable,
+        if (has_binding_api) "delayed_binding" else "unavailable"
+      )
       expect_false(active$viewable)
       expect_identical(active$unavailable, "active_binding")
       expect_identical(counters$delayed, 1L)
       expect_identical(counters$active, 0L)
 
-      forced <- tree_call(
-        env_view,
+      forced <- tree_rpc(
         "object/open",
-        list(path = list(list(type = "binding", name = "forced")))
+        list(
+          view = env_view$id,
+          generation = 1,
+          path = list(list(type = "binding", name = "forced"))
+        )
       )
-      expect_identical(forced$kind, "tree")
+      if (has_binding_api) {
+        expect_identical(forced$result$kind, "tree")
+      } else {
+        expect_identical(forced$error$code, "unavailable")
+        for (name in c("lazy", "forced")) {
+          found <- .Call(jdv:::C_jdv_tree_child, env, "binding", 0, name)
+          expect_identical(found$status, "opaque")
+          expect_null(found$value)
+        }
+      }
       expect_identical(counters$delayed, 1L)
       expect_identical(counters$active, 0L)
     }
@@ -198,11 +215,19 @@ local({
       list(path = list(), offset = 0, limit = 10)
     )$children
     by_label <- stats::setNames(children, vapply(children, `[[`, "", "label"))
-    expect_true(by_label$left$viewable)
-    expect_true(by_label$right$viewable)
-    expect_true(by_label$left$has_children)
-    expect_false(by_label$self$viewable)
-    expect_identical(by_label$self$unavailable, "cycle")
+    if (has_binding_api) {
+      expect_true(by_label$left$viewable)
+      expect_true(by_label$right$viewable)
+      expect_true(by_label$left$has_children)
+      expect_false(by_label$self$viewable)
+      expect_identical(by_label$self$unavailable, "cycle")
+    } else {
+      for (child in by_label) {
+        expect_false(child$viewable)
+        expect_false(child$has_children)
+        expect_identical(child$unavailable, "unavailable")
+      }
+    }
   })
 
   test_that(
@@ -320,7 +345,10 @@ local({
       expect_false(long_child$has_children)
       expect_identical(long_child$unavailable, "path_limit")
       expect_null(long_child$path)
-      expect_true(ordinary$viewable)
+      expect_identical(ordinary$viewable, has_binding_api)
+      if (!has_binding_api) {
+        expect_identical(ordinary$unavailable, "unavailable")
+      }
       expect_length(ordinary$path, 1)
     }
   )
