@@ -1151,6 +1151,10 @@ jdv_register <- function(
 #' @return A JSON response string or NULL for a notification.
 #' @export
 jdv_rpc <- function(request = NULL) {
+  .jdv_rpc_internal(request, allow_binary = FALSE)
+}
+
+.jdv_rpc_internal <- function(request = NULL, allow_binary = FALSE) {
   .jdv_assert_active()
   if (is.null(request)) {
     if (.jdv_state$rpc_depth > 0L) {
@@ -1227,6 +1231,39 @@ jdv_rpc <- function(request = NULL) {
   if (is.list(result)) {
     attr(result, "jdv_work_budget") <- NULL
     attr(result, "jdv_child_id") <- NULL
+  }
+  if (inherits(result, "jdv_binary_result")) {
+    result <- tryCatch(
+      {
+        if (!allow_binary) {
+          query_error(
+            "unsupported",
+            "Binary results require the viewer transport."
+          )
+        }
+        binary_warnings <- if (warning_count > length(warnings)) {
+          c(warnings, "Additional warnings were omitted.")
+        } else {
+          warnings
+        }
+        .jdv_binary_packet(result, parsed, request_id, binary_warnings)
+      },
+      error = identity
+    )
+    if (inherits(result, "jdv_binary_packet")) return(result)
+  } else if (
+    is.list(result) &&
+      !inherits(result, "error") &&
+      "transfer" %in% names(result)
+  ) {
+    result <- structure(
+      list(
+        message = "The transfer field requires a binary payload.",
+        call = NULL,
+        code = "invalid_request"
+      ),
+      class = c("jdv_rpc_error", "error", "condition")
+    )
   }
   response <- if (inherits(result, "error")) {
     if (!inherits(result, "jdv_query_error")) {

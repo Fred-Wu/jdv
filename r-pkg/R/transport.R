@@ -270,7 +270,7 @@
   }
 
   tryCatch(
-    jdv_rpc(message),
+    .jdv_rpc_internal(message, allow_binary = TRUE),
     error = function(error) {
       if (isTRUE(.jdv_state$unloading)) {
         return(NULL)
@@ -341,7 +341,8 @@
     max_receive_bytes = status$max_receive_bytes,
     queue_messages = status$queue_messages_limit,
     queue_bytes = status$queue_bytes_limit,
-    max_request_bytes = status$max_request_bytes
+    max_request_bytes = status$max_request_bytes,
+    max_message_bytes = .jdv_max_message_bytes()
   )
   .jdv_state$transport <- TRUE
   .jdv_state$transport_hello <- FALSE

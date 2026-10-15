@@ -281,11 +281,16 @@ local({
         "max_receive_bytes",
         "queue_messages",
         "queue_bytes",
-        "max_request_bytes"
+        "max_request_bytes",
+        "max_message_bytes"
       )
     )
     expect_gt(received$hello$params$limits$max_receive_frames, 0)
     expect_gt(received$hello$params$limits$max_receive_bytes, 0)
+    expect_equal(
+      received$hello$params$limits$max_message_bytes,
+      as.numeric(.jdv_max_message_bytes())
+    )
     expect_equal(
       received$hello$params$limits$queue_messages,
       as.numeric(queue_messages)

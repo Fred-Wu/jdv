@@ -49,6 +49,8 @@ typedef int jdv_socket;
 #define JDV_ID_JSON_CAPACITY 800
 #define JDV_ID_VALUE_CAPACITY 129
 #define JDV_TABLE_ID_CAPACITY 512
+#define JDV_BINARY_HEADER_BYTES (64u * 1024u)
+#define JDV_BINARY_WHOLE_BYTES (10u * 1024u * 1024u)
 
 typedef struct {
     char *json;
@@ -61,6 +63,9 @@ typedef struct {
     double deadline;
     int has_deadline;
     int cancelled;
+    int has_max_bytes;
+    int invalid_max_bytes;
+    double max_bytes;
 } jdv_request;
 
 struct jdv_transport_state {
@@ -159,7 +164,17 @@ typedef struct {
     SEXP frame_continuation;
     jdv_failure failure;
     SEXP response;
-    int response_is_string;
+    int response_preserved;
+    int response_is_scalar;
+    SEXP header_string;
+    int header_preserved;
+    const char *header_data;
+    size_t header_length;
+    SEXP binary_header;
+    SEXP binary_payload;
+    const char *binary_data;
+    const char *binary_failure;
+    size_t binary_length;
     int background;
 } jdv_dispatch;
 
@@ -874,6 +889,16 @@ static int parse_request_metadata(const char *json, size_t length,
                    strlen(view->valuestring) + 1);
         if (cJSON_IsNumber(generation) && R_FINITE(generation->valuedouble))
             request->generation = generation->valuedouble;
+        cJSON *max_bytes = cJSON_GetObjectItemCaseSensitive(params, "max_bytes");
+        if (max_bytes) {
+            request->has_max_bytes = 1;
+            if (!cJSON_IsNumber(max_bytes) || !R_FINITE(max_bytes->valuedouble) ||
+                max_bytes->valuedouble < 0 ||
+                max_bytes->valuedouble > (double)JDV_MAX_SAFE_INTEGER ||
+                floor(max_bytes->valuedouble) != max_bytes->valuedouble)
+                request->invalid_max_bytes = 1;
+            else request->max_bytes = max_bytes->valuedouble;
+        }
     }
     cJSON_Delete(root);
     return 1;
@@ -1293,16 +1318,185 @@ static SEXP dispatch_unwind(void *data)
     return result;
 }
 
+static int unique_object(const cJSON *object)
+{
+    const cJSON *left, *right;
+    if (!cJSON_IsObject(object)) return 0;
+    for (left = object->child; left; left = left->next) {
+        for (right = left->next; right; right = right->next)
+            if (strcmp(left->string, right->string) == 0) return 0;
+    }
+    return 1;
+}
+
+static void cache_header(jdv_dispatch *dispatch, SEXP string)
+{
+    PROTECT(string);
+    R_PreserveObject(string);
+    dispatch->header_string = string;
+    dispatch->header_preserved = 1;
+    dispatch->header_data = CHAR(string);
+    dispatch->header_length = (size_t)LENGTH(string);
+    UNPROTECT(1);
+}
+
+/* Validate the complete packet before writing any header bytes. No R code runs
+ * while the preserved header and raw body share one send deadline. */
+static const char *validate_binary(jdv_dispatch *dispatch, SEXP *header,
+                                   SEXP *payload)
+{
+    SEXP packet = dispatch->response;
+    SEXP names = Rf_getAttrib(packet, R_NamesSymbol);
+    SEXP klass = Rf_getAttrib(packet, R_ClassSymbol);
+    cJSON *root = NULL, *result, *transfer, *view, *generation, *encoding, *bytes, *id;
+    jdv_request response_id;
+    const char *failure = "invalid_request";
+    size_t length, body_length, whole_cap, raw_cap;
+    if (TYPEOF(packet) != VECSXP || XLENGTH(packet) != 2 ||
+        TYPEOF(names) != STRSXP || XLENGTH(names) != 2 ||
+        STRING_ELT(names, 0) == NA_STRING || STRING_ELT(names, 1) == NA_STRING ||
+        strcmp(CHAR(STRING_ELT(names, 0)), "header") != 0 ||
+        strcmp(CHAR(STRING_ELT(names, 1)), "payload") != 0 ||
+        TYPEOF(klass) != STRSXP || XLENGTH(klass) != 1 ||
+        STRING_ELT(klass, 0) == NA_STRING ||
+        strcmp(CHAR(STRING_ELT(klass, 0)), "jdv_binary_packet") != 0)
+        return failure;
+    *header = VECTOR_ELT(packet, 0);
+    *payload = VECTOR_ELT(packet, 1);
+    if (TYPEOF(*header) != STRSXP || XLENGTH(*header) != 1 ||
+        STRING_ELT(*header, 0) == NA_STRING || TYPEOF(*payload) != RAWSXP ||
+        Rf_isObject(*payload)) return failure;
+    SEXP string = STRING_ELT(*header, 0);
+    cache_header(dispatch, string);
+    const char *text = dispatch->header_data;
+    length = dispatch->header_length;
+    whole_cap = dispatch->state->max_message_bytes < JDV_BINARY_WHOLE_BYTES ?
+        dispatch->state->max_message_bytes : JDV_BINARY_WHOLE_BYTES;
+    if (length > JDV_BINARY_HEADER_BYTES) return "limit_exceeded";
+    body_length = (size_t)XLENGTH(*payload);
+    dispatch->binary_length = body_length;
+    raw_cap = whole_cap > JDV_BINARY_HEADER_BYTES + 4 ?
+        whole_cap - (JDV_BINARY_HEADER_BYTES + 4) : 0;
+    if (dispatch->request.invalid_max_bytes) return failure;
+    if (dispatch->request.has_max_bytes && dispatch->request.max_bytes < (double)raw_cap)
+        raw_cap = (size_t)dispatch->request.max_bytes;
+    if (body_length > raw_cap || length > whole_cap ||
+        body_length > whole_cap - length || whole_cap - length - body_length < 4)
+        return "limit_exceeded";
+    if (memchr(text, '\n', length) || memchr(text, '\r', length) ||
+        !jdv_json_validate_output((const unsigned char *)text, length,
+                                  JDV_BINARY_HEADER_BYTES)) return failure;
+    root = cJSON_ParseWithLength(text, length + 1);
+    if (!unique_object(root)) goto done;
+    id = cJSON_GetObjectItemCaseSensitive(root, "id");
+    memset(&response_id, 0, sizeof(response_id));
+    if (!numeric_id(id, &response_id) || !same_id(&response_id, &dispatch->request))
+        goto done;
+    if (cJSON_GetObjectItemCaseSensitive(root, "error") ||
+        cJSON_GetObjectItemCaseSensitive(root, "method")) goto done;
+    result = cJSON_GetObjectItemCaseSensitive(root, "result");
+    if (!unique_object(result)) goto done;
+    view = cJSON_GetObjectItemCaseSensitive(result, "view");
+    generation = cJSON_GetObjectItemCaseSensitive(result, "generation");
+    if (!cJSON_IsString(view) || !view->valuestring ||
+        !dispatch->request.view[0] || strcmp(view->valuestring, dispatch->request.view) ||
+        !cJSON_IsNumber(generation) || !R_FINITE(generation->valuedouble) ||
+        generation->valuedouble < 1 || generation->valuedouble > (double)JDV_MAX_SAFE_INTEGER ||
+        floor(generation->valuedouble) != generation->valuedouble ||
+        generation->valuedouble != dispatch->request.generation) goto done;
+    transfer = cJSON_GetObjectItemCaseSensitive(result, "transfer");
+    if (!unique_object(transfer) || cJSON_GetArraySize(transfer) != 2) goto done;
+    encoding = cJSON_GetObjectItemCaseSensitive(transfer, "encoding");
+    bytes = cJSON_GetObjectItemCaseSensitive(transfer, "byte_length");
+    if (!cJSON_IsString(encoding) || strcmp(encoding->valuestring, "arrow-ipc") ||
+        !cJSON_IsNumber(bytes) || !R_FINITE(bytes->valuedouble) ||
+        bytes->valuedouble != (double)body_length) goto done;
+    failure = NULL;
+done:
+    cJSON_Delete(root);
+    return failure;
+}
+
+static int scalar_declares_transfer(const char *text, size_t length)
+{
+    cJSON *root = cJSON_ParseWithLength(text, length + 1);
+    cJSON *result = cJSON_GetObjectItemCaseSensitive(root, "result");
+    int found = cJSON_IsObject(result) &&
+        cJSON_GetObjectItemCaseSensitive(result, "transfer") != NULL;
+    cJSON_Delete(root);
+    return found;
+}
+
+static SEXP prepare_response(void *data)
+{
+    jdv_dispatch *dispatch = (jdv_dispatch *)data;
+    if (TYPEOF(dispatch->response) == STRSXP && XLENGTH(dispatch->response) == 1) {
+        SEXP string = STRING_ELT(dispatch->response, 0);
+        if (string != NA_STRING) {
+            cache_header(dispatch, string);
+            dispatch->response_is_scalar = 1;
+        }
+        return R_NilValue;
+    }
+    if (TYPEOF(dispatch->response) != VECSXP) return R_NilValue;
+    dispatch->binary_failure = validate_binary(dispatch, &dispatch->binary_header,
+                                               &dispatch->binary_payload);
+    /* ALTREP materialization may call producer code. Finish it before any
+     * header bytes and while the ordinary callback condition boundary applies. */
+    if (!dispatch->binary_failure)
+        dispatch->binary_data = (const char *)RAW(dispatch->binary_payload);
+    return R_NilValue;
+}
+
+static void send_callback_response(jdv_dispatch *dispatch)
+{
+    jdv_transport_state *state = dispatch->state;
+    if (dispatch->response_is_scalar) {
+        const char *response = dispatch->header_data;
+        size_t length = dispatch->header_length;
+        if (length > state->max_message_bytes) {
+            send_error(state, dispatch->request.id_json, "limit_exceeded", "Response exceeds the byte limit.");
+        } else if (memchr(response, '\n', length) || memchr(response, '\r', length) ||
+                   !jdv_json_validate_output((const unsigned char *)response, length, state->max_message_bytes) ||
+                   scalar_declares_transfer(response, length)) {
+            send_error(state, dispatch->request.id_json, "invalid_request", "Invalid callback response.");
+        } else if (!send_message(state, response, length)) stop_connection(state, 1);
+        return;
+    }
+    if (TYPEOF(dispatch->response) != VECSXP) {
+        send_error(state, dispatch->request.id_json, "r_error", "Unexpected callback response type.");
+        return;
+    }
+    const char *failure = dispatch->binary_failure;
+    if (failure) {
+        send_error(state, dispatch->request.id_json, failure, "Invalid binary response or byte limit exceeded.");
+        return;
+    }
+    double deadline = monotonic_seconds() + (double)state->send_timeout_ms / 1000.0;
+    state->sending = 1;
+    int sent = send_bytes_until(state, dispatch->header_data, dispatch->header_length, deadline) &&
+        send_bytes_until(state, "\n", 1, deadline) &&
+        send_bytes_until(state, dispatch->binary_data, dispatch->binary_length, deadline);
+    state->sending = 0;
+    if (!sent) stop_connection(state, 1);
+}
+
 static void dispatch_top_level(void *data)
 {
     jdv_dispatch *dispatch = (jdv_dispatch *)data;
     dispatch->response = dispatch_unwind(dispatch);
     PROTECT(dispatch->response);
-    if (TYPEOF(dispatch->response) == STRSXP &&
-        XLENGTH(dispatch->response) == 1 &&
-        STRING_ELT(dispatch->response, 0) != NA_STRING) {
+    if (dispatch->response != R_NilValue) {
         R_PreserveObject(dispatch->response);
-        dispatch->response_is_string = 1;
+        dispatch->response_preserved = 1;
+    }
+    if (dispatch->response != R_NilValue) {
+        SEXP classes = PROTECT(Rf_allocVector(STRSXP, 2));
+        SET_STRING_ELT(classes, 0, Rf_mkChar("interrupt"));
+        SET_STRING_ELT(classes, 1, Rf_mkChar("error"));
+        (void)R_tryCatch(prepare_response, dispatch, classes,
+                         callback_condition, dispatch, NULL, NULL);
+        UNPROTECT(1);
     }
     UNPROTECT(1);
 }
@@ -1327,18 +1521,9 @@ static SEXP dispatch_frame_body(void *data)
                    dispatch->failure == JDV_FAILURE_UNKNOWN) {
             send_error(state, dispatch->request.id_json, "r_error",
                        "The request could not be processed.");
-        } else if (dispatch->response_is_string) {
-            SEXP string = STRING_ELT(dispatch->response, 0);
-            const char *response = CHAR(string);
-            size_t length = (size_t)LENGTH(string);
-            if (length > state->max_message_bytes ||
-                !jdv_json_validate_output((const unsigned char *)response,
-                                          length,
-                                          state->max_message_bytes) ||
-                !send_message(state, response, length)) {
-                stop_connection(state, 1);
-            }
-        }
+        } else if (dispatch->response_preserved) send_callback_response(dispatch);
+        else if (dispatch->request.id_kind != 0)
+            send_error(state, dispatch->request.id_json, "r_error", "The callback returned no response.");
     }
     return R_NilValue;
 }
@@ -1348,9 +1533,13 @@ static void release_dispatch_frame(void *data, Rboolean jump)
     jdv_dispatch *dispatch = (jdv_dispatch *)data;
     jdv_transport_state *state = dispatch->state;
     (void)jump;
-    if (dispatch->response_is_string) {
+    if (dispatch->response_preserved) {
         R_ReleaseObject(dispatch->response);
-        dispatch->response_is_string = 0;
+        dispatch->response_preserved = 0;
+    }
+    if (dispatch->header_preserved) {
+        R_ReleaseObject(dispatch->header_string);
+        dispatch->header_preserved = 0;
     }
     if (dispatch->request.json) {
         free(dispatch->request.json);
