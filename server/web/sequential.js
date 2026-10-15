@@ -148,7 +148,14 @@ function chunkAt(vector, row) {
 }
 
 export function formatArrowValue(vector, row) {
-  if (!vector.isValid(row)) return "NA";
+  return formatPhysicalValue(vector, row, new Set());
+}
+
+function formatPhysicalValue(vector, row, dictionaries) {
+  if (!Number.isSafeInteger(row) || row < 0 || row >= vector.length) {
+    throw new Error("Arrow row is outside its buffers.");
+  }
+  if (vector.type.typeId === 1 || !vector.isValid(row)) return "NA";
   const type = vector.type;
   const { data, row: local } = chunkAt(vector, row);
   // Arrow Data slices already adjust values; offset belongs to the validity bitmap.
@@ -161,7 +168,16 @@ export function formatArrowValue(vector, row) {
     ) {
       throw new Error("Invalid Arrow dictionary index.");
     }
-    return formatArrowValue(data.dictionary, index);
+    if (dictionaries.has(data) || dictionaries.size >= 32) {
+      throw new Error(
+        "Arrow dictionary nesting is cyclic or exceeds 32 levels.",
+      );
+    }
+    dictionaries.add(data);
+    return formatPhysicalValue(data.dictionary, index, dictionaries);
+  }
+  if (type.typeId === 2 && type.bitWidth === 64) {
+    return BigInt(data.values[start]).toString();
   }
   if (type.typeId === 7) {
     return formatScaled(

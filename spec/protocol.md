@@ -468,6 +468,40 @@ exactly; timestamps use raw integer ticks, including negative fractions and
 declared time zones, rather than rounded millisecond getters. Nested values show
 a summary, and omitted columns display their unsupported reason.
 
+### Browser inspection of nested Arrow cells
+
+Nested sequential cells are inspected from the page's IPC buffers and schema in
+this browser. No `object/children`, `object/open`, R conversion, or additional R
+request is involved. Selecting a cell uses its original one-based source row and
+original zero-based column position; the descriptor's `ipc_index` selects the
+decoded vector. Column names are labels only and may repeat.
+
+The inspector expands list, large-list, fixed-size-list, struct, and map values.
+Maps expose entries, then each entry's key and value. Dictionaries are resolved
+at each position, including dictionaries inside nested values. Breadcrumb paths
+are arrays of zero-based child positions, so duplicate struct field names remain
+unambiguous. Parent nulls are leaves regardless of their child buffers. Signed
+and unsigned 64-bit integers, decimals, and timestamps use the same exact
+physical-buffer formatting as ordinary Arrow cells, including slices and chunks.
+Unsupported types are leaves at their position. A column omitted from IPC by the
+producer's existing support rules instead shows its unsupported reason at the
+cell root; the browser cannot recover omitted data. Core handling of an
+unsupported nested node does not imply the R encoder emits that node.
+
+Only the requested child page is materialized, with at most 200 children. Paths
+are limited to 32 steps; values at that depth show a depth-limit reason instead
+of an expansion control. Dictionary resolution has a separate 32-hop and cycle
+guard. Labels and summaries are bounded to 4,096 UTF-16 code units. Composite
+summaries use shallow type labels and counts rather than recursively formatting
+schemas or subtrees. These bounds also apply to very large lists of nulls.
+
+Decoded page and cell handles are private browser objects. Their lifetime is
+owned by the UI's bounded raw IPC cache (at most eight pages and 32 MiB
+aggregate) and its single active inspector page, separately from the
+formatted-row cache. If the local page is absent, inspection may restore it from
+the host cache; if it is no longer retained there, the UI reports it unavailable
+and does not advance the forward-only R stream.
+
 ### Host cache for sequential pages
 
 The reference host caches opaque IPC bytes per R session, view, and generation.
