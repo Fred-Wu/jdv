@@ -3,6 +3,7 @@ import { assert, assertEquals } from "./assert.ts";
 const arrowModule = "npm:apache-arrow@21.2.0";
 const Arrow = await import(arrowModule);
 import {
+  CELL_TEXT_LIMIT,
   createSequentialCache,
   decodeArrowPage,
   formatArrowValue,
@@ -237,4 +238,78 @@ Deno.test("sequential page requests honor captured caps and legacy descriptors",
   assertEquals(sequentialPageRows({ max_page_rows: 2000 }), 200);
   assertEquals(sequentialPageRows({ max_page_rows: 2000 }, 2000), 2000);
   assertEquals(sequentialPageRows({}), 200);
+});
+
+Deno.test("decimal display bounds expansion before allocating fixed-point text", () => {
+  for (const scale of [-2147483648, 2147483647]) {
+    for (const coefficient of [123n, -123n, 0n]) {
+      const text = formatScaled(coefficient, scale);
+      assertEquals(text, `${coefficient}e${-scale}`);
+      assert(text.length < 32);
+    }
+    for (const width of [128, 256]) {
+      const vector = Arrow.makeVector(Arrow.makeData({
+        type: new Arrow.Decimal(scale, width === 128 ? 38 : 76, width),
+        data: words([123n, -123n, 0n], width),
+        length: 3,
+      }));
+      assertEquals([0, 1, 2].map((row) => formatArrowValue(vector, row)), [
+        `123e${-scale}`,
+        `-123e${-scale}`,
+        `0e${-scale}`,
+      ]);
+    }
+  }
+  assertEquals(
+    formatScaled(1n, -(CELL_TEXT_LIMIT - 1)).length,
+    CELL_TEXT_LIMIT,
+  );
+  assertEquals(formatScaled(1n, -CELL_TEXT_LIMIT), `1e${CELL_TEXT_LIMIT}`);
+  assertEquals(formatScaled(1n, CELL_TEXT_LIMIT - 2).length, CELL_TEXT_LIMIT);
+  assertEquals(
+    formatScaled(1n, CELL_TEXT_LIMIT - 1),
+    `1e-${CELL_TEXT_LIMIT - 1}`,
+  );
+  assertEquals(formatScaled(-1n, CELL_TEXT_LIMIT - 3).length, CELL_TEXT_LIMIT);
+  assertEquals(
+    formatScaled(-1n, CELL_TEXT_LIMIT - 2),
+    `-1e-${CELL_TEXT_LIMIT - 2}`,
+  );
+  assertEquals(formatScaled(-12n, -3), "-12000");
+  assertEquals(formatScaled(123n, 2), "1.23");
+  assertEquals(formatScaled(0n, 3), "0.000");
+  for (
+    const scale of [
+      NaN,
+      Infinity,
+      -Infinity,
+      0.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      null,
+      "3",
+    ]
+  ) {
+    let failure: unknown;
+    try {
+      formatScaled(1n, scale);
+    } catch (error) {
+      failure = error;
+    }
+    assert(
+      failure instanceof Error && failure.message.includes("decimal scale"),
+    );
+  }
+});
+
+Deno.test("list slices use already-sliced value offsets without adding data.offset", () => {
+  for (const ListType of [Arrow.List, Arrow.LargeList]) {
+    const vector = Arrow.vectorFromArray(
+      [[1, 2], [3], []],
+      new ListType(new Arrow.Field("item", new Arrow.Int32(), true)),
+    ).slice(1);
+    assertEquals(vector.data[0].offset, 1);
+    assertEquals(Number(vector.data[0].valueOffsets[0]), 2);
+    assertEquals(formatArrowValue(vector, 0), "<list: 1 items>");
+    assertEquals(formatArrowValue(vector, 1), "<list: 0 items>");
+  }
 });

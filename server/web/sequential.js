@@ -15,9 +15,18 @@ export function sequentialPageRows(descriptor, preferredRows = 200) {
 }
 
 export function formatScaled(coefficient, scale) {
+  if (!Number.isSafeInteger(scale)) {
+    throw new Error("Invalid Arrow decimal scale: expected a safe integer.");
+  }
   const negative = coefficient < 0n;
   const digits = (negative ? -coefficient : coefficient).toString();
   const sign = negative ? "-" : "";
+  const fixedLength = sign.length +
+    (scale <= 0
+      ? digits.length - scale
+      : Math.max(digits.length, scale + 1) + 1);
+  // Arrow decimal coefficients have at most 76 digits; never expand a huge scale.
+  if (fixedLength > CELL_TEXT_LIMIT) return `${sign}${digits}e${-scale}`;
   if (scale <= 0) return sign + digits + "0".repeat(-scale);
   const padded = digits.padStart(scale + 1, "0");
   return `${sign}${padded.slice(0, -scale)}.${padded.slice(-scale)}`;

@@ -456,12 +456,15 @@ that cursor. EOF pages still report any skipped prefix. The display cache counts
 UTF-16 text bytes plus 64 bytes per row and 16 per cell, capped at 8 MiB and 32
 pages. It retains formatted rows rather than both raw IPC and decoded vectors.
 This accounting is not a JavaScript heap guarantee. Cell strings and binary hex
-are visibly truncated beyond 4,096 code units; exact decimal and timestamp
-formatting is unaffected. Evicted ranges cannot be fetched again. Decimal
-coefficients and signed/unsigned 64-bit integers are formatted exactly;
-timestamps use raw integer ticks, including negative fractions and declared time
-zones, rather than rounded millisecond getters. Nested values show a summary,
-and omitted columns display their unsupported reason.
+are visibly truncated beyond 4,096 code units. Decimal fixed-point output that
+would exceed this limit uses exact coefficient/exponent notation, such as
+`123e-2147483647`, without expanding the scale. Invalid non-integer or unsafe
+scales produce an explicit error. Timestamp formatting remains exact. Evicted
+ranges cannot be fetched again. Decimal coefficients and signed/unsigned 64-bit
+integers are formatted exactly; timestamps use raw integer ticks, including
+negative fractions and declared time zones, rather than rounded millisecond
+getters. Nested values show a summary, and omitted columns display their
+unsupported reason.
 
 ## Methods
 
