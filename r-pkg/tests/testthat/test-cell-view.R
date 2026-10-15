@@ -54,6 +54,23 @@ local({
     }
   })
 
+  test_that("rejecting classed lists does not dispatch dim methods", {
+    value <- structure(list(1, 2), class = "cell_bad_dim")
+    calls <- 0L
+    with_column_method(
+      "dim",
+      "cell_bad_dim",
+      function(x) {
+        calls <<- calls + 1L
+        stop("must not dispatch")
+      },
+      {
+        expect_false(column_drillable(value))
+        expect_identical(calls, 0L)
+      }
+    )
+  })
+
   test_that("snapshots retain source references only for drillable columns", {
     plain <- jdv_register(data.frame(a = 1:2), mode = "snapshot")
     on.exit(close(plain), add = TRUE)

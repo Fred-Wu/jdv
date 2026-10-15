@@ -6,7 +6,7 @@ column_drillable <- function(x) {
   if (is.data.frame(x) || is.matrix(x)) {
     return(TRUE)
   }
-  if (typeof(x) != "list" || !is.null(dim(x))) {
+  if (typeof(x) != "list" || !is.null(attr(x, "dim", exact = TRUE))) {
     return(FALSE)
   }
   klass <- attr(x, "class", exact = TRUE)
