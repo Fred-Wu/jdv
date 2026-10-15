@@ -1,3 +1,15 @@
+import {
+  click,
+  clickButton,
+  closePage,
+  collectPageErrors,
+  innerText,
+  isDisabled,
+  isHidden,
+  observeSocketFrames,
+  operation,
+  waitFor,
+} from "./astral_page.ts";
 import { bodyDeadline, launchOwnedBrowser, phase } from "./bounded_browser.ts";
 import {
   assertServerReleased,
@@ -50,8 +62,7 @@ async function sequentialBrowser(
 ) {
   const arrowModule = "npm:apache-arrow@21.2.0";
   const Arrow = await import(arrowModule);
-  const playwrightModule = "npm:playwright@1.56.1";
-  const { chromium } = await import(playwrightModule);
+
   const work = await Deno.makeTempDir({ prefix: "jdv-sequential-browser-" });
   const ipc = `${work}/source.arrows`;
   const finish = `${work}/finish`;
@@ -321,9 +332,8 @@ async function sequentialBrowser(
       );
     }
     rPid = fixturePid(ready.slice("READY\t".length));
-    owned = await launchOwnedBrowser(chromium, {
-      executablePath: executable,
-      headless: true,
+    owned = await launchOwnedBrowser({
+      path: executable,
       args: ["--no-sandbox"],
       ...(browserLibraries
         ? {
@@ -335,83 +345,72 @@ async function sequentialBrowser(
     await bodyDeadline("sequential browser test body", async () => {
       const first = await phase(
         "first sequential page",
-        () => browser.newPage(),
+        () => browser.newPage("about:blank", { waitUntil: "none" }),
       );
       const second = await phase(
         "second sequential page",
-        () => browser.newPage(),
+        () => browser.newPage("about:blank", { waitUntil: "none" }),
       );
       for (const page of [first, second]) {
-        page.setDefaultTimeout(15_000);
-        page.setDefaultNavigationTimeout(20_000);
+        await operation(
+          "viewport",
+          () => page.setViewportSize({ width: 1280, height: 720 }),
+        );
       }
       const errors: string[] = [];
 
       for (
         const [name, page] of [["first", first], ["second", second]] as const
       ) {
-        page.on(
-          "websocket",
-          (
-            socket: {
-              on(
-                event: string,
-                callback: (frame: { payload: string | Uint8Array }) => void,
-              ): unknown;
-            },
-          ) => {
-            for (const direction of ["framesent", "framereceived"]) {
-              socket.on(direction, ({ payload }) => {
-                let message;
-                if (typeof payload === "string") {
-                  try {
-                    message = JSON.parse(payload);
-                  } catch {
-                    return;
-                  }
-                } else {
-                  const length = new DataView(
-                    payload.buffer,
-                    payload.byteOffset,
-                    4,
-                  ).getUint32(0, true);
-                  message = JSON.parse(
-                    new TextDecoder().decode(payload.subarray(4, 4 + length)),
-                  );
-                }
-                if (
-                  (direction === "framesent" &&
-                    typeof message.method === "string") ||
-                  message.code !== undefined || message.error !== undefined ||
-                  message.result?.first_row !== undefined
-                ) {
-                  const metadata = message.result;
-                  pushTrace({
-                    browser: name,
-                    direction,
-                    id: message.id,
-                    method: message.method,
-                    view: message.params?.view,
-                    page: message.params?.page,
-                    code: message.code ?? message.error?.code,
-                    first_row: metadata?.first_row,
-                    rows_fetched: metadata?.rows_fetched,
-                    rows_seen: metadata?.rows_seen,
-                    done: metadata?.done,
-                    cache_page: metadata?.cache_page?.page,
-                  });
-                }
-              });
+        await observeSocketFrames(page, ({ direction, payload, requestId }) => {
+          let message;
+          if (typeof payload === "string") {
+            try {
+              message = JSON.parse(payload);
+            } catch {
+              return;
             }
-          },
-        );
+          } else {
+            const length = new DataView(
+              payload.buffer,
+              payload.byteOffset,
+              4,
+            ).getUint32(0, true);
+            message = JSON.parse(
+              new TextDecoder().decode(payload.subarray(4, 4 + length)),
+            );
+          }
+          if (
+            (direction === "sent" &&
+              typeof message.method === "string") ||
+            message.code !== undefined || message.error !== undefined ||
+            message.result?.first_row !== undefined
+          ) {
+            const metadata = message.result;
+            pushTrace({
+              browser: name,
+              direction: direction === "sent" ? "framesent" : "framereceived",
+              requestId,
+              id: message.id,
+              method: message.method,
+              view: message.params?.view,
+              page: message.params?.page,
+              code: message.code ?? message.error?.code,
+              first_row: metadata?.first_row,
+              rows_fetched: metadata?.rows_fetched,
+              rows_seen: metadata?.rows_seen,
+              done: metadata?.done,
+              cache_page: metadata?.cache_page?.page,
+            });
+          }
+        });
       }
-      first.on("pageerror", (error: Error) => errors.push(error.message));
-      second.on("pageerror", (error: Error) => errors.push(error.message));
+      collectPageErrors(first, errors);
+      collectPageErrors(second, errors);
       // Match one terminal response by request id before reading the completed UI.
       const clickNext = async (page: typeof first, name: string) => {
         const start = trace.length;
-        await page.locator("#sequential-next").click();
+        await click(page, "#sequential-next");
         async function waitForFrame(
           predicate: (frame: Record<string, unknown>) => boolean,
         ) {
@@ -435,10 +434,12 @@ async function sequentialBrowser(
           frame.browser === name && frame.direction === "framereceived" &&
           frame.id === request.id
         );
-        await page.waitForFunction(() =>
-          (globalThis as unknown as BrowserRuntime).document.querySelector(
-            "#sequential-next",
-          )?.textContent !== "Loading…"
+        await waitFor(
+          page,
+          () =>
+            (globalThis as unknown as BrowserRuntime).document.querySelector(
+              "#sequential-next",
+            )?.textContent !== "Loading…",
         );
         assertEquals(
           trace.slice(start).filter((frame) =>
@@ -484,17 +485,18 @@ async function sequentialBrowser(
       ) => {
         assert(received <= advanced);
         assertEquals(
-          await page.locator("#sequential-progress").innerText(),
+          await innerText(page, "#sequential-progress"),
           `${advanced} rows seen; ${advanced} rows advanced; ${
             done ? "end of stream" : "total unknown"
           }.`,
         );
       };
       const inspectCell = async (page: typeof first, column: number) => {
-        await page.locator(
+        await click(
+          page,
           `#column-window button[data-action="inspect-arrow-cell"][data-row-index="1"][data-column="${column}"]`,
-        ).click();
-        await page.waitForFunction(() => {
+        );
+        await waitFor(page, () => {
           const tree = (globalThis as unknown as BrowserRuntime).document
             .querySelector("#tree-viewer");
           const status = (globalThis as unknown as BrowserRuntime).document
@@ -502,11 +504,11 @@ async function sequentialBrowser(
           return (tree !== null && !tree.hasAttribute("hidden")) ||
             status?.getAttribute("data-state") === "error";
         });
-        return await page.locator("#tree-child-list").innerText();
+        return await innerText(page, "#tree-child-list");
       };
       const returnFromInspection = async (page: typeof first) => {
-        await page.locator("#tree-parent-return").click();
-        await page.waitForFunction(() => {
+        await click(page, "#tree-parent-return");
+        await waitFor(page, () => {
           const viewer = (globalThis as unknown as BrowserRuntime).document
             .querySelector("#viewer");
           return viewer !== null && !viewer.hasAttribute("hidden");
@@ -527,16 +529,18 @@ async function sequentialBrowser(
           () => page.goto(server.url),
           25_000,
         );
-        await page.locator("#tables article").filter({
-          hasText: polarsOnly
-            ? "Polars newest stream"
-            : "Exact sequential stream",
-        }).getByRole("button", { name: "Open view", exact: true }).click();
+        await clickButton(
+          page,
+          "Open view",
+          "#tables article",
+          0,
+          polarsOnly ? "Polars newest stream" : "Exact sequential stream",
+        );
       }
       if (polarsOnly) {
         expectPage(await clickNext(first, "first"), 0, 2);
         await expectProgress(first, 2, 2);
-        const content = await first.locator("#column-window").innerText();
+        const content = await innerText(first, "#column-window");
         for (
           const value of ["polars-alpha", "polars-beta", "<list: 2 items>"]
         ) {
@@ -571,13 +575,15 @@ async function sequentialBrowser(
             "An IPC-cache miss should ask the host for the page.",
           );
           if (options.hostCacheBytes !== undefined) {
-            await first.waitForFunction(() =>
-              (globalThis as unknown as BrowserRuntime).document.querySelector(
-                "#child-open-status",
-              )?.getAttribute("data-state") === "error"
+            await waitFor(
+              first,
+              () =>
+                (globalThis as unknown as BrowserRuntime).document
+                  .querySelector(
+                    "#child-open-status",
+                  )?.getAttribute("data-state") === "error",
             );
-            const message = await first.locator("#child-open-status")
-              .innerText();
+            const message = await innerText(first, "#child-open-status");
             assert(
               message.startsWith("Could not inspect this value:"),
               message,
@@ -590,29 +596,44 @@ async function sequentialBrowser(
               ),
               "The host should report that the page has been evicted.",
             );
-            assertEquals(await first.locator("#tree-viewer").isHidden(), true);
+            assertEquals(await isHidden(first, "#tree-viewer"), true);
           } else {
             assert(
-              (await first.locator("#tree-child-list").innerText()).includes(
+              (await innerText(first, "#tree-child-list")).includes(
                 "[1]",
               ),
             );
             await returnFromInspection(first);
-            await second.reload();
-            await second.locator("#tables article").filter({
-              hasText: "Exact sequential stream",
-            }).getByRole("button", { name: "Open view", exact: true }).click();
+            await phase(
+              "sequential page reload",
+              () => second.reload({ waitUntil: "load" }),
+            );
+            await clickButton(
+              second,
+              "Open view",
+              "#tables article",
+              0,
+              "Exact sequential stream",
+            );
+            // Opening a fresh view hydrates the finite cached page window.
+            // Inspect only after its final response, not during table replacement.
+            await waitForTrace((frame) =>
+              frame.browser === "second" &&
+              frame.direction === "framereceived" && frame.cache_page === 8 &&
+              frame.rows_seen === 1600 && frame.done === true
+            );
             const secondRequestsBeforeInspect = rRequestCount("second");
+            const inspectionTraceStart = trace.length;
             await inspectCell(second, 16);
             assert(
-              trace.some((frame) =>
+              trace.slice(inspectionTraceStart).some((frame) =>
                 frame.browser === "second" && frame.direction === "framesent" &&
                 frame.method === "stream/cache/get" && frame.page === 0
               ),
               "A fresh browser page should recover a retained IPC page from the host.",
             );
             assert(
-              (await second.locator("#tree-child-list").innerText()).includes(
+              (await innerText(second, "#tree-child-list")).includes(
                 "[1]",
               ),
             );
@@ -622,16 +643,19 @@ async function sequentialBrowser(
             );
           }
         } else {
-          await first.locator(
+          await click(
+            first,
             '#column-window button[data-action="inspect-arrow-cell"][data-row-index="1"][data-column="16"]',
-          ).click();
-          await first.waitForFunction(() =>
-            (globalThis as unknown as BrowserRuntime).document.querySelector(
-              "#child-open-status",
-            )?.textContent?.includes("no longer retained") === true
+          );
+          await waitFor(
+            first,
+            () =>
+              (globalThis as unknown as BrowserRuntime).document.querySelector(
+                "#child-open-status",
+              )?.textContent?.includes("no longer retained") === true,
           );
           assertEquals(
-            await first.locator("#tree-viewer").isHidden(),
+            await isHidden(first, "#tree-viewer"),
             true,
           );
         }
@@ -648,7 +672,7 @@ async function sequentialBrowser(
         frame.browser === "first" && frame.direction === "framesent" &&
         frame.method === "stream/next"
       ).length;
-      const content = await first.locator("#column-window").innerText();
+      const content = await innerText(first, "#column-window");
       for (
         const exact of [
           "-9223372036854775807",
@@ -691,14 +715,12 @@ async function sequentialBrowser(
       await returnFromInspection(first);
       const mapChildren = await inspectCell(first, 12);
       assert(mapChildren.includes("Entry 1"));
-      await first.locator(
-        "#tree-child-list li[data-child-index='0'] button",
-      ).click();
+      await click(first, "#tree-child-list li[data-child-index='0'] button");
       assert(
-        (await first.locator("#tree-child-list").innerText()).includes("key"),
+        (await innerText(first, "#tree-child-list")).includes("key"),
       );
       assert(
-        (await first.locator("#tree-child-list").innerText()).includes("value"),
+        (await innerText(first, "#tree-child-list")).includes("value"),
       );
       await returnFromInspection(first);
       const nestedPrecisionChildren = await inspectCell(first, 17);
@@ -727,19 +749,26 @@ async function sequentialBrowser(
         ).length === hostGetsBeforeInspect,
         "The visible page should be inspected from the browser's local IPC cache.",
       );
-      await first.locator("#tables article").filter({
-        hasText: "Ordinary table",
-      }).getByRole("button", { name: "Open view", exact: true }).click();
-      await first.locator("#tables article").filter({
-        hasText: "Exact sequential stream",
-      }).getByRole("button", { name: "Open view", exact: true }).click();
-      await first.waitForFunction(() =>
+      await clickButton(
+        first,
+        "Open view",
+        "#tables article",
+        0,
+        "Ordinary table",
+      );
+      await clickButton(
+        first,
+        "Open view",
+        "#tables article",
+        0,
+        "Exact sequential stream",
+      );
+      await waitFor(first, () =>
         (globalThis as unknown as BrowserRuntime).document.querySelector(
           "#column-window",
-        )?.textContent?.includes("-9223372036854775807") === true
-      );
+        )?.textContent?.includes("-9223372036854775807") === true);
       assert(
-        (await first.locator("#column-window").innerText()).includes(
+        (await innerText(first, "#column-window")).includes(
           "-9223372036854775807",
         ),
         "Switching away and back should retain the displayed page.",
@@ -773,21 +802,20 @@ async function sequentialBrowser(
           await expectProgress(first, page * 200 + 200, page * 200 + 200);
         }
         assertEquals(
-          await first.locator("#sequential-earlier").isHidden(),
+          await isHidden(first, "#sequential-earlier"),
           false,
         );
         const beforeEarlier = trace.filter((frame) =>
           frame.browser === "first" && frame.direction === "framesent" &&
           frame.method === "stream/next"
         ).length;
-        await first.locator("#sequential-earlier").click();
-        await first.waitForFunction(() =>
+        await click(first, "#sequential-earlier");
+        await waitFor(first, () =>
           (globalThis as unknown as BrowserRuntime).document.querySelector(
             "#sequential-earlier",
-          )?.hasAttribute("disabled") === false
-        );
+          )?.hasAttribute("disabled") === false);
         assert(
-          (await first.locator("#column-window").innerText()).includes(
+          (await innerText(first, "#column-window")).includes(
             "-9223372036854775807",
           ),
         );
@@ -808,7 +836,7 @@ async function sequentialBrowser(
         }
         expectPage(await clickNext(first, "first"), 1600, 0, true);
         await expectProgress(first, 1600, 1600, true);
-        const notice = await first.locator("#sequential-notice").innerText();
+        const notice = await innerText(first, "#sequential-notice");
         assert(
           notice.includes("Rows 1–1600 are no longer retained by the host."),
           `Expected exact one-based prefix eviction notice, got: ${notice}`,
@@ -817,24 +845,28 @@ async function sequentialBrowser(
           frame.browser === "second" && frame.direction === "framesent" &&
           frame.method === "stream/next"
         ).length;
-        await second.reload();
-        await second.locator("#tables article").filter({
-          hasText: "Exact sequential stream",
-        }).getByRole("button", { name: "Open view", exact: true }).click();
-        await second.waitForFunction(() =>
+        await phase("sequential page reload", () =>
+          second.reload({ waitUntil: "load" }));
+        await clickButton(
+          second,
+          "Open view",
+          "#tables article",
+          0,
+          "Exact sequential stream",
+        );
+        await waitFor(second, () =>
           (globalThis as unknown as BrowserRuntime).document.querySelector(
             "#sequential-progress",
           )?.textContent?.includes(
             "1600 rows seen; 1600 rows advanced; end of stream.",
-          ) === true
-        );
+          ) === true);
         assert(
-          (await second.locator("#sequential-notice").innerText()).includes(
+          (await innerText(second, "#sequential-notice")).includes(
             "Rows 1–1600 are no longer retained by the host.",
           ),
         );
         assertEquals(
-          await second.locator("#sequential-next").isDisabled(),
+          await isDisabled(second, "#sequential-next"),
           true,
         );
         assert(
@@ -847,28 +879,35 @@ async function sequentialBrowser(
         assertEquals(errors, []);
         return;
       }
-      await second.locator("#tables article").filter({
-        hasText: "Exact sequential stream",
-      }).getByRole("button", { name: "Open view", exact: true }).click();
-      await second.waitForFunction(() =>
+      await clickButton(
+        second,
+        "Open view",
+        "#tables article",
+        0,
+        "Exact sequential stream",
+      );
+      await waitFor(second, () =>
         (globalThis as unknown as BrowserRuntime).document.querySelector(
           "#column-window",
-        )?.textContent?.includes("-9223372036854775807") === true
-      );
+        )?.textContent?.includes("-9223372036854775807") === true);
       const secondRequests = trace.filter((frame) =>
         frame.browser === "second" && frame.direction === "framesent" &&
         frame.method === "stream/next"
       ).length;
       assertEquals(secondRequests, 0);
-      await second.reload();
-      await second.locator("#tables article").filter({
-        hasText: "Exact sequential stream",
-      }).getByRole("button", { name: "Open view", exact: true }).click();
-      await second.waitForFunction(() =>
+      await phase("sequential page reload", () =>
+        second.reload({ waitUntil: "load" }));
+      await clickButton(
+        second,
+        "Open view",
+        "#tables article",
+        0,
+        "Exact sequential stream",
+      );
+      await waitFor(second, () =>
         (globalThis as unknown as BrowserRuntime).document.querySelector(
           "#column-window",
-        )?.textContent?.includes("-9223372036854775807") === true
-      );
+        )?.textContent?.includes("-9223372036854775807") === true);
       assert(
         trace.filter((frame) =>
           frame.browser === "second" && frame.direction === "framesent" &&
@@ -879,12 +918,12 @@ async function sequentialBrowser(
       assertEquals((await clickNext(second, "second")).code, "in_use");
       await expectProgress(second, 200, 400);
       assert(
-        !(await first.locator("#sequential-notice").innerText()).includes(
+        !(await innerText(first, "#sequential-notice")).includes(
           "advanced but not displayed",
         ),
       );
       await phase("sequential owner page detach", () =>
-        first.close(), 5_000);
+        closePage(first), 5_000);
       // Retry only a completed in_use response. Every successful page is consumed once.
       let acquired = false;
       for (let attempt = 0; attempt < 30; attempt++) {
@@ -899,7 +938,7 @@ async function sequentialBrowser(
       }
       assert(acquired, "The detached owner's lease was not released.");
       assert(
-        !(await second.locator("#sequential-notice").innerText()).includes(
+        !(await innerText(second, "#sequential-notice")).includes(
           "advanced but not displayed",
         ),
         "Host cache restore must not report recoverable rows as a gap.",
@@ -909,34 +948,33 @@ async function sequentialBrowser(
         await expectProgress(second, received, received + 400);
       }
       assert(
-        (await second.locator("#sequential-notice").innerText()).includes(
+        (await innerText(second, "#sequential-notice")).includes(
           "evicted",
         ),
       );
       // The last data page above has done=false; only this zero-row page observes EOF.
       assertEquals(
-        await second.locator("#sequential-next").isDisabled(),
+        await isDisabled(second, "#sequential-next"),
         false,
       );
       expectPage(await clickNext(second, "second"), 1600, 0, true);
       await expectProgress(second, 1200, 1600, true);
-      assertEquals(await second.locator("#sequential-next").isDisabled(), true);
+      assertEquals(await isDisabled(second, "#sequential-next"), true);
       assertEquals(
-        await second.locator("#sequential-earlier").isHidden(),
+        await isHidden(second, "#sequential-earlier"),
         false,
       );
       const beforeEarlier = trace.filter((frame) =>
         frame.browser === "second" && frame.direction === "framesent" &&
         frame.method === "stream/next"
       ).length;
-      await second.locator("#sequential-earlier").click();
-      await second.waitForFunction(() =>
+      await click(second, "#sequential-earlier");
+      await waitFor(second, () =>
         (globalThis as unknown as BrowserRuntime).document.querySelector(
           "#sequential-earlier",
-        )?.hasAttribute("disabled") === false
-      );
+        )?.hasAttribute("disabled") === false);
       assert(
-        (await second.locator("#column-window").innerText()).includes(
+        (await innerText(second, "#column-window")).includes(
           "-9223372036854775807",
         ),
         "Earlier retained pages should be recoverable after browser-cache eviction.",
@@ -953,16 +991,15 @@ async function sequentialBrowser(
         frame.method === "stream/next"
       ).length;
       const cacheStart = trace.length;
-      await second.locator("#sequential-next").click();
+      await click(second, "#sequential-next");
       await waitForTrace((frame) =>
         trace.indexOf(frame) >= cacheStart && frame.browser === "second" &&
         frame.direction === "framereceived" && frame.cache_page === 4
       );
-      await second.waitForFunction(() =>
+      await waitFor(second, () =>
         (globalThis as unknown as BrowserRuntime).document.querySelector(
           "#sequential-next",
-        )?.textContent !== "Loading…"
-      );
+        )?.textContent !== "Loading…");
       assert(
         trace.filter((frame) =>
           frame.browser === "second" && frame.direction === "framesent" &&
@@ -998,7 +1035,7 @@ async function sequentialBrowser(
 Deno.test({
   name:
     "real R sequential Arrow pages preserve exact values, leases, progress, and eviction",
-  ignore: !executable || !rLibrary || !capabilities.arrow ||
+  ignore: !rLibrary || !capabilities.arrow ||
     !capabilities.nanoarrow,
   sanitizeOps: false,
   sanitizeResources: false,
@@ -1007,7 +1044,7 @@ Deno.test({
 Deno.test({
   name:
     "real R browser display eviction reveals and restores the earliest host page",
-  ignore: !executable || !rLibrary || !capabilities.arrow ||
+  ignore: !rLibrary || !capabilities.arrow ||
     !capabilities.nanoarrow,
   sanitizeOps: false,
   sanitizeResources: false,
@@ -1016,7 +1053,7 @@ Deno.test({
 Deno.test({
   name:
     "real R browser reports host FIFO eviction exactly and restores progress after reload",
-  ignore: !executable || !rLibrary || !capabilities.arrow ||
+  ignore: !rLibrary || !capabilities.arrow ||
     !capabilities.nanoarrow,
   sanitizeOps: false,
   sanitizeResources: false,
@@ -1025,7 +1062,7 @@ Deno.test({
 Deno.test({
   name:
     "real R Arrow inspector recovers an evicted browser page from host cache without R requests",
-  ignore: !executable || !rLibrary || !capabilities.arrow ||
+  ignore: !rLibrary || !capabilities.arrow ||
     !capabilities.nanoarrow,
   sanitizeOps: false,
   sanitizeResources: false,
@@ -1034,7 +1071,7 @@ Deno.test({
 Deno.test({
   name:
     "real R Arrow inspector reports unavailable pages without host cache or R requests",
-  ignore: !executable || !rLibrary || !capabilities.arrow ||
+  ignore: !rLibrary || !capabilities.arrow ||
     !capabilities.nanoarrow,
   sanitizeOps: false,
   sanitizeResources: false,
@@ -1042,7 +1079,7 @@ Deno.test({
 });
 Deno.test({
   name: "real R Arrow inspector reports host-evicted pages without R requests",
-  ignore: !executable || !rLibrary || !capabilities.arrow ||
+  ignore: !rLibrary || !capabilities.arrow ||
     !capabilities.nanoarrow,
   sanitizeOps: false,
   sanitizeResources: false,
@@ -1054,7 +1091,7 @@ Deno.test({
 });
 Deno.test({
   name: "optional Polars newest sequential view renders in Chromium",
-  ignore: !executable || !rLibrary || !capabilities.arrow ||
+  ignore: !rLibrary || !capabilities.arrow ||
     !capabilities.polars ||
     !capabilities.nanoarrow,
   sanitizeOps: false,
@@ -1064,7 +1101,7 @@ Deno.test({
 Deno.test({
   name:
     "sequential view keeps legacy forward-only behavior when host cache is disabled",
-  ignore: !executable || !rLibrary || !capabilities.arrow ||
+  ignore: !rLibrary || !capabilities.arrow ||
     !capabilities.nanoarrow,
   sanitizeOps: false,
   sanitizeResources: false,

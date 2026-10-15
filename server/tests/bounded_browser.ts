@@ -1,9 +1,14 @@
-// Match the pinned browser runtime used by the smoke tests.
-// deno-lint-ignore no-import-prefix
-import type { BrowserType, LaunchOptions } from "npm:playwright@1.56.1";
+import {
+  type Browser,
+  connect,
+  generateBinArgs,
+  getBinary,
+} from "@astral/astral";
 import {
   cleanupDeadline,
   finishIntegrationCleanup,
+  removeCacheDirectory,
+  stopRChild,
 } from "./integration_cleanup.ts";
 
 export async function phase<T>(
@@ -130,65 +135,224 @@ export async function closeBrowserProcess(
   );
 }
 
-export async function launchOwnedBrowser(
-  chromium: BrowserType,
-  options: LaunchOptions,
-) {
-  // Playwright owns launch failures; launchServer also gives us the successful child handle.
-  let expired = false;
-  const launching = chromium.launchServer({ ...options, timeout: 30_000 });
-  void launching.then(async (server) => {
-    if (expired) {
-      await closeBrowserProcess(
-        () => server.close(),
-        server.process(),
-        5_000,
-        () => server.kill(),
-      );
+export class BrowserEndpointParser {
+  #decoder = new TextDecoder();
+  #buffer = "";
+  push(bytes: Uint8Array): string | undefined {
+    this.#buffer += this.#decoder.decode(bytes, { stream: true });
+    if (this.#buffer.length > 65_536) {
+      throw new Error("Browser stderr line exceeds 64 KiB.");
     }
-  }).catch((error) => console.error("[browser late launch cleanup]", error));
-  let server;
+    while (true) {
+      const newline = this.#buffer.indexOf("\n");
+      if (newline < 0) return undefined;
+      const line = this.#buffer.slice(0, newline).replace(/\r$/, "");
+      this.#buffer = this.#buffer.slice(newline + 1);
+      const endpoint = line.match(/DevTools listening on (ws:\/\/[^\s]+)$/)
+        ?.[1];
+      if (!endpoint) continue;
+      const url = new URL(endpoint);
+      if (
+        url.protocol !== "ws:" || !url.host ||
+        !url.pathname.startsWith("/devtools/browser/") ||
+        url.pathname === "/devtools/browser/"
+      ) {
+        throw new Error(`Invalid browser endpoint: ${endpoint}`);
+      }
+      return endpoint;
+    }
+  }
+}
+
+export async function reclaimLateResult<T>(
+  pending: Promise<T>,
+  expired: () => boolean,
+  dispose: (value: T) => Promise<void>,
+): Promise<void> {
+  const value = await pending;
+  if (expired()) await dispose(value);
+}
+
+async function closeBindings(browser: Browser): Promise<void> {
+  await Promise.all([
+    ...browser.pages.map((page) => page.unsafelyGetCelestialBindings().close()),
+    browser.unsafelyGetCelestialBindings().close(),
+  ]);
+}
+
+export async function resolveBrowserBinary(
+  path: string | undefined,
+  acquire: () => Promise<string> = () => getBinary("chrome"),
+  githubActions = Deno.env.get("GITHUB_ACTIONS") === "true",
+): Promise<string> {
+  if (path) {
+    console.log(
+      `[browser binary] existing executable: ${path}; acquisition skipped`,
+    );
+    return path;
+  }
+  if (!githubActions) {
+    throw new Error(
+      "Local browser tests require JDV_TEST_BROWSER or options.path; browser downloads are disabled locally.",
+    );
+  }
+  return await phase("browser binary acquisition", acquire, 300_000);
+}
+
+export async function launchOwnedBrowser(
+  options: { path?: string; args?: string[]; env?: Record<string, string> } =
+    {},
+) {
+  const path = await resolveBrowserBinary(
+    options.path ?? Deno.env.get("JDV_TEST_BROWSER"),
+  );
+  const profile = await Deno.makeTempDir({ prefix: "jdv-astral-profile-" });
+  console.log(`[browser profile] ${profile}`);
+  let child: Deno.ChildProcess;
   try {
-    server = await phase("launch", () => launching, 35_000);
+    child = new Deno.Command(path, {
+      args: generateBinArgs("chrome", {
+        headless: true,
+        args: [...(options.args ?? []), `--user-data-dir=${profile}`],
+      }),
+      env: options.env,
+      stdin: "null",
+      stdout: "null",
+      stderr: "piped",
+    }).spawn();
   } catch (error) {
-    expired = true;
+    await finishIntegrationCleanup([() => removeCacheDirectory(profile)], [
+      error,
+    ]);
     throw error;
   }
-  try {
-    const browser = await phase(
-      "connect",
-      () => chromium.connect(server.wsEndpoint(), { timeout: 15_000 }),
+  const reader = child.stderr.getReader();
+  const decoder = new TextDecoder();
+  let diagnostics = "";
+  let exited = false;
+  let closing = false;
+  void child.status.then((status) => {
+    exited = true;
+    console.log(`[browser process exit] pid=${child.pid}; code=${status.code}`);
+  });
+  let browser: Browser | undefined;
+  let drain: Promise<void> | undefined;
+  const record = (value: Uint8Array) => {
+    diagnostics = (diagnostics + decoder.decode(value, { stream: true })).slice(
+      -16_384,
     );
-    return {
-      browser,
-      async close() {
-        await finishIntegrationCleanup([
-          () => phase("browser disconnect", () => browser.close(), 5_000),
-          () =>
-            phase(
-              "browser process shutdown",
-              () =>
-                closeBrowserProcess(
-                  () => server.close(),
-                  server.process(),
-                  5_000,
-                  () => server.kill(),
-                ),
-              21_000,
-            ),
-        ]);
-      },
-    };
-  } catch (error) {
+  };
+  const close = async () => {
+    if (closing) return;
+    closing = true;
     await finishIntegrationCleanup([
       () =>
-        closeBrowserProcess(
-          () => server.close(),
-          server.process(),
+        browser
+          ? phase(
+            "browser CDP shutdown",
+            () => browser!.unsafelyGetCelestialBindings().Browser.close(),
+            5_000,
+          )
+          : undefined,
+      () =>
+        browser
+          ? phase(
+            "browser bindings shutdown",
+            () => closeBindings(browser!),
+            5_000,
+          )
+          : undefined,
+      () =>
+        phase("browser process shutdown", async () => {
+          try {
+            await cleanupDeadline(
+              child.status,
+              5_000,
+              "Browser did not exit after CDP shutdown.",
+            );
+          } catch (error) {
+            await finishIntegrationCleanup([() => stopRChild(child, exited)], [
+              error,
+            ]);
+            throw error;
+          }
+        }, 16_000),
+      () =>
+        cleanupDeadline(
+          reader.cancel(),
           5_000,
-          () => server.kill(),
+          "Browser stderr cancellation timed out.",
         ),
-    ], [error]);
+      () =>
+        drain
+          ? cleanupDeadline(
+            drain,
+            5_000,
+            "Browser stderr drain did not finish.",
+          )
+          : undefined,
+      () => reader.releaseLock(),
+      () =>
+        cleanupDeadline(
+          removeCacheDirectory(profile),
+          2_500,
+          "Browser profile cleanup timed out.",
+        ),
+    ]);
+  };
+  try {
+    const endpointParser = new BrowserEndpointParser();
+    const endpoint = await phase("browser endpoint", async () => {
+      while (true) {
+        const next = await reader.read();
+        if (next.done) {
+          throw new Error(`Browser exited before its endpoint: ${diagnostics}`);
+        }
+        record(next.value);
+        const endpoint = endpointParser.push(next.value);
+        if (endpoint) return endpoint;
+      }
+    }, 20_000);
+    drain = (async () => {
+      try {
+        while (true) {
+          const next = await reader.read();
+          if (next.done) return;
+          record(next.value);
+        }
+      } catch (error) {
+        if (
+          closing &&
+          (error instanceof Deno.errors.BadResource ||
+            error instanceof Deno.errors.Interrupted)
+        ) return;
+        throw error;
+      }
+    })();
+    void drain.catch((error) => console.error("[browser stderr]", error));
+    const connecting = connect({ endpoint });
+    void reclaimLateResult(
+      connecting,
+      () => closing,
+      (late) =>
+        cleanupDeadline(
+          closeBindings(late),
+          5_000,
+          "Late browser bindings did not close.",
+        ),
+    )
+      .catch((error) => console.error("[browser late connection]", error));
+    browser = await phase("browser connect", () => connecting, 20_000);
+    console.log(
+      `[browser version] ${await phase(
+        "browser version",
+        () => browser!.version(),
+      )}`,
+    );
+    return { browser, close };
+  } catch (error) {
+    console.error(`[browser diagnostics] ${diagnostics}`);
+    await finishIntegrationCleanup([close], [error]);
     throw error;
   }
 }

@@ -7,10 +7,29 @@ import {
 } from "./integration_cleanup.ts";
 import { type TestBrowser, TestServer } from "./helpers/test_server.ts";
 import { bodyDeadline, launchOwnedBrowser, phase } from "./bounded_browser.ts";
+import {
+  click,
+  clickButton,
+  collectPageErrors,
+  count,
+  fillInput,
+  inputValue,
+  selectOption,
+  text,
+  waitFor,
+} from "./astral_page.ts";
 
 const testLibrary = Deno.env.get("JDV_TEST_R_LIB");
 const browserExecutable = Deno.env.get("JDV_TEST_BROWSER");
 const browserLibraryPath = Deno.env.get("JDV_TEST_BROWSER_LIBS");
+
+interface E2EDomElement {
+  textContent: string | null;
+}
+
+declare const document: {
+  querySelector(selector: string): E2EDomElement | null;
+};
 
 let rEvaluationSequence = 0;
 
@@ -261,7 +280,7 @@ async function assertNoCompletedEvaluation(
 Deno.test({
   name:
     "real R Cell Inspector opens original cells and stays responsive while R is busy",
-  ignore: !testLibrary || !browserExecutable,
+  ignore: !testLibrary,
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
@@ -513,15 +532,8 @@ Deno.test({
         );
         assertEquals(responseErrorCode(closedChild), "view_not_found");
 
-        const playwrightSpecifier = "npm:playwright@1.56.1";
-        const { chromium } = await phase(
-          "Cell E2E Playwright import",
-          () => import(playwrightSpecifier),
-          15_000,
-        );
-        const ownedBrowser = await launchOwnedBrowser(chromium, {
-          executablePath: browserExecutable,
-          headless: true,
+        const ownedBrowser = await launchOwnedBrowser({
+          ...(browserExecutable ? { path: browserExecutable } : {}),
           args: ["--no-sandbox"],
           ...(browserLibraryPath
             ? {
@@ -536,41 +548,44 @@ Deno.test({
         const chromiumBrowser = ownedBrowser.browser;
         const page = await phase(
           "Cell E2E new page",
-          () =>
-            chromiumBrowser.newPage({
-              viewport: { width: 1280, height: 1000 },
-            }),
+          async () => {
+            const page = await chromiumBrowser.newPage("about:blank", {
+              waitUntil: "none",
+            });
+            await page.setViewportSize({ width: 1280, height: 1000 });
+            return page;
+          },
           20_000,
         );
-        page.setDefaultTimeout(15_000);
-        page.setDefaultNavigationTimeout(20_000);
         const pageErrors: string[] = [];
-        page.on("pageerror", (error: Error) => pageErrors.push(error.message));
+        collectPageErrors(page, pageErrors);
         await phase("Cell E2E navigation and session connection", async () => {
-          await page.goto(server.url, { waitUntil: "networkidle" });
+          await page.goto(server.url, { waitUntil: "load" });
           await page.waitForSelector('#status[data-state="connected"]');
         }, 30_000);
         await phase("Cell E2E open and query snapshot", async () => {
-          await page.locator("#tables article").filter({
-            hasText: "Cell Snapshot",
-          })
-            .getByRole("button", { name: "Open view" }).click();
+          await clickButton(
+            page,
+            "Open view",
+            "#tables article",
+            0,
+            "Cell Snapshot",
+          );
           await page.waitForSelector("#viewer:not([hidden]) .tabulator-row");
-          await page.selectOption("#sort-column", "0");
-          await page.selectOption("#sort-direction", "desc");
-          await page.getByRole("button", { name: "Add sort" }).click();
-          await page.selectOption("#filter-column", "0");
-          await page.selectOption("#filter-op", "gt");
-          await page.locator("#filter-value").fill("0");
-          await page.getByRole("button", { name: "Apply filter" }).click();
-          await page.locator('.tabulator-page[data-page="next"]').click();
+          await selectOption(page, "#sort-column", "0");
+          await selectOption(page, "#sort-direction", "desc");
+          await clickButton(page, "Add sort");
+          await selectOption(page, "#filter-column", "0");
+          await selectOption(page, "#filter-op", "gt");
+          await fillInput(page, "#filter-value", "0");
+          await clickButton(page, "Apply filter");
+          await click(page, '.tabulator-page[data-page="next"]');
         }, 45_000);
-        const sourceCell = page.locator(
-          '[data-action="open-cell"][data-row-index="205"][data-column="1"]',
-        );
+        const sourceCellSelector =
+          '[data-action="open-cell"][data-row-index="205"][data-column="1"]';
         await phase(
           "Cell E2E selected cell becomes visible",
-          () => sourceCell.waitFor({ state: "visible" }),
+          () => page.waitForSelector(sourceCellSelector),
           20_000,
         );
 
@@ -586,7 +601,7 @@ Deno.test({
           12_000,
         );
         await phase("Cell E2E open cell while R is busy", async () => {
-          await sourceCell.click();
+          await click(page, sourceCellSelector);
           await page.waitForSelector(
             '#child-open-status[data-state="waiting"]',
           );
@@ -617,13 +632,22 @@ Deno.test({
         await phase(
           "Cell E2E viewer remains interactive while R waits",
           async () => {
-            await page.locator("#sort-list button").filter({
-              hasText: "Reverse",
-            })
-              .first().click();
-            await page.locator("#filter-value").fill("100");
-            await page.getByRole("button", { name: "Apply filter" }).click();
-            await page.locator('.tabulator-page[data-page="next"]').click();
+            const reverseButtons = await page.$$("#sort-list button");
+            let reverseIndex = -1;
+            for (let index = 0; index < reverseButtons.length; index++) {
+              if (
+                (await reverseButtons[index].innerText()).includes("Reverse")
+              ) {
+                reverseIndex = index;
+                break;
+              }
+            }
+            assert(reverseIndex >= 0, "Missing Reverse sort button.");
+            await reverseButtons[reverseIndex].scrollIntoView();
+            await reverseButtons[reverseIndex].click();
+            await fillInput(page, "#filter-value", "100");
+            await clickButton(page, "Apply filter");
+            await click(page, '.tabulator-page[data-page="next"]');
             await page.waitForSelector(
               '#child-open-status[data-state="waiting"]',
             );
@@ -632,8 +656,7 @@ Deno.test({
         );
         await assertNoCompletedEvaluation(busy);
         assert(
-          await page.locator("#viewer:not([hidden]) .tabulator-row").count() >
-            0,
+          await count(page, "#viewer:not([hidden]) .tabulator-row") > 0,
           "Snapshot sorting/filtering/paging should remain interactive while the child request waits.",
         );
         assert(
@@ -652,46 +675,41 @@ Deno.test({
           "Cell E2E inspector displays the opened object",
           async () => {
             await page.waitForSelector("#tree-viewer:not([hidden])");
-            await page.waitForFunction(() =>
-              (globalThis as unknown as {
-                document: {
-                  querySelector(
-                    selector: string,
-                  ): { textContent: string | null } | null;
-                };
-              }).document.querySelector("#tree-child-list")?.textContent
-                ?.includes("payload-205") === true
+            await waitFor(
+              page,
+              (needle: string) =>
+                document.querySelector("#tree-child-list")?.textContent
+                  ?.includes(needle) === true,
+              "payload-205",
             );
           },
           35_000,
         );
-        assertEquals(await page.locator("#tree-child-list img").count(), 0);
+        assertEquals(await count(page, "#tree-child-list img"), 0);
         assert(
-          (await page.locator("#tree-child-list").textContent())?.includes(
+          (await text(page, "#tree-child-list"))?.includes(
             "<img src=x onerror=alert(1)>",
           ),
           "Cell child labels containing HTML-like text must remain text.",
         );
-        await page.screenshot({
-          path: join(
-            screenshotDir ??= await Deno.makeTempDir({
-              prefix: "jdv-cell-screenshot-",
-            }),
-            "cell-inspector.png",
-          ),
-          fullPage: true,
-        });
+        const screenshotPath = join(
+          screenshotDir ??= await Deno.makeTempDir({
+            prefix: "jdv-cell-screenshot-",
+          }),
+          "cell-inspector.png",
+        );
+        await Deno.writeFile(screenshotPath, await page.screenshot());
         await phase("Cell E2E return to parent view", async () => {
-          await page.locator('#view-breadcrumb [data-view-depth="0"]').click();
+          await click(page, '#view-breadcrumb [data-view-depth="0"]');
           await page.waitForSelector("#viewer:not([hidden])");
         }, 20_000);
         assert(
-          (await page.locator("#sort-list").textContent())?.includes(
+          (await text(page, "#sort-list"))?.includes(
             "ascending",
           ),
           "Returning from the child should restore the parent sort state.",
         );
-        assertEquals(await page.locator("#filter-value").inputValue(), "100");
+        assertEquals(await inputValue(page, "#filter-value"), "100");
         assertEquals(pageErrors, []);
       }, 300_000);
     } catch (error) {
@@ -701,7 +719,7 @@ Deno.test({
       await finishIntegrationCleanup([
         () => Deno.writeTextFile(release, "release\n"),
         ...(closeChromium
-          ? [() => phase("Cell E2E Chromium cleanup", closeChromium!, 25_000)]
+          ? [() => phase("Cell E2E Chromium cleanup", closeChromium!, 50_000)]
           : []),
         () => runtime.browser.close(),
         () => phase("Cell E2E arf cleanup", () => runtime.arf.close(), 50_000),

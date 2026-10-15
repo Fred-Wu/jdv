@@ -204,10 +204,10 @@ mise exec -- deno task test:unit
 
 The configuration pins Deno 2.9.7 and arf 0.6.0. In a shell with mise activated,
 `deno task` uses the same pinned tools without the `mise exec --` prefix. The
-repository `deno.json` defines the task split and excludes the vendored
-Tabulator and Arrow bundles from formatting and linting. It contains no import
-map or runtime dependencies; URL startup remains self-contained with
-`--no-config`.
+repository `deno.json` defines the task split, a test-only Astral import alias,
+and exclusions for formatting the vendored Tabulator and Arrow bundles. Test and
+type-check tasks enforce the committed `deno.lock`. The host uses relative
+imports, so URL startup remains self-contained with `--no-config`.
 
 `test:unit` lists only Deno tests that need no R, arf, or Chromium. R numeric
 and query fixtures, installed-package integration, interactive transport, Arrow
@@ -230,39 +230,38 @@ continuing a Windows `browser()` prompt.
 For the integration task, install `jdv` into a scratch library and install the
 optional R packages `arrow`, `nanoarrow`, `jsonlite`, `bit64`, and `polars`. Set
 `JDV_TEST_R_LIB` to the scratch library and `JDV_TEST_BROWSER` to an existing
-full Chromium 141.0.7390.37 executable matched by Playwright 1.56.1:
+Chromium executable for Astral:
 
 ```sh
 JDV_TEST_R_LIB=/path/to/scratch-library JDV_TEST_BROWSER=/path/to/chrome mise exec -- deno task test:e2e
 ```
 
-Tests use the full Chromium executable rather than Playwright's separate
-headless shell. In PowerShell, set `$env:JDV_TEST_R_LIB` and
+On GitHub Actions, Astral obtains its compatible Chromium binary when
+`JDV_TEST_BROWSER` is unset. Local browser tests require an existing executable
+and fail before acquisition when that variable (or an explicit helper path) is
+missing. Binary acquisition has a separate five-minute deadline; endpoint
+discovery, connection, page operations, and owned-process cleanup have shorter
+bounds and phase diagnostics. In PowerShell, set `$env:JDV_TEST_R_LIB` and
 `$env:JDV_TEST_BROWSER` before invoking the test task.
 
 The manual `Test server` workflow runs formatting, linting, type checks, and
 `test:unit` on Ubuntu, Windows, and macOS. Its mise tool subset installs only
 Deno. The separate manual `E2E test` workflow installs the pinned Deno and arf
-tools, R, the package and its optional producers, and Playwright-matched
-Chromium on all three platforms. It runs `test:e2e`, including all
-arf-controlled files; prerequisite checks fail rather than silently skipping
-them when tools or required R packages are missing. The default
-installed-package connection uses a named pipe on Windows, while the interactive
-regression selects TCP.
+tools, R, the package and its optional producers, and Astral-managed Chromium on
+all three platforms. It runs `test:e2e`, including all arf-controlled files;
+prerequisite checks fail rather than silently skipping them when tools or
+required R packages are missing. The default installed-package connection uses a
+named pipe on Windows, while the interactive regression selects TCP.
 
-This repository pins Playwright 1.56.1 and its bundled Chromium revision 1194
-(141.0.7390.37), using `JDV_TEST_BROWSER` to select the resolved executable. CI
-uses the runner-provided `npx` only in the browser installation step:
-`npx -y playwright@1.56.1 install --no-shell chromium`, adding `--with-deps`
-only on Linux, with a five-minute step deadline. The resulting executable is
-resolved with Deno and passed to the tests through `JDV_TEST_BROWSER`. The
-[pinned browser manifest](https://github.com/microsoft/playwright/blob/v1.56.1/packages/playwright-core/browsers.json)
-and
-[CLI implementation](https://github.com/microsoft/playwright/blob/v1.56.1/packages/playwright-core/src/cli/program.ts)
-define the matching revision and installation flags. The jgd reference workflow
-uses Astral instead, so its browser launch settings are not used here. Locally,
-`JDV_TEST_BROWSER_LIBS` can supply a Linux shared-library directory for an
-existing matching Chromium build.
+The browser tests use `jsr:@astral/astral@^0.5`, resolved by the committed
+`deno.lock`. Like the jgd reference tests, CI leaves `JDV_TEST_BROWSER` unset
+and sets `ASTRAL_BIN_ARGS="--no-sandbox --disable-dev-shm-usage"`. Astral
+supplies the browser binary; the test helper owns its process and connects
+through Astral's public API. Local tests can reuse an existing browser with
+`JDV_TEST_BROWSER`, and `JDV_TEST_BROWSER_LIBS` can supply a Linux
+shared-library directory. Browser wire assertions use CDP WebSocket events,
+including binary frame payloads, rather than inferring responses from rendered
+text.
 
 Workflow configuration does not establish a successful platform result; consult
 the latest Actions run. Rgui, RStudio, R.app, Esc/Ctrl-C delivery, and true
@@ -306,7 +305,7 @@ Build or install `jdv` into a scratch library with `devtools`, then run the
 focused E2E file with that library selected:
 
 ```sh
-JDV_TEST_R_LIB=/path/to/scratch-library mise exec -- deno test -A --no-lock server/tests/e2e_test.ts
+JDV_TEST_R_LIB=/path/to/scratch-library mise exec -- deno test -A server/tests/e2e_test.ts
 ```
 
 `mise install` provisions arf for local development, and the manual `E2E test`

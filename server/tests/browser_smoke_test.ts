@@ -1,3 +1,24 @@
+import type { Page } from "@astral/astral";
+import {
+  button,
+  click,
+  clickButton,
+  collectPageErrors,
+  count,
+  evaluate,
+  evaluateElement,
+  evaluateElements,
+  fillInput,
+  inputValue,
+  observeSocketFrames,
+  operation,
+  screenshot,
+  selectOption,
+  text,
+  texts,
+  waitFor,
+  waitForSelector,
+} from "./astral_page.ts";
 import { launchOwnedBrowser, phase } from "./bounded_browser.ts";
 import {
   assertServerReleased,
@@ -12,13 +33,6 @@ import {
 } from "./integration_cleanup.ts";
 import { assert, assertEquals } from "./assert.ts";
 import { startServer } from "../main.ts";
-
-type PlaywrightWebSocket = {
-  on(
-    event: "framesent" | "framereceived",
-    listener: (frame: { payload: string | Uint8Array }) => void,
-  ): unknown;
-};
 
 type BrowserElement = {
   clientWidth: number;
@@ -68,12 +82,10 @@ const binaryRLibrary = Deno.env.get("JDV_TEST_BINARY_R_LIB")?.trim() ||
 
 Deno.test({
   name: "browser smoke loads Paged data, queries it, and reaches wide columns",
-  ignore: !browserExecutable,
+
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    const playwrightModule = "npm:playwright@1.56.1";
-    const { chromium } = await import(playwrightModule);
     const cacheDir = await Deno.makeTempDir({ prefix: "jdv-browser-smoke-" });
     const server = await phase("HTTP server startup", () =>
       startServer({
@@ -155,9 +167,8 @@ Deno.test({
     const originalFailure: unknown[] = [];
 
     try {
-      owned = await launchOwnedBrowser(chromium, {
-        executablePath: browserExecutable,
-        headless: true,
+      owned = await launchOwnedBrowser({
+        path: browserExecutable,
         args: ["--no-sandbox"],
         ...(browserLibraryPath
           ? {
@@ -170,59 +181,63 @@ Deno.test({
       });
       const browser = owned.browser;
       await phase("browser test body", async () => {
-        const page = await phase("new page", () =>
-          browser.newPage({
-            viewport: { width: 1280, height: 1000 },
-          }));
-        page.setDefaultTimeout(15_000);
-        page.setDefaultNavigationTimeout(20_000);
+        const page = await phase(
+          "new page",
+          () => browser.newPage("about:blank", { waitUntil: "none" }),
+        );
+
+        await operation(
+          "viewport",
+          () => page.setViewportSize({ width: 1280, height: 1000 }),
+        );
         const pageErrors: string[] = [];
-        page.on("pageerror", (error: Error) => pageErrors.push(error.message));
+        collectPageErrors(page, pageErrors);
         await phase(
           "navigation",
-          () => page.goto(server.url, { waitUntil: "networkidle" }),
+          () => page.goto(server.url, { waitUntil: "load" }),
           25_000,
         );
         assertEquals(
-          await page.evaluate(async () => (await fetch("/favicon.ico")).status),
+          await evaluate(
+            page,
+            async () => (await fetch("/favicon.ico")).status,
+          ),
           204,
         );
-        await page.waitForSelector('#status[data-state="connected"]');
-        await page.locator("#tables article").nth(1).getByRole("button", {
-          name: "Open object",
-        }).click();
-        await page.waitForSelector("#tree-viewer:not([hidden])");
-        await page.waitForSelector('#tree-child-list li[data-child-index="1"]');
+        await waitForSelector(page, '#status[data-state="connected"]');
+        await clickButton(page, "Open object", "#tables article", 1);
+        await waitForSelector(page, "#tree-viewer:not([hidden])");
+        await waitForSelector(
+          page,
+          '#tree-child-list li[data-child-index="1"]',
+        );
         assert(
-          (await page.locator("#tree-child-list").textContent())?.includes(
+          (await text(page, "#tree-child-list"))?.includes(
             "nested <img src=x onerror=alert(1)>list · 1 item",
           ),
           "Tree labels, classes, and summaries should render as text.",
         );
-        assertEquals(await page.locator("#tree-child-list img").count(), 0);
-        await page.locator('#tree-child-list [data-action="open-child"]').nth(1)
-          .click();
-        await page.waitForFunction(() => {
+        assertEquals(await count(page, "#tree-child-list img"), 0);
+        await click(page, '#tree-child-list [data-action="open-child"]', 1);
+        await waitFor(page, () => {
           const document = (globalThis as unknown as {
             document: BrowserDocument;
           }).document;
           return document.querySelector("#tree-title")?.textContent ===
             "Nested object";
         });
-        await page.locator("#tree-parent-return").click();
-        await page.waitForFunction(() => {
+        await click(page, "#tree-parent-return");
+        await waitFor(page, () => {
           const document = (globalThis as unknown as {
             document: BrowserDocument;
           }).document;
           return document.querySelector("#tree-title")?.textContent ===
             "Object smoke";
         });
-        await page.locator('#tree-child-list [data-action="open-child"]')
-          .first()
-          .click();
-        await page.waitForSelector("#viewer:not([hidden])");
-        await page.locator('[data-action="close-view"]').last().click();
-        await page.waitForFunction(() => {
+        await click(page, '#tree-child-list [data-action="open-child"]');
+        await waitForSelector(page, "#viewer:not([hidden])");
+        await click(page, '[data-action="close-view"]', -1);
+        await waitFor(page, () => {
           const document = (globalThis as unknown as {
             document: BrowserDocument;
           }).document;
@@ -231,90 +246,78 @@ Deno.test({
               ).length === 1 &&
             document.querySelector("#tree-viewer")?.hidden === true;
         });
-        await page.locator("#tables article").nth(1).getByRole("button", {
-          name: "Open object",
-        }).click();
-        await page.waitForSelector("#tree-viewer:not([hidden])");
-        await page.locator("#tables article").first().getByRole("button", {
-          name: "Open view",
-        }).click();
-        await page.waitForSelector("#viewer .tabulator-row");
-        await page.selectOption("#filter-column", "299");
+        await clickButton(page, "Open object", "#tables article", 1);
+        await waitForSelector(page, "#tree-viewer:not([hidden])");
+        await clickButton(page, "Open view", "#tables article", 0);
+        await waitForSelector(page, "#viewer .tabulator-row");
+        await selectOption(page, "#filter-column", "299");
         assertEquals(
-          await page.locator("#filter-op option").allTextContents(),
+          await texts(page, "#filter-op option"),
           ["Is missing"],
         );
-        await page.selectOption("#filter-column", "0");
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector(
-              '.tabulator-row [tabulator-field="row_index"]',
-            )?.textContent === "1";
-          },
-        );
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector(
-              '.tabulator-row [tabulator-field="c1"]',
-            )?.textContent === "<img src=x onerror=alert(1)>";
-          },
-        );
-        assertEquals(await page.locator("#column-window img").count(), 0);
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector("#warnings")?.textContent?.includes(
-              "<img src=x onerror=alert(1)>",
-            ) === true;
-          },
-        );
-        assertEquals(await page.locator("#warnings img").count(), 0);
-        await page.screenshot({
-          path: `${cacheDir}/jdv-phase7-browser-smoke.png`,
-          fullPage: true,
+        await selectOption(page, "#filter-column", "0");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector(
+            '.tabulator-row [tabulator-field="row_index"]',
+          )?.textContent === "1";
         });
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector(
+            '.tabulator-row [tabulator-field="c1"]',
+          )?.textContent === "<img src=x onerror=alert(1)>";
+        });
+        assertEquals(await count(page, "#column-window img"), 0);
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#warnings")?.textContent?.includes(
+            "<img src=x onerror=alert(1)>",
+          ) === true;
+        });
+        assertEquals(await count(page, "#warnings img"), 0);
+        await Deno.writeFile(
+          `${cacheDir}/jdv-phase7-browser-smoke.png`,
+          await screenshot(page),
+        );
 
         assertEquals(
           requests.slice(0, 3).map((request) => request.offset),
           [0, 37, 49],
         );
         assertEquals(
-          await page.locator("#column-window.tabulator").count(),
+          await count(page, "#column-window.tabulator"),
           1,
         );
         assertEquals(
-          await page.locator(
+          await count(
+            page,
             '#column-window .tabulator-col[tabulator-field="c0"]',
-          ).count(),
+          ),
           1,
         );
         assertEquals(
-          await page.locator('.tabulator-row [tabulator-field="c0"]').first()
-            .textContent(),
+          await text(page, '.tabulator-row [tabulator-field="c0"]'),
           "1",
         );
 
-        await page.selectOption("#sort-column", "0");
-        await page.selectOption("#sort-direction", "desc");
-        await page.getByRole("button", { name: "Add sort" }).click();
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector(
-              '.tabulator-row [tabulator-field="row_index"]',
-            )?.textContent === "249";
-          },
-        );
+        await selectOption(page, "#sort-column", "0");
+        await selectOption(page, "#sort-direction", "desc");
+        await clickButton(page, "Add sort");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector(
+            '.tabulator-row [tabulator-field="row_index"]',
+          )?.textContent === "249";
+        });
         assert(
           requests.some((request) =>
             Array.isArray(request.sort) &&
@@ -324,18 +327,16 @@ Deno.test({
         );
 
         await clickNextPage(page);
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector(
-              '.tabulator-row [tabulator-field="row_index"]',
-            )?.textContent === "49";
-          },
-        );
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector(
+            '.tabulator-row [tabulator-field="row_index"]',
+          )?.textContent === "49";
+        });
         const pagedRequestsBeforeHorizontalScroll = requests.length;
-        const heldScrollGeometry = await page.evaluate(async () => {
+        const heldScrollGeometry = await evaluate(page, async () => {
           const runtime = globalThis as unknown as BrowserRuntime & {
             document: BrowserDocument;
           };
@@ -398,7 +399,9 @@ Deno.test({
         await page.waitForTimeout(500);
         console.log(
           "horizontal-column-diagnostic",
-          await page.locator("#column-viewport").evaluate(
+          await evaluateElement(
+            page,
+            "#column-viewport",
             (element: BrowserElement) => {
               const columns = [...element.querySelectorAll(".tabulator-col")];
               const runtime = globalThis as unknown as BrowserRuntime;
@@ -447,16 +450,19 @@ Deno.test({
             },
           ),
         );
-        await page.screenshot({
-          path: `${cacheDir}/jdv-phase7-browser-scroll.png`,
-          fullPage: true,
-        });
-        await page.waitForSelector(
+        await Deno.writeFile(
+          `${cacheDir}/jdv-phase7-browser-scroll.png`,
+          await screenshot(page),
+        );
+        await waitForSelector(
+          page,
           '#column-window .tabulator-col[tabulator-field="c290"]',
           { timeout: 5_000 },
         );
-        const pinnedRowGeometry = await page.locator("#column-viewport")
-          .evaluate((viewport: BrowserElement) => {
+        const pinnedRowGeometry = await evaluateElement(
+          page,
+          "#column-viewport",
+          (viewport: BrowserElement) => {
             const viewportRect = viewport.getBoundingClientRect();
             const header = viewport.querySelector(
               '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
@@ -473,7 +479,8 @@ Deno.test({
               cellLeft: cellRect?.left,
               cellRight: cellRect?.right,
             };
-          });
+          },
+        );
         assert(
           pinnedRowGeometry.headerLeft !== undefined &&
             pinnedRowGeometry.headerRight !== undefined &&
@@ -495,16 +502,14 @@ Deno.test({
           "right-column-paged-requests",
           JSON.stringify(requests.filter((request) => request.offset === 200)),
         );
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector("#sort-list")?.textContent?.includes(
-              "#0",
-            ) === true;
-          },
-        );
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#sort-list")?.textContent?.includes(
+            "#0",
+          ) === true;
+        });
         assert(
           requests.some((request) =>
             request.offset === 200 && Array.isArray(request.cols) &&
@@ -515,116 +520,102 @@ Deno.test({
           "The right-column page request lost page offset or the column-0 sort.",
         );
 
-        await page.selectOption("#filter-column", "0");
-        await page.selectOption("#filter-op", "gt");
-        await page.locator("#filter-value").fill("247");
-        await page.getByRole("button", { name: "Apply filter" }).click();
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            const cells = [
-              ...document.querySelectorAll(
-                '.tabulator-row [tabulator-field="row_index"]',
-              ),
-            ];
-            return cells.length === 2 && cells[0].textContent === "249" &&
-              cells[1].textContent === "248";
-          },
-        );
+        await selectOption(page, "#filter-column", "0");
+        await selectOption(page, "#filter-op", "gt");
+        await fillInput(page, "#filter-value", "247");
+        await clickButton(page, "Apply filter");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          const cells = [
+            ...document.querySelectorAll(
+              '.tabulator-row [tabulator-field="row_index"]',
+            ),
+          ];
+          return cells.length === 2 && cells[0].textContent === "249" &&
+            cells[1].textContent === "248";
+        });
         assert(
           requests.some((request) =>
             (request.filter as Record<string, unknown> | null)?.op === "gt"
           ),
           "The browser did not send the filter request.",
         );
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector("#table-meta")?.textContent
-              ?.startsWith(
-                "2 of 249 rows · 300 columns · paged · ",
-              ) === true;
-          },
-        );
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-meta")?.textContent
+            ?.startsWith(
+              "2 of 249 rows · 300 columns · paged · ",
+            ) === true;
+        });
         assert(
-          (await page.locator("#table-meta").textContent())?.startsWith(
+          (await text(page, "#table-meta"))?.startsWith(
             "2 of 249 rows · 300 columns · paged · ",
           ),
           "The Paged heading should show the filtered and unfiltered totals.",
         );
-        await page.screenshot({
-          path: `${cacheDir}/jdv-20261014-ui-filtered-count.png`,
-          fullPage: true,
-        });
+        await Deno.writeFile(
+          `${cacheDir}/jdv-20261014-ui-filtered-count.png`,
+          await screenshot(page),
+        );
 
-        await page.getByRole("button", { name: "Clear" }).click();
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector(
-              '.tabulator-row [tabulator-field="row_index"]',
-            )?.textContent === "249";
-          },
-        );
-        await page.selectOption("#filter-column", "0");
-        await page.selectOption("#filter-op", "gt");
-        await page.locator("#filter-value").fill("999");
-        await page.getByRole("button", { name: "Apply filter" }).click();
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector('#warnings li[data-state="error"]')
-              ?.textContent?.includes(
-                "r_error: <img src=x onerror=alert(1)>",
-              ) ===
-              true;
-          },
-        );
-        assertEquals(await page.locator("#warnings img").count(), 0);
-        await page.getByRole("button", { name: "Clear" }).click();
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector(
-              '.tabulator-row [tabulator-field="row_index"]',
-            )?.textContent === "249";
-          },
-        );
-        await page.evaluate(() => {
+        await clickButton(page, "Clear");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector(
+            '.tabulator-row [tabulator-field="row_index"]',
+          )?.textContent === "249";
+        });
+        await selectOption(page, "#filter-column", "0");
+        await selectOption(page, "#filter-op", "gt");
+        await fillInput(page, "#filter-value", "999");
+        await clickButton(page, "Apply filter");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector('#warnings li[data-state="error"]')
+            ?.textContent?.includes(
+              "r_error: <img src=x onerror=alert(1)>",
+            ) ===
+            true;
+        });
+        assertEquals(await count(page, "#warnings img"), 0);
+        await clickButton(page, "Clear");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector(
+            '.tabulator-row [tabulator-field="row_index"]',
+          )?.textContent === "249";
+        });
+        await evaluate(page, () => {
           const document = (globalThis as unknown as {
             document: BrowserDocument;
           }).document;
           const viewport = document.querySelector("#column-viewport");
           if (viewport) viewport.scrollLeft = viewport.scrollWidth;
         });
-        await page.waitForSelector(
+        await waitForSelector(
+          page,
           '#column-window .tabulator-col[tabulator-field="c299"]',
         );
-        await page.waitForSelector(
-          '.tabulator-row [tabulator-field="c299"]',
-        );
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector(
-              '.tabulator-row [tabulator-field="c299"]',
-            )?.textContent?.startsWith("value-299-") === true;
-          },
-          { timeout: 5_000 },
-        );
-        await page.waitForFunction(() => {
+        await waitForSelector(page, '.tabulator-row [tabulator-field="c299"]');
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector(
+            '.tabulator-row [tabulator-field="c299"]',
+          )?.textContent?.startsWith("value-299-") === true;
+        }, { timeout: 5_000 });
+        await waitFor(page, () => {
           const document = (globalThis as unknown as {
             document: BrowserDocument;
           }).document;
@@ -644,48 +635,49 @@ Deno.test({
             cell.right <= viewportRect.right + 1;
         }, { timeout: 5_000 });
         assert(
-          (await page.locator('.tabulator-row [tabulator-field="c299"]')
-            .first().textContent())?.startsWith("value-299-"),
+          (await text(page, '.tabulator-row [tabulator-field="c299"]'))
+            ?.startsWith("value-299-"),
           "The rightmost data cell was not rendered.",
         );
-        const rightEdgeGeometry = await page.locator("#column-viewport")
-          .evaluate(
-            (element: BrowserElement) => {
-              const viewportRect = element.getBoundingClientRect();
-              const row = element.querySelector(
-                '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
-              );
-              const rowRight = row?.getBoundingClientRect().right ?? Number.NaN;
-              const firstVisible = [
-                ...element.querySelectorAll(
-                  '.tabulator-header .tabulator-col[tabulator-field^="c"]',
-                ),
-              ].map((column) => column.getBoundingClientRect()).find((rect) =>
-                rect.right > rowRight && rect.left >= rowRight - 1
-              );
-              const lastHeader = element.querySelector(
-                '.tabulator-header .tabulator-col[tabulator-field="c299"]',
-              );
-              const lastCell = element.querySelector(
-                '.tabulator-row [tabulator-field="c299"]',
-              );
-              const lastHeaderRect = lastHeader?.getBoundingClientRect();
-              const lastCellRect = lastCell?.getBoundingClientRect();
-              return {
-                scrollLeft: element.scrollLeft,
-                scrollWidth: element.scrollWidth,
-                clientWidth: element.clientWidth,
-                viewportLeft: viewportRect.left,
-                viewportRight: viewportRect.right,
-                rowRight,
-                firstDataLeft: firstVisible?.left ?? Number.NaN,
-                lastHeaderLeft: lastHeaderRect?.left ?? Number.NaN,
-                lastHeaderRight: lastHeaderRect?.right ?? Number.NaN,
-                lastCellLeft: lastCellRect?.left ?? Number.NaN,
-                lastCellRight: lastCellRect?.right ?? Number.NaN,
-              };
-            },
-          );
+        const rightEdgeGeometry = await evaluateElement(
+          page,
+          "#column-viewport",
+          (element: BrowserElement) => {
+            const viewportRect = element.getBoundingClientRect();
+            const row = element.querySelector(
+              '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+            );
+            const rowRight = row?.getBoundingClientRect().right ?? Number.NaN;
+            const firstVisible = [
+              ...element.querySelectorAll(
+                '.tabulator-header .tabulator-col[tabulator-field^="c"]',
+              ),
+            ].map((column) => column.getBoundingClientRect()).find((rect) =>
+              rect.right > rowRight && rect.left >= rowRight - 1
+            );
+            const lastHeader = element.querySelector(
+              '.tabulator-header .tabulator-col[tabulator-field="c299"]',
+            );
+            const lastCell = element.querySelector(
+              '.tabulator-row [tabulator-field="c299"]',
+            );
+            const lastHeaderRect = lastHeader?.getBoundingClientRect();
+            const lastCellRect = lastCell?.getBoundingClientRect();
+            return {
+              scrollLeft: element.scrollLeft,
+              scrollWidth: element.scrollWidth,
+              clientWidth: element.clientWidth,
+              viewportLeft: viewportRect.left,
+              viewportRight: viewportRect.right,
+              rowRight,
+              firstDataLeft: firstVisible?.left ?? Number.NaN,
+              lastHeaderLeft: lastHeaderRect?.left ?? Number.NaN,
+              lastHeaderRight: lastHeaderRect?.right ?? Number.NaN,
+              lastCellLeft: lastCellRect?.left ?? Number.NaN,
+              lastCellRight: lastCellRect?.right ?? Number.NaN,
+            };
+          },
+        );
         assert(
           Math.abs(
             rightEdgeGeometry.firstDataLeft - rightEdgeGeometry.rowRight,
@@ -716,11 +708,10 @@ Deno.test({
           rightEdgeGeometry.scrollLeft,
           rightEdgeGeometry.scrollWidth - rightEdgeGeometry.clientWidth,
         );
-        await page.screenshot({
-          path: `${cacheDir}/wide-right-edge.png`,
-          fullPage: true,
-          timeout: 5_000,
-        });
+        await Deno.writeFile(
+          `${cacheDir}/wide-right-edge.png`,
+          await screenshot(page),
+        );
         console.log(
           "rightmost-column-paged-requests",
           JSON.stringify(
@@ -730,7 +721,7 @@ Deno.test({
           ),
         );
         await clickNextPage(page);
-        await page.waitForFunction(() => {
+        await waitFor(page, () => {
           const document = (globalThis as unknown as {
             document: BrowserDocument;
           }).document;
@@ -740,7 +731,9 @@ Deno.test({
         });
         console.log(
           "vertical-layout-diagnostic",
-          await page.locator("#column-viewport").evaluate(
+          await evaluateElement(
+            page,
+            "#column-viewport",
             (viewport: BrowserElement) => {
               const runtime = globalThis as unknown as BrowserRuntime;
               const pagination = runtime.document.querySelector(
@@ -785,8 +778,10 @@ Deno.test({
             },
           ),
         );
-        const verticalLayoutBefore = await page.locator("#column-viewport")
-          .evaluate((viewport: BrowserElement) => {
+        const verticalLayoutBefore = await evaluateElement(
+          page,
+          "#column-viewport",
+          (viewport: BrowserElement) => {
             const header = viewport.querySelector(".tabulator-header");
             const tableholder = viewport.querySelector(
               ".tabulator-tableholder",
@@ -812,7 +807,8 @@ Deno.test({
                 ? viewport.contains(pagination)
                 : true,
             };
-          });
+          },
+        );
         assert(
           verticalLayoutBefore.outerScrollTop === 0 &&
             verticalLayoutBefore.headerTop !== undefined &&
@@ -826,7 +822,7 @@ Deno.test({
             JSON.stringify(verticalLayoutBefore)
           }`,
         );
-        await page.evaluate(() => {
+        await evaluate(page, () => {
           const document = (globalThis as unknown as {
             document: BrowserDocument;
           }).document;
@@ -836,8 +832,10 @@ Deno.test({
           if (tableholder) tableholder.scrollTop = tableholder.scrollHeight / 2;
         });
         await page.waitForTimeout(100);
-        const verticalLayoutAfter = await page.locator("#column-viewport")
-          .evaluate((viewport: BrowserElement) => {
+        const verticalLayoutAfter = await evaluateElement(
+          page,
+          "#column-viewport",
+          (viewport: BrowserElement) => {
             const header = viewport.querySelector(".tabulator-header");
             const tableholder = viewport.querySelector(
               ".tabulator-tableholder",
@@ -860,7 +858,8 @@ Deno.test({
                 ? viewport.contains(pagination)
                 : true,
             };
-          });
+          },
+        );
         assert(
           verticalLayoutAfter.outerScrollTop === 0 &&
             verticalLayoutAfter.headerTop !== undefined &&
@@ -877,8 +876,10 @@ Deno.test({
             JSON.stringify(verticalLayoutAfter)
           }`,
         );
-        const rerenderedRowGeometry = await page.locator("#column-viewport")
-          .evaluate((viewport: BrowserElement) => {
+        const rerenderedRowGeometry = await evaluateElement(
+          page,
+          "#column-viewport",
+          (viewport: BrowserElement) => {
             const viewportLeft = viewport.getBoundingClientRect().left;
             const header = viewport.querySelector(
               '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
@@ -895,7 +896,8 @@ Deno.test({
               cellLeft: cellRect?.left,
               cellRight: cellRect?.right,
             };
-          });
+          },
+        );
         assert(
           rerenderedRowGeometry.headerLeft !== undefined &&
             rerenderedRowGeometry.headerRight !== undefined &&
@@ -917,14 +919,13 @@ Deno.test({
             JSON.stringify(rerenderedRowGeometry)
           }`,
         );
-        await page.evaluate(() =>
+        await evaluate(page, () =>
           new Promise<void>((resolve) => {
             const runtime = globalThis as unknown as BrowserRuntime;
             runtime.requestAnimationFrame(() => {
               runtime.requestAnimationFrame(() => resolve());
             });
-          })
-        );
+          }));
         const renderedEdgeCells: {
           loading: boolean;
           columns: Array<{
@@ -937,8 +938,10 @@ Deno.test({
             textRight: number | undefined;
             text: string | null | undefined;
           }>;
-        } = await page.locator("#column-viewport")
-          .evaluate((viewport: BrowserElement) => {
+        } = await evaluateElement(
+          page,
+          "#column-viewport",
+          (viewport: BrowserElement) => {
             const rows = [...viewport.querySelectorAll(".tabulator-row")];
             const targetRow = rows.find((row) =>
               row.querySelector('[tabulator-field="row_index"]')
@@ -974,7 +977,8 @@ Deno.test({
                 ...cellGeometry(`c${position}`),
               })),
             };
-          });
+          },
+        );
         assert(
           !renderedEdgeCells.loading &&
             renderedEdgeCells.columns.length === 6 &&
@@ -1004,12 +1008,12 @@ Deno.test({
           "settled-right-edge-row-24",
           JSON.stringify(renderedEdgeCells),
         );
-        await page.screenshot({
-          path: `${cacheDir}/jdv-20261014-ui-wide-right-edge-after-render.png`,
-          fullPage: true,
-        });
+        await Deno.writeFile(
+          `${cacheDir}/jdv-20261014-ui-wide-right-edge-after-render.png`,
+          await screenshot(page),
+        );
         assertEquals(
-          await page.locator("#column-window img").count(),
+          await count(page, "#column-window img"),
           0,
         );
 
@@ -1018,105 +1022,95 @@ Deno.test({
           method: "view/open",
           params: snapshotDescriptor(columns.slice(0, 3)),
         });
-        const snapshotCard = page.locator("#tables article").filter({
-          hasText: "Snapshot smoke",
+        const snapshotCard = "Snapshot smoke";
+        await clickButton(
+          page,
+          "Open view",
+          "#tables article",
+          0,
+          snapshotCard,
+        );
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-title")?.textContent ===
+              "Snapshot smoke" &&
+            document.querySelector(
+                '.tabulator-row [tabulator-field="row_index"]',
+              )?.textContent === "1";
         });
-        await snapshotCard.getByRole("button", { name: "Open view" }).click();
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector("#table-title")?.textContent ===
-                "Snapshot smoke" &&
-              document.querySelector(
-                  '.tabulator-row [tabulator-field="row_index"]',
-                )?.textContent === "1";
-          },
-        );
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector("#table-meta")?.textContent
-              ?.startsWith(
-                "249 of 249 rows · 3 columns · snapshot · ",
-              ) === true;
-          },
-        );
-        await page.selectOption("#filter-column", "2");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-meta")?.textContent
+            ?.startsWith(
+              "249 of 249 rows · 3 columns · snapshot · ",
+            ) === true;
+        });
+        await selectOption(page, "#filter-column", "2");
         assertEquals(
-          await page.locator("#filter-op option").allTextContents(),
+          await texts(page, "#filter-op option"),
           ["Is missing"],
         );
-        await page.selectOption("#filter-column", "0");
-        await page.selectOption("#sort-column", "0");
-        await page.selectOption("#sort-direction", "desc");
-        await page.getByRole("button", { name: "Add sort" }).click();
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector(
-              '.tabulator-row [tabulator-field="row_index"]',
-            )?.textContent === "249";
-          },
-        );
+        await selectOption(page, "#filter-column", "0");
+        await selectOption(page, "#sort-column", "0");
+        await selectOption(page, "#sort-direction", "desc");
+        await clickButton(page, "Add sort");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector(
+            '.tabulator-row [tabulator-field="row_index"]',
+          )?.textContent === "249";
+        });
         await clickNextPage(page);
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector(
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector(
+            '.tabulator-row [tabulator-field="row_index"]',
+          )?.textContent === "49";
+        });
+        await selectOption(page, "#filter-column", "0");
+        await selectOption(page, "#filter-op", "gt");
+        await fillInput(page, "#filter-value", "247");
+        await clickButton(page, "Apply filter");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          const cells = [
+            ...document.querySelectorAll(
               '.tabulator-row [tabulator-field="row_index"]',
-            )?.textContent === "49";
-          },
-        );
-        await page.selectOption("#filter-column", "0");
-        await page.selectOption("#filter-op", "gt");
-        await page.locator("#filter-value").fill("247");
-        await page.getByRole("button", { name: "Apply filter" }).click();
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            const cells = [
-              ...document.querySelectorAll(
-                '.tabulator-row [tabulator-field="row_index"]',
-              ),
-            ];
-            return cells.length === 2 && cells[0].textContent === "249" &&
-              cells[1].textContent === "248";
-          },
-        );
+            ),
+          ];
+          return cells.length === 2 && cells[0].textContent === "249" &&
+            cells[1].textContent === "248";
+        });
         assert(
-          (await page.locator("#table-meta").textContent())?.startsWith(
+          (await text(page, "#table-meta"))?.startsWith(
             "2 of 249 rows · 3 columns · snapshot · ",
           ),
           "Snapshot local filtering should update both row totals.",
         );
         assertEquals(requests.length, pagedRequestsBeforeSnapshot);
 
-        const pagedCard = page.locator("#tables article").filter({
-          hasText: "Browser smoke",
+        const pagedCard = "Browser smoke";
+        await clickButton(page, "Open view", "#tables article", 0, pagedCard);
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-title")?.textContent ===
+              "Browser smoke" &&
+            document.querySelector(
+                '.tabulator-row [tabulator-field="row_index"]',
+              )?.textContent === "1";
         });
-        await pagedCard.getByRole("button", { name: "Open view" }).click();
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector("#table-title")?.textContent ===
-                "Browser smoke" &&
-              document.querySelector(
-                  '.tabulator-row [tabulator-field="row_index"]',
-                )?.textContent === "1";
-          },
-        );
         await writeFrame(rConnection, {
           method: "view/open",
           params: {
@@ -1133,36 +1127,35 @@ Deno.test({
             capabilities: gridCapabilities(),
           },
         });
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector("#table-title")?.textContent ===
-                "Generation 2" &&
-              document.querySelector(
-                  '.tabulator-row [tabulator-field="row_index"]',
-                )?.textContent === "1001";
-          },
-        );
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-title")?.textContent ===
+              "Generation 2" &&
+            document.querySelector(
+                '.tabulator-row [tabulator-field="row_index"]',
+              )?.textContent === "1001";
+        });
         await writeFrame(rConnection, {
           method: "view/closed",
           params: { view: "wide-paged", generation: 1 },
         });
         await page.waitForTimeout(100);
         assertEquals(
-          await page.locator("#viewer").evaluate((element: BrowserElement) =>
-            element.hidden
+          await evaluateElement(
+            page,
+            "#viewer",
+            (element: BrowserElement) => element.hidden,
           ),
           false,
         );
         assertEquals(
-          await page.locator("#table-title").textContent(),
+          await text(page, "#table-title"),
           "Generation 2",
         );
         assertEquals(
-          await page.locator('.tabulator-row [tabulator-field="row_index"]')
-            .first().textContent(),
+          await text(page, '.tabulator-row [tabulator-field="row_index"]'),
           "1001",
         );
 
@@ -1179,25 +1172,25 @@ Deno.test({
           method: "view/open",
           params: limitedView,
         });
-        const limitedCard = page.locator("#tables article").filter({
-          hasText: "Limited capabilities",
+        const limitedCard = "Limited capabilities";
+        await clickButton(page, "Open view", "#tables article", 0, limitedCard);
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-title")?.textContent ===
+            "Limited capabilities";
         });
-        await limitedCard.getByRole("button", { name: "Open view" }).click();
-        await page.waitForFunction(
-          () => {
-            const document = (globalThis as unknown as {
-              document: BrowserDocument;
-            }).document;
-            return document.querySelector("#table-title")?.textContent ===
-              "Limited capabilities";
-          },
-        );
         assert(
-          (await limitedCard.textContent())?.includes("Unknown rows"),
+          (await texts(page, "#tables article")).find((content) =>
+            content.includes(limitedCard)
+          )?.includes("Unknown rows"),
           "A missing row count should be labeled unknown.",
         );
         assertEquals(
-          await page.locator(".query-tools fieldset").evaluateAll(
+          await evaluateElements(
+            page,
+            ".query-tools fieldset",
             (elements: BrowserElement[]) =>
               elements.every((element) => element.hidden),
           ),
@@ -1212,12 +1205,14 @@ Deno.test({
           method: "view/open",
           params: unsupported,
         });
-        const unsupportedCard = page.locator("#tables article").filter({
-          hasText: "Unsupported list",
-        });
-        await unsupportedCard.getByRole("button", {
-          name: "Unsupported view",
-        }).waitFor();
+        const unsupportedCard = "Unsupported list";
+        await button(
+          page,
+          "Unsupported view",
+          "#tables article",
+          0,
+          unsupportedCard,
+        );
         await writeFrame(rConnection, {
           method: "view/open",
           params: {
@@ -1240,10 +1235,8 @@ Deno.test({
             capabilities: gridCapabilities(),
           },
         });
-        const binaryProbe = page.locator("#tables article").filter({
-          hasText: "Binary response probe",
-        });
-        await binaryProbe.getByRole("button", { name: "Open view" }).click();
+        const binaryProbe = "Binary response probe";
+        await clickButton(page, "Open view", "#tables article", 0, binaryProbe);
         const binaryRequestDeadline = Date.now() + 5_000;
         while (
           !requests.some((request) => request.view === "binary-app-probe") &&
@@ -1255,7 +1248,7 @@ Deno.test({
           );
         }
         await page.waitForTimeout(500);
-        const probeState = await page.evaluate(() => {
+        const probeState = await evaluate(page, () => {
           const document = (globalThis as unknown as {
             document: BrowserDocument;
           }).document;
@@ -1295,12 +1288,10 @@ Deno.test({
 
 Deno.test({
   name: "installed R binary responses reach the Chromium app transport",
-  ignore: !browserExecutable || !binaryRLibrary,
+  ignore: !binaryRLibrary,
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
-    const playwrightModule = "npm:playwright@1.56.1";
-    const { chromium } = await import(playwrightModule);
     const cacheRoot = await Deno.makeTempDir({
       prefix: "jdv-r-binary-browser-",
     });
@@ -1406,9 +1397,8 @@ Deno.test({
         );
       }
 
-      owned = await launchOwnedBrowser(chromium, {
-        executablePath: browserExecutable,
-        headless: true,
+      owned = await launchOwnedBrowser({
+        path: browserExecutable,
         args: ["--no-sandbox"],
         ...(browserLibraryPath
           ? {
@@ -1421,47 +1411,32 @@ Deno.test({
       });
       const browser = owned.browser;
       await phase("browser test body", async () => {
-        const page = await phase("new page", () =>
-          browser.newPage({
-            viewport: { width: 1280, height: 1000 },
-          }));
-        page.setDefaultTimeout(15_000);
-        page.setDefaultNavigationTimeout(20_000);
+        const page = await phase(
+          "new page",
+          () => browser.newPage("about:blank", { waitUntil: "none" }),
+        );
+
+        await operation(
+          "viewport",
+          () => page.setViewportSize({ width: 1280, height: 1000 }),
+        );
         const pageErrors: string[] = [];
         const websocketFrames: Array<{
           direction: "sent" | "received";
           payload: string | Uint8Array;
         }> = [];
-        page.on("pageerror", (error: Error) => pageErrors.push(error.message));
-        page.on("websocket", (websocket: PlaywrightWebSocket) => {
-          websocket.on("framesent", (frame) => {
-            websocketFrames.push({
-              direction: "sent",
-              payload: typeof frame.payload === "string"
-                ? frame.payload
-                : new Uint8Array(frame.payload),
-            });
-          });
-          websocket.on("framereceived", (frame) => {
-            websocketFrames.push({
-              direction: "received",
-              payload: typeof frame.payload === "string"
-                ? frame.payload
-                : new Uint8Array(frame.payload),
-            });
-          });
-        });
+        collectPageErrors(page, pageErrors);
+        await observeSocketFrames(page, (frame) => websocketFrames.push(frame));
         await phase(
           "navigation",
-          () => page.goto(server.url, { waitUntil: "networkidle" }),
+          () => page.goto(server.url, { waitUntil: "load" }),
           25_000,
         );
-        await page.waitForSelector('#status[data-state="connected"]');
-        const card = page.locator("#tables article").filter({
-          hasText: "Real R binary probe",
-        });
-        await card.getByRole("button", { name: "Open view" }).click();
-        await page.waitForFunction(
+        await waitForSelector(page, '#status[data-state="connected"]');
+        const card = "Real R binary probe";
+        await clickButton(page, "Open view", "#tables article", 0, card);
+        await waitFor(
+          page,
           () => {
             const document = (globalThis as unknown as {
               document: BrowserDocument;
@@ -1843,9 +1818,9 @@ async function respondToR(
 }
 
 async function clickNextPage(
-  page: { locator(selector: string): { click(): Promise<void> } },
+  page: Page,
 ): Promise<void> {
-  await page.locator('.tabulator-page[data-page="next"]').click();
+  await click(page, '.tabulator-page[data-page="next"]');
 }
 
 function snapshotDescriptor(
@@ -1906,12 +1881,10 @@ function gridCapabilities() {
 
 Deno.test({
   name: "cell open survives Snapshot queries and restores its parent state",
-  ignore: !browserExecutable,
+
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    const playwrightModule = "npm:playwright@1.56.1";
-    const { chromium } = await import(playwrightModule);
     const cacheDir = await Deno.makeTempDir({ prefix: "jdv-cell-browser-" });
     const server = await phase(
       "HTTP server startup",
@@ -2014,9 +1987,8 @@ Deno.test({
     let owned: Awaited<ReturnType<typeof launchOwnedBrowser>> | undefined;
     const originalFailure: unknown[] = [];
     try {
-      owned = await launchOwnedBrowser(chromium, {
-        executablePath: browserExecutable,
-        headless: true,
+      owned = await launchOwnedBrowser({
+        path: browserExecutable,
         args: ["--no-sandbox"],
         ...(browserLibraryPath
           ? {
@@ -2029,85 +2001,100 @@ Deno.test({
       });
       const browser = owned.browser;
       await phase("browser test body", async () => {
-        const page = await phase("new page", () =>
-          browser.newPage({
-            viewport: { width: 1280, height: 1000 },
-          }));
-        page.setDefaultTimeout(15_000);
-        page.setDefaultNavigationTimeout(20_000);
+        const page = await phase(
+          "new page",
+          () => browser.newPage("about:blank", { waitUntil: "none" }),
+        );
+
+        await operation(
+          "viewport",
+          () => page.setViewportSize({ width: 1280, height: 1000 }),
+        );
         const errors: string[] = [];
-        page.on("pageerror", (error: Error) => errors.push(error.message));
+        collectPageErrors(page, errors);
         await phase(
           "navigation",
-          () => page.goto(server.url, { waitUntil: "networkidle" }),
+          () => page.goto(server.url, { waitUntil: "load" }),
           25_000,
         );
-        await page.getByRole("button", { name: "Open view", exact: true })
-          .click();
-        await page.waitForSelector(
+        await clickButton(page, "Open view");
+        await waitForSelector(
+          page,
           '[data-action="open-cell"][data-row-index="1"][data-column="2"]',
         );
         assertEquals(
-          await page.locator('[data-action="open-cell"][data-column="3"]')
-            .count(),
+          await count(page, '[data-action="open-cell"][data-column="3"]'),
           0,
         );
-        assertEquals(await page.locator("#viewer img").count(), 0);
-        await page.locator(
+        assertEquals(await count(page, "#viewer img"), 0);
+        await click(
+          page,
           '[data-action="open-cell"][data-row-index="1"][data-column="2"]',
-        ).click();
+        );
         const open = await opened;
         assertEquals((open.params as Record<string, unknown>).path, [{
           kind: "cell",
           row_index: 1,
           column: 2,
         }]);
-        await page.waitForSelector(
+        await waitForSelector(
+          page,
           '#child-open-status[data-state="waiting"]:not([hidden])',
         );
-        await page.selectOption("#sort-column", "0");
-        await page.selectOption("#sort-direction", "desc");
-        await page.locator("#sort-add").click();
-        await page.waitForFunction(() =>
-          (globalThis as unknown as { document: BrowserDocument }).document
-            .querySelector('.tabulator-row [tabulator-field="row_index"]')
-            ?.textContent === "449"
+        await selectOption(page, "#sort-column", "0");
+        await selectOption(page, "#sort-direction", "desc");
+        await click(page, "#sort-add");
+        await waitFor(
+          page,
+          () =>
+            (globalThis as unknown as { document: BrowserDocument }).document
+              .querySelector('.tabulator-row [tabulator-field="row_index"]')
+              ?.textContent === "449",
         );
-        await page.selectOption("#filter-column", "0");
-        await page.selectOption("#filter-op", "gt");
-        await page.locator("#filter-value").fill("10");
-        await page.locator("#filter-apply").click();
-        await page.waitForFunction(() =>
-          (globalThis as unknown as { document: BrowserDocument }).document
-            .querySelector("#table-meta")?.textContent?.startsWith(
-              "439 of 449 rows",
-            )
+        await selectOption(page, "#filter-column", "0");
+        await selectOption(page, "#filter-op", "gt");
+        await fillInput(page, "#filter-value", "10");
+        await click(page, "#filter-apply");
+        await waitFor(
+          page,
+          () =>
+            (globalThis as unknown as { document: BrowserDocument }).document
+              .querySelector("#table-meta")?.textContent?.startsWith(
+                "439 of 449 rows",
+              ),
         );
         await clickNextPage(page);
-        await page.waitForFunction(() =>
-          (globalThis as unknown as { document: BrowserDocument }).document
-            .querySelector('.tabulator-row [tabulator-field="row_index"]')
-            ?.textContent === "249"
+        await waitFor(
+          page,
+          () =>
+            (globalThis as unknown as { document: BrowserDocument }).document
+              .querySelector('.tabulator-row [tabulator-field="row_index"]')
+              ?.textContent === "249",
         );
-        await page.locator("#column-viewport").evaluate(
+        await evaluateElement(
+          page,
+          "#column-viewport",
           (element: BrowserElement) => {
             element.scrollLeft = 540;
           },
         );
-        await page.waitForFunction(() =>
-          !(globalThis as unknown as { document: BrowserDocument }).document
-            .querySelector("#column-window")?.className.includes(
-              "is-loading-window",
-            )
+        await waitFor(
+          page,
+          () =>
+            !(globalThis as unknown as { document: BrowserDocument }).document
+              .querySelector("#column-window")?.className.includes(
+                "is-loading-window",
+              ),
         );
-        const scrollLeft = await page.locator("#column-viewport").evaluate((
+        const scrollLeft = await evaluateElement(page, "#column-viewport", (
           element: BrowserElement,
         ) => element.scrollLeft);
         assert(scrollLeft > 0);
         assertEquals(
-          await page.locator(
+          await count(
+            page,
             '#child-open-status[data-state="waiting"]:not([hidden])',
-          ).count(),
+          ),
           1,
         );
         assertEquals(
@@ -2139,27 +2126,31 @@ Deno.test({
             },
           },
         });
-        await page.waitForFunction(() =>
-          (globalThis as unknown as { document: BrowserDocument }).document
-            .querySelector("#tree-title")?.textContent === "Captured row 1"
+        await waitFor(
+          page,
+          () =>
+            (globalThis as unknown as { document: BrowserDocument }).document
+              .querySelector("#tree-title")?.textContent === "Captured row 1",
         );
-        await page.waitForSelector("#tree-child-list li");
-        assertEquals(await page.locator("#tree-child-list img").count(), 0);
-        await page.locator('#view-breadcrumb [data-view-depth="0"]').click();
-        await page.waitForFunction(() =>
-          (globalThis as unknown as { document: BrowserDocument }).document
-            .querySelector('.tabulator-row [tabulator-field="row_index"]')
-            ?.textContent === "249"
+        await waitForSelector(page, "#tree-child-list li");
+        assertEquals(await count(page, "#tree-child-list img"), 0);
+        await click(page, '#view-breadcrumb [data-view-depth="0"]');
+        await waitFor(
+          page,
+          () =>
+            (globalThis as unknown as { document: BrowserDocument }).document
+              .querySelector('.tabulator-row [tabulator-field="row_index"]')
+              ?.textContent === "249",
         );
-        assertEquals(await page.locator("#filter-value").inputValue(), "10");
-        assertEquals(await page.locator("#filter-op").inputValue(), "gt");
+        assertEquals(await inputValue(page, "#filter-value"), "10");
+        assertEquals(await inputValue(page, "#filter-op"), "gt");
         assert(
-          (await page.locator("#sort-list").textContent())?.includes(
+          (await text(page, "#sort-list"))?.includes(
             "descending",
           ),
         );
         assertEquals(
-          await page.locator("#column-viewport").evaluate((
+          await evaluateElement(page, "#column-viewport", (
             element: BrowserElement,
           ) => element.scrollLeft),
           scrollLeft,
@@ -2175,17 +2166,21 @@ Deno.test({
         const sortedOpen = new Promise<Record<string, unknown>>((resolve) =>
           resolveOpen = resolve
         );
-        await page.locator("#column-viewport").evaluate(
+        await evaluateElement(
+          page,
+          "#column-viewport",
           (element: BrowserElement) => {
             element.scrollLeft = 0;
           },
         );
-        await page.waitForSelector(
+        await waitForSelector(
+          page,
           '[data-action="open-cell"][data-row-index="249"][data-column="2"]',
         );
-        await page.locator(
+        await click(
+          page,
           '[data-action="open-cell"][data-row-index="249"][data-column="2"]',
-        ).click();
+        );
         const secondOpen = await sortedOpen;
         assertEquals((secondOpen.params as Record<string, unknown>).path, [{
           kind: "cell",
@@ -2199,10 +2194,11 @@ Deno.test({
             message: "<img src=x> unavailable cell",
           },
         });
-        await page.waitForSelector(
+        await waitForSelector(
+          page,
           '#child-open-status[data-state="error"]:not([hidden])',
         );
-        assertEquals(await page.locator("#child-open-status img").count(), 0);
+        assertEquals(await count(page, "#child-open-status img"), 0);
         assertEquals(errors, []);
       }, 120_000);
     } catch (error) {

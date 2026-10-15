@@ -61,19 +61,10 @@ jobs:
           Rscript --vanilla -e 'dir.create(Sys.getenv("JDV_TEST_R_LIB"), recursive = TRUE, showWarnings = FALSE)'
           R CMD INSTALL --library="$JDV_TEST_R_LIB" r-pkg
 
-      - name: Install Playwright-matched Chromium
-        timeout-minutes: 5
-        run: |
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            npx -y playwright@1.56.1 install --no-shell chromium --with-deps
-          else
-            npx -y playwright@1.56.1 install --no-shell chromium
-          fi
-          deno eval --no-lock 'import { chromium } from "npm:playwright@1.56.1"; const executable = chromium.executablePath(); if (!(await Deno.stat(executable)).isFile) throw new Error("Playwright Chromium executable is missing."); const envFile = Deno.env.get("GITHUB_ENV"); if (!envFile) throw new Error("GITHUB_ENV is missing."); await Deno.writeTextFile(envFile, `JDV_TEST_BROWSER=${executable}\n`, { append: true }); console.log(`Playwright 1.56.1 Chromium: ${executable}`);'
-
       - name: Verify E2E prerequisites and run all integration tests
+        env:
+          ASTRAL_BIN_ARGS: --no-sandbox --disable-dev-shm-usage
         run: |
           arf --version
-          deno eval --no-lock 'const path = Deno.env.get("JDV_TEST_BROWSER"); if (!path || !(await Deno.stat(path)).isFile) throw new Error("A Chromium executable is required for E2E tests.");'
           Rscript --vanilla -e 'packages <- c("jdv", "arrow", "nanoarrow", "jsonlite", "bit64", "polars"); stopifnot(all(vapply(packages, requireNamespace, logical(1), quietly = TRUE))); lib <- normalizePath(Sys.getenv("JDV_TEST_R_LIB"), winslash = "/", mustWork = TRUE); ns <- normalizePath(getNamespaceInfo(asNamespace("jdv"), "path"), winslash = "/", mustWork = TRUE); dll <- normalizePath(getLoadedDLLs()[["jdv"]][["path"]], winslash = "/", mustWork = TRUE); stopifnot(startsWith(ns, paste0(lib, "/")), startsWith(dll, paste0(lib, "/"))); cat("jdv namespace:", ns, "\njdv DLL:", dll, "\n")'
           deno task test:e2e

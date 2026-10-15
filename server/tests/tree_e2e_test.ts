@@ -7,10 +7,28 @@ import {
 } from "./integration_cleanup.ts";
 import { type TestBrowser, TestServer } from "./helpers/test_server.ts";
 import { bodyDeadline, launchOwnedBrowser, phase } from "./bounded_browser.ts";
+import {
+  click,
+  clickButton,
+  collectPageErrors,
+  count,
+  text,
+  texts,
+  waitFor,
+} from "./astral_page.ts";
 
 const testLibrary = Deno.env.get("JDV_TEST_R_LIB");
 const browserExecutable = Deno.env.get("JDV_TEST_BROWSER");
 const browserLibraryPath = Deno.env.get("JDV_TEST_BROWSER_LIBS");
+
+interface E2EDomElement {
+  textContent: string | null;
+}
+
+declare const document: {
+  querySelector(selector: string): E2EDomElement | null;
+  querySelectorAll(selector: string): { length: number };
+};
 
 let rEvaluationSequence = 0;
 
@@ -587,16 +605,9 @@ Deno.test({
         );
         assertEquals(responseErrorCode(missing), "view_not_found");
 
-        if (browserExecutable) {
-          const playwrightSpecifier = "npm:playwright@1.56.1";
-          const { chromium } = await phase(
-            "Tree E2E Playwright import",
-            () => import(playwrightSpecifier),
-            15_000,
-          );
-          const ownedBrowser = await launchOwnedBrowser(chromium, {
-            executablePath: browserExecutable,
-            headless: true,
+        {
+          const ownedBrowser = await launchOwnedBrowser({
+            ...(browserExecutable ? { path: browserExecutable } : {}),
             args: ["--no-sandbox"],
             ...(browserLibraryPath
               ? {
@@ -611,28 +622,21 @@ Deno.test({
           const chromiumBrowser = ownedBrowser.browser;
           const page = await phase(
             "Tree E2E new page",
-            () =>
-              chromiumBrowser.newPage({
-                viewport: { width: 1200, height: 850 },
-              }),
+            async () => {
+              const page = await chromiumBrowser.newPage("about:blank", {
+                waitUntil: "none",
+              });
+              await page.setViewportSize({ width: 1200, height: 850 });
+              return page;
+            },
             20_000,
           );
-          page.setDefaultTimeout(15_000);
-          page.setDefaultNavigationTimeout(20_000);
           const pageErrors: string[] = [];
-          page.on(
-            "pageerror",
-            (error: Error) => {
-              pageErrors.push(error.message);
-              console.log(
-                `Tree E2E browser error: ${error.stack ?? error.message}`,
-              );
-            },
-          );
+          collectPageErrors(page, pageErrors);
           await phase(
             "Tree E2E navigation and session connection",
             async () => {
-              await page.goto(server.url, { waitUntil: "networkidle" });
+              await page.goto(server.url, { waitUntil: "load" });
               await page.waitForSelector('#status[data-state="connected"]');
               await rEval(arf, treeFixtureCode());
               await openedView(browser, "Tree E2E fixture");
@@ -640,53 +644,47 @@ Deno.test({
             40_000,
           );
           await phase("Tree E2E browser inspection actions", async () => {
-            await page.getByRole("button", { name: "Open object" }).click();
+            await clickButton(page, "Open object");
             await page.waitForSelector(
               "#tree-viewer:not([hidden]) li[data-child-index]",
             );
-            await page.screenshot({
-              path: join(
+            await Deno.writeFile(
+              join(
                 screenshotDir ??= await Deno.makeTempDir({
                   prefix: "jdv-tree-screenshot-",
                 }),
                 "tree-root.png",
               ),
-              fullPage: true,
-            });
-            assertEquals(await page.locator("#tree-child-list img").count(), 0);
+              await page.screenshot(),
+            );
+            assertEquals(await count(page, "#tree-child-list img"), 0);
             assert(
-              (await page.locator('#tree-child-list li[data-child-index="11"]')
-                .textContent())
+              (await text(page, '#tree-child-list li[data-child-index="11"]'))
                 ?.includes("<img src=x onerror=alert(1)>"),
               "HTML-like child label must remain visible as text.",
             );
-            await page.locator(
+            await click(
+              page,
               '#tree-child-list li[data-child-index="14"] [data-action="expand-child"]',
-            ).click();
-            await page.waitForFunction(() => {
-              const document = (globalThis as unknown as {
-                document: {
-                  querySelector(
-                    selector: string,
-                  ): { textContent: string | null } | null;
-                };
-              }).document;
-              return document.querySelector(
-                '#tree-child-list li[data-child-index="1"]',
-              )?.textContent?.includes("df") === true;
-            });
+            );
+            await waitFor(
+              page,
+              () =>
+                document.querySelector(
+                  '#tree-child-list li[data-child-index="1"]',
+                )?.textContent?.includes("df") === true,
+            );
             assert(
-              (await page.locator("#tree-breadcrumb").textContent())
+              (await text(page, "#tree-breadcrumb"))
                 ?.includes("capture environment"),
               "The expanded environment should appear in the breadcrumb.",
             );
-            await page.locator(
+            await click(
+              page,
               '#tree-child-list li[data-child-index="1"] [data-action="open-child"]',
-            ).click();
+            );
             await page.waitForSelector("#viewer:not([hidden]) .tabulator-row");
-            const capturedCells = await page.locator(
-              "#viewer .tabulator-cell",
-            ).allTextContents();
+            const capturedCells = await texts(page, "#viewer .tabulator-cell");
             assert(
               capturedCells.includes("17") && capturedCells.includes("18"),
               `Expected the opened child to show its captured values: ${capturedCells}`,
@@ -695,9 +693,10 @@ Deno.test({
               arf,
               "jdv_tree_capture_env$df <- data.frame(value = c(99L, 100L), check.names = FALSE)",
             );
-            const cellsAfterParentChange = await page.locator(
+            const cellsAfterParentChange = await texts(
+              page,
               "#viewer .tabulator-cell",
-            ).allTextContents();
+            );
             assert(
               cellsAfterParentChange.includes("17") &&
                 cellsAfterParentChange.includes("18") &&
@@ -705,87 +704,70 @@ Deno.test({
                 !cellsAfterParentChange.includes("100"),
               `The opened child changed after its parent binding changed: ${cellsAfterParentChange}`,
             );
-            await page.locator("#tree-return").click();
+            await click(page, "#tree-return");
             await page.waitForSelector("#tree-viewer:not([hidden])");
-            await page.waitForFunction(() => {
-              const document = (globalThis as unknown as {
-                document: {
-                  querySelector(
-                    selector: string,
-                  ): { textContent: string | null } | null;
-                };
-              }).document;
-              return document.querySelector(
-                '#tree-child-list li[data-child-index="1"]',
-              )?.textContent?.includes("df") === true;
-            });
-            await page.locator(
+            await waitFor(
+              page,
+              () =>
+                document.querySelector(
+                  '#tree-child-list li[data-child-index="1"]',
+                )?.textContent?.includes("df") === true,
+            );
+            await click(
+              page,
               '#tree-child-list li[data-child-index="1"] [data-action="open-child"]',
-            ).click();
+            );
             await page.waitForSelector("#viewer:not([hidden]) .tabulator-row");
-            const reopenedCells = await page.locator(
-              "#viewer .tabulator-cell",
-            ).allTextContents();
+            const reopenedCells = await texts(page, "#viewer .tabulator-cell");
             assert(
               reopenedCells.includes("99") && reopenedCells.includes("100"),
               `A newly opened child should show the replacement binding: ${reopenedCells}`,
             );
-            await page.locator("#tree-return").click();
+            await click(page, "#tree-return");
             await page.waitForSelector("#tree-viewer:not([hidden])");
-            await page.locator('#tree-breadcrumb [data-tree-depth="0"]')
-              .click();
-            await page.waitForFunction(() => {
-              const document = (globalThis as unknown as {
-                document: {
-                  querySelector(
-                    selector: string,
-                  ): { textContent: string | null } | null;
-                };
-              }).document;
-              return document.querySelector(
-                '#tree-child-list li[data-child-index="3"]',
-              )?.textContent?.includes("unnamed") === true;
-            });
-            await page.locator(
-              '#tree-child-list li[data-child-index="3"] [data-action="expand-child"]',
-            ).click();
-            await page.waitForFunction(() => {
-              const document = (globalThis as unknown as {
-                document: {
-                  querySelector(
-                    selector: string,
-                  ): { textContent: string | null } | null;
-                };
-              }).document;
-              return document.querySelector("#tree-breadcrumb")?.textContent
-                ?.includes("unnamed") === true;
-            });
-            await page.locator(
-              '#tree-breadcrumb [data-tree-depth="0"]',
-            ).click();
-            await page.waitForFunction(() =>
-              (globalThis as unknown as {
-                document: { querySelectorAll(selector: string): unknown[] };
-              }).document.querySelectorAll(
-                '#tree-breadcrumb [data-tree-depth="1"]',
-              ).length === 0
+            await click(page, '#tree-breadcrumb [data-tree-depth="0"]');
+            await waitFor(
+              page,
+              () =>
+                document.querySelector(
+                  '#tree-child-list li[data-child-index="3"]',
+                )?.textContent?.includes("unnamed") === true,
             );
-            await page.locator(
+            await click(
+              page,
+              '#tree-child-list li[data-child-index="3"] [data-action="expand-child"]',
+            );
+            await waitFor(
+              page,
+              () =>
+                document.querySelector("#tree-breadcrumb")?.textContent
+                  ?.includes("unnamed") === true,
+            );
+            await click(page, '#tree-breadcrumb [data-tree-depth="0"]');
+            await waitFor(
+              page,
+              () =>
+                document.querySelectorAll(
+                  '#tree-breadcrumb [data-tree-depth="1"]',
+                ).length === 0,
+            );
+            await click(
+              page,
               '#tree-child-list li[data-child-index="5"] [data-action="open-child"]',
-            ).click();
+            );
             await page.waitForSelector("#viewer:not([hidden]) .tabulator-row");
-            await page.screenshot({
-              path: join(screenshotDir, "tree-nested-grid.png"),
-              fullPage: true,
-            });
-            await page.locator("#tree-return").click();
+            await Deno.writeFile(
+              join(screenshotDir!, "tree-nested-grid.png"),
+              await page.screenshot(),
+            );
+            await click(page, "#tree-return");
             await page.waitForSelector("#tree-viewer:not([hidden])");
-            await page.waitForFunction(() =>
-              (globalThis as unknown as {
-                document: { querySelectorAll(selector: string): unknown[] };
-              }).document.querySelectorAll(
-                '#tree-breadcrumb [data-tree-depth="1"]',
-              ).length === 0
+            await waitFor(
+              page,
+              () =>
+                document.querySelectorAll(
+                  '#tree-breadcrumb [data-tree-depth="1"]',
+                ).length === 0,
             );
             assertEquals(pageErrors, []);
           }, 150_000);
@@ -797,7 +779,7 @@ Deno.test({
     } finally {
       await finishIntegrationCleanup([
         ...(closeChromium
-          ? [() => phase("Tree E2E Chromium cleanup", closeChromium!, 25_000)]
+          ? [() => phase("Tree E2E Chromium cleanup", closeChromium!, 50_000)]
           : []),
         () => runtime.browser.close(),
         () => phase("Tree E2E arf cleanup", () => runtime.arf.close(), 50_000),
