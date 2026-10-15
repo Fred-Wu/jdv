@@ -170,6 +170,72 @@ col_values.Date <- function(x, ...) {
 #' @export
 col_sort_key.Date <- function(x, collation = "C", ...) as.numeric(unclass(x))
 
+.jdv_iso_fraction <- function(x) {
+  result <- rep("", length(x))
+  result[is.na(x)] <- NA_character_
+  indices <- which(!is.na(x) & x != 0)
+  if (!length(indices)) {
+    return(result)
+  }
+
+  starts <- seq.int(1L, length(indices), by = 64L)
+  for (start in starts) {
+    selected <- indices[start:min(start + 63L, length(indices))]
+    encoded <- .jdv_json_encode(
+      structure(x[selected], class = "jdv_json_array"),
+      limit = 4096,
+      work_limit = 64 * 1024
+    )
+    tokens <- strsplit(
+      substring(encoded, 2L, nchar(encoded) - 1L),
+      ",",
+      fixed = TRUE
+    )[[1L]]
+    result[selected] <- vapply(
+      tokens,
+      function(token) {
+        parts <- strsplit(tolower(token), "e", fixed = TRUE)[[1L]]
+        exponent <- if (length(parts) == 2L) as.integer(parts[[2L]]) else 0L
+        mantissa <- strsplit(parts[[1L]], ".", fixed = TRUE)[[1L]]
+        whole <- mantissa[[1L]]
+        decimal <- if (length(mantissa) == 2L) mantissa[[2L]] else ""
+        digits <- paste0(whole, decimal)
+        point <- nchar(whole) + exponent
+        decimal_digits <- if (point <= 0L) {
+          paste0(strrep("0", -point), digits)
+        } else if (point >= nchar(digits)) {
+          paste0(digits, strrep("0", point - nchar(digits)))
+        } else {
+          paste0(substr(digits, point + 1L, nchar(digits)))
+        }
+        paste0(".", sub("0+$", "", decimal_digits))
+      },
+      character(1L)
+    )
+  }
+  result
+}
+
+.jdv_iso_complement_fraction <- function(x) {
+  fractions <- .jdv_iso_fraction(abs(x))
+  vapply(
+    fractions,
+    function(fraction) {
+      digits <- utf8ToInt(substring(fraction, 2L, nchar(fraction))) - 48L
+      digits <- 9L - digits
+      for (i in rev(seq_along(digits))) {
+        if (digits[[i]] < 9L) {
+          digits[[i]] <- digits[[i]] + 1L
+          break
+        }
+        digits[[i]] <- 0L
+      }
+      paste0(".", paste(digits, collapse = ""))
+    },
+    character(1L)
+  )
+}
+
 #' @export
 col_values.POSIXct <- function(x, ...) {
   seconds <- as.numeric(unclass(x))
@@ -179,18 +245,14 @@ col_values.POSIXct <- function(x, ...) {
     format = "%Y-%m-%dT%H:%M:%S",
     tz = column_tz(x)
   ))
-  fraction <- format(
-    seconds - floor(seconds),
-    scientific = FALSE,
-    digits = 17,
-    trim = TRUE,
-    justify = "none",
-    decimal.mark = ".",
-    nsmall = 0L
-  )
-  fraction <- sub("0+$", "", fraction)
-  fraction <- sub("^0", "", fraction)
-  fraction[fraction == "."] <- ""
+  fractional_seconds <- seconds - floor(seconds)
+  fraction <- .jdv_iso_fraction(fractional_seconds)
+  rounded_fraction <- is.finite(seconds) & seconds < 0 & fractional_seconds == 1
+  if (any(rounded_fraction)) {
+    fraction[rounded_fraction] <- .jdv_iso_complement_fraction(seconds[
+      rounded_fraction
+    ])
+  }
   offset <- format(whole, format = "%z", tz = column_tz(x))
   offset <- sub("([+-][0-9]{2})([0-9]{2})$", "\\1:\\2", offset)
   result <- paste0(result, fraction, offset)

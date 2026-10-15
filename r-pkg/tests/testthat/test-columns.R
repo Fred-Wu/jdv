@@ -230,6 +230,25 @@ test_that("date and datetime values preserve timezone and fractional seconds", {
     column_extract(x)$data$values,
     "1969-12-31T23:59:59.875+00:00"
   )
+  x <- as.POSIXct(-1.25, origin = "1970-01-01", tz = "UTC")
+  expect_identical(
+    column_extract(x)$data$values,
+    "1969-12-31T23:59:58.75+00:00"
+  )
+
+  tiny_negative <- as.POSIXct(
+    c(-1e-100, -5e-324),
+    origin = "1970-01-01",
+    tz = "UTC"
+  )
+  tiny_wire <- column_extract(tiny_negative)$data$values
+  expect_identical(
+    tiny_wire[[1L]],
+    paste0("1969-12-31T23:59:59.", strrep("9", 100L), "+00:00")
+  )
+  expect_match(tiny_wire[[2L]], "^1969-12-31T23:59:59\\.9")
+  expect_gt(nchar(tiny_wire[[2L]]), 300L)
+  expect_false(any(grepl("\\.1\\+00:00$", tiny_wire)))
 })
 
 test_that("date and datetime values use four-digit ISO years", {
@@ -343,13 +362,23 @@ test_that(
     old <- options(OutDec = ",", digits.secs = 0)
     on.exit(options(old))
     values <- column_extract(x, "values")$data$values
+    fraction <- sub(
+      "^1970-01-01T00:00:00(\\.[0-9]+)\\+00:00$",
+      "\\1",
+      values[[1L]]
+    )
+    expect_match(fraction, "^\\.[0-9]+$")
     expect_identical(
-      values[[1L]],
-      paste0(
-        "1970-01-01T00:00:00.",
-        paste(rep("0", 99L), collapse = ""),
-        "1+00:00"
-      )
+      fraction,
+      paste0(".", paste(rep("0", 99L), collapse = ""), "1")
+    )
+    parsed_fraction <- unlist(
+      .jdv_json_parse(paste0("[0", fraction, "]")),
+      use.names = FALSE
+    )
+    expect_identical(
+      parsed_fraction,
+      unclass(x)[[1L]] - floor(unclass(x)[[1L]])
     )
     expect_identical(values[[2L]], "1970-01-01T00:00:00.125+00:00")
   }

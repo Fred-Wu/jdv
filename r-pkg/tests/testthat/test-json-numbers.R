@@ -35,13 +35,27 @@ test_that("finite JSON numbers round-trip without unnecessary digits", {
     random
   ))
   encoded <- encode(structure(values, class = "jdv_json_array"))
+  # R's as.numeric() can overflow the decimal DBL_MAX representation on
+  # arm64 macOS. The package parser uses cJSON's C strtod() conversion, which
+  # tests the JSON number independently of R's decimal parser.
   text_values <- strsplit(
     substring(encoded, 2L, nchar(encoded) - 1L),
     ",",
     fixed = TRUE
   )[[1L]]
-
-  expect_identical(as.numeric(text_values), values)
+  starts <- seq.int(1L, length(text_values), by = 1000L)
+  parsed <- unlist(
+    lapply(starts, function(start) {
+      end <- min(start + 999L, length(text_values))
+      batch <- paste0("[", paste(text_values[start:end], collapse = ","), "]")
+      unlist(
+        .jdv_json_parse(batch, limit = nchar(batch, type = "bytes") + 1),
+        use.names = FALSE
+      )
+    }),
+    use.names = FALSE
+  )
+  expect_identical(parsed, values)
 })
 
 test_that(
