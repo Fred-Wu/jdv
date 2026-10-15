@@ -1,22 +1,53 @@
 # jdv reference server
 
-The Deno reference server connects to R over a local JSON Lines (JSONL)
-transport and serves the browser viewer from `web/`. Project files are
-distributed under [LICENSE.md](LICENSE.md). The viewer also vendors Tabulator
-6.5.0 under its MIT license; see `web/vendor/TABULATOR-LICENSE.txt`. Apache
-Arrow JS 21.2.0 is vendored under Apache-2.0 and loaded by the viewer to decode
-Arrow IPC pages and inspect nested Arrow cells. Its notices and provenance are
-in `web/vendor/`.
+The reference server is a [Deno](https://deno.com/) application that connects to
+R over a local JSON Lines (JSONL) transport and serves the browser viewer from
+`web/`. The viewer bundles [Tabulator](https://github.com/olifolkerd/tabulator)
+6.5.0 (MIT) and [Apache Arrow JavaScript](https://github.com/apache/arrow-js)
+21.2.0 (Apache-2.0); their licenses, notices, and provenance are in
+`web/vendor/`.
 
 ## Start from a URL
 
-Deno 2.8 or newer is required for stable text imports. Run the server directly
-from its hosted module URL; its relative imports load the listener and viewer
-assets from the same URL tree.
+Deno 2.8 or newer is required:
+
+```sh
+deno run --allow-net --allow-read --allow-write --allow-env --no-config https://raw.githubusercontent.com/eitsupi/jdv/main/server/main.ts
+```
+
+On Windows, R connects through a named pipe by default, which requires `-A`. Add
+`--tcp` to use localhost TCP with the scoped permissions above instead:
 
 ```sh
 deno run -A --no-config https://raw.githubusercontent.com/eitsupi/jdv/main/server/main.ts
+deno run --allow-net --allow-read --allow-write --allow-env --no-config https://raw.githubusercontent.com/eitsupi/jdv/main/server/main.ts --tcp
 ```
+
+The permissions can be narrowed further to loopback networking and the cache
+directory, for example on macOS and Linux:
+
+```sh
+if [ "$(uname -s)" = Darwin ]; then
+  export JDV_CACHE_DIR="$HOME/Library/Caches/jdv"
+else
+  export JDV_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/jdv"
+fi
+mkdir -p "$JDV_CACHE_DIR"
+deno run \
+  --allow-net=127.0.0.1 \
+  --allow-read="$JDV_CACHE_DIR" \
+  --allow-write="$JDV_CACHE_DIR" \
+  --allow-env=JDV_CACHE_DIR \
+  --no-config \
+  https://raw.githubusercontent.com/eitsupi/jdv/main/server/main.ts --tcp
+```
+
+Deno's network permission for a Unix socket must name its exact path, which
+includes a random identifier, so this narrowed form uses TCP. Without any
+permission flags, Deno prompts for each permission in the terminal as it is
+needed.
+
+## Options and security
 
 The command prints one JSON line to standard output with `url` and `socketPath`.
 Open the printed URL in a browser, then call `jdv::jdv_view(x)` in R. Data
@@ -28,13 +59,13 @@ socket has mode `0600`. Windows named-pipe access follows the OS default ACL,
 which Deno does not let this server harden. The Windows pipe uses byte-type
 mode; message-type pipes are unsupported.
 
-`-A` is used in this portable example because Unix socket and Windows named pipe
-permissions differ across platforms. When using TCP for the R connection, select
-it explicitly with `--tcp`; the ready line then reports a loopback `tcp://`
-`socketPath`. TCP is unauthenticated and may be reachable by other users on the
-same machine. `--token VALUE` optionally protects the browser WebSocket
-connection; the token is included in the printed URL and discovery file. Static
-viewer assets remain available on loopback without the token.
+The scoped `--tcp` command binds the R listener to an available loopback port;
+the ready line and discovery file report its `tcp://` address. To choose a fixed
+HTTP port, use `--http-port PORT`; the R TCP port remains ephemeral. TCP is
+unauthenticated and may be reachable by other users on the same machine.
+`--token VALUE` optionally protects the browser WebSocket connection; the token
+is included in the printed URL and discovery file. Static viewer assets remain
+available on loopback without the token.
 
 The discovery file is written atomically to the standard jdv user cache
 directory. `--cache-dir PATH` or `JDV_CACHE_DIR` selects a different directory.
@@ -45,16 +76,12 @@ only when it still contains that server's process id and private instance id.
 
 ## Sequential Arrow views
 
-With the optional R packages installed, `jdv_view()` can open Arrow `Table` and
-`RecordBatchReader` objects, nanoarrow stream pointers, and Polars data frames
-as forward-only views. Arrow sources require `nanoarrow` and `arrow`; Polars
-sources require `nanoarrow` and `polars`. The viewer requests bounded Arrow IPC
-pages with **Load next** and keeps the row total unknown until the stream ends.
-Sequential views do not support random paging, sorting, or filtering. Supported
-nested list, struct, map, and dictionary values can be inspected in the browser
-from the retained IPC page without asking R for object navigation.
+Arrow tables and record batch readers, nanoarrow array streams, and polars data
+frames open as forward-only views. The viewer requests bounded Arrow IPC pages
+with **Load next** and keeps the row total unknown until the stream ends.
+Sequential views do not support random paging, sorting, or filtering.
 
-## Sequential page cache
+### Page cache
 
 The host retains opaque Arrow IPC pages per R session, view, and generation, so
 switching views, reloading, or opening another tab can restore received rows
@@ -71,11 +98,9 @@ the viewer can identify rows no longer retained. Closing a view, replacing its
 generation, cascading a parent close, or disconnecting R clears its cache.
 
 Set byte counts with `--stream-cache-bytes` and `--stream-cache-view-bytes`; a
-zero value disables the feature. For example:
-
-```sh
-deno run -A server/main.ts --stream-cache-bytes 134217728 --stream-cache-view-bytes 33554432
-```
+zero value disables the feature. For example, append
+`--stream-cache-bytes 134217728 --stream-cache-view-bytes 33554432` to one of
+the startup commands above.
 
 Embedders can use `streamCacheBytes` and `streamCacheViewBytes` in
 `startServer()` options. The viewer detects `welcome.capabilities.stream_cache`
@@ -85,8 +110,8 @@ page cursor. The catalog reports lost prefixes and gaps. Cache gets use the
 ordinary bounded binary frame and carry their page metadata in
 `result.cache_page`. A new append sends `after_page`; a stale cursor returns
 `cache_changed` before R is contacted. Older hosts without the capability keep
-the existing forward-only behavior. See `?jdv_spec` in R
-for parameters and response fields.
+the existing forward-only behavior. See `?jdv_spec` in R for the protocol
+contract.
 
 The browser retains formatted display pages separately, with 8 MiB and 32 pages
 per view and 32 MiB across views. Host-retained pages can be decoded again after
@@ -97,7 +122,34 @@ replies retain their delivery behavior. A send failure detaches the browser on
 any output path. Once a range is no longer retained by the host, the
 forward-only R source cannot fetch it again.
 
-## Nested Arrow cells
+## Viewer
+
+The viewer lists active R sessions, grid views, and object trees. Tree child
+values and drillable grid cells can be opened as independent grid or tree views;
+closing a child releases it while keeping its parent available. Grid Open
+buttons are shown only for columns marked `drillable`: unclassed, `AsIs`, or
+`vctrs_list_of` list columns, data-frame columns, and matrix columns. Record
+columns, `POSIXlt`, other classed lists, and atomic columns do not expose cell
+controls. The UI always sends the original R row index after sorting, filtering,
+or paging. The view breadcrumb restores the parent's query, page, and horizontal
+scroll, or its object path and child-page offset.
+
+A child open waiting for R is shown separately from page loading. Snapshot sort,
+filter, and page changes keep working without canceling that original cell
+request. Its child opens automatically when R handles it at the prompt, provided
+the same parent view and generation remain selected. Snapshot queries run in the
+browser from the cached payload; Paged queries use the WebSocket request path.
+Sorting and filtering are translated to the shared query semantics, and remote
+pagination fills a requested page if R reduces an individual response to fit its
+output budget. Wide tables keep all schema entries but request only a fixed
+width viewport column window (up to 256 columns) as the user scrolls. The viewer
+requires datetime filter values to include `Z` or a numeric timezone offset in
+both modes. The R request contract can interpret offset-free datetimes using the
+session timezone, but the viewer applies the same explicit input rule to
+Snapshot and Paged tables because it cannot infer that timezone from a cached
+Snapshot.
+
+### Nested Arrow cells
 
 The sequential viewer can inspect list, large-list, fixed-size-list, struct,
 map, and nested dictionary values directly from retained IPC pages. It uses
@@ -217,22 +269,19 @@ TCP server. Where the headless console remains in a framed `browser()` wait, the
 test keeps console input open to continue the frame. It also checks request
 progress while an R function is sleeping, without manual RPC polling.
 
-On Windows, arf 0.6.0's headless console can return EOF from `browser()` because
-that mode has no registered console input callback. The regression switches to a
-separate, release-controlled function-scoped `Sys.sleep()` hold only after it
-confirms that the browser evaluation started at positive R frame depth, wrote
-its completion marker successfully, and added an arf log entry stating that no
-callback was set and EOF was returned. This verifies queued-request behavior
-while a Windows R function is sleeping; it does not validate holding or
-continuing a Windows `browser()` prompt.
+On Windows, arf's headless console currently returns EOF from `browser()`, so
+the interactive regression holds R with a function-scoped `Sys.sleep()` there
+instead. Holding a Windows `browser()` prompt is not yet tested.
 
-For the integration task, install `jdv` into a scratch library and install the
-optional R packages `arrow`, `nanoarrow`, `jsonlite`, `bit64`, and `polars`. Set
+For the integration task, install jdv into a scratch library and install the
+optional R packages arrow, nanoarrow, jsonlite, bit64, and polars. Set
 `JDV_TEST_R_LIB` to the scratch library and `JDV_TEST_BROWSER` to an existing
 Chromium executable for Astral:
 
 ```sh
-JDV_TEST_R_LIB=/path/to/scratch-library JDV_TEST_BROWSER=/path/to/chrome mise exec -- deno task test:e2e
+JDV_TEST_R_LIB=/path/to/scratch-library \
+JDV_TEST_BROWSER=/path/to/existing/chromium \
+mise exec -- deno task test:e2e
 ```
 
 On GitHub Actions, Astral obtains its compatible Chromium binary when
@@ -253,64 +302,36 @@ required R packages are missing. The default installed-package connection uses a
 named pipe on Windows, while the interactive regression selects TCP.
 
 The browser tests use `jsr:@astral/astral@^0.5`, resolved by the committed
-`deno.lock`. Like the jgd reference tests, CI leaves `JDV_TEST_BROWSER` unset
-and sets `ASTRAL_BIN_ARGS="--no-sandbox --disable-dev-shm-usage"`. Astral
-supplies the browser binary; the test helper owns its process and connects
-through Astral's public API. Local tests can reuse an existing browser with
-`JDV_TEST_BROWSER`, and `JDV_TEST_BROWSER_LIBS` can supply a Linux
-shared-library directory. Browser wire assertions use CDP WebSocket events,
-including binary frame payloads, rather than inferring responses from rendered
-text.
+`deno.lock`. CI leaves `JDV_TEST_BROWSER` unset and sets
+`ASTRAL_BIN_ARGS="--no-sandbox --disable-dev-shm-usage"`. Astral supplies the
+browser binary; the test helper owns its process and connects through Astral's
+public API. Local tests can reuse an existing browser with `JDV_TEST_BROWSER`,
+and `JDV_TEST_BROWSER_LIBS` can supply a Linux shared-library directory. Browser
+wire assertions use CDP WebSocket events, including binary frame payloads,
+rather than inferring responses from rendered text.
 
-Workflow configuration does not establish a successful platform result; consult
-the latest Actions run. Rgui, RStudio, R.app, Esc/Ctrl-C delivery, and true
-top-level behavior remain manual checks. Callback dispatch during a top-level
-Windows `for` loop has been observed. The viewer lists active R sessions, grid
-views, and object trees. Tree child values and drillable grid cells can be
-opened as independent grid or tree views; closing a child releases it while
-keeping its parent available. Grid Open buttons are shown only for columns
-marked `drillable`: unclassed, `AsIs`, or `vctrs_list_of` list columns,
-data-frame columns, and matrix columns. Record columns, `POSIXlt`, other classed
-lists, and atomic columns do not expose cell controls. The UI always sends the
-original R row index after sorting, filtering, or paging. The view breadcrumb
-restores the parent's query, page, and horizontal scroll, or its object path and
-child-page offset.
-
-A child open waiting for R is shown separately from page loading. Snapshot sort,
-filter, and page changes keep working without canceling that original cell
-request. Its child opens automatically when R handles it at the prompt, provided
-the same parent view and generation remain selected. Snapshot queries run in the
-browser from the cached payload; Paged queries use the WebSocket request path.
-Sorting and filtering are translated to the shared query semantics, and remote
-pagination fills a requested page if R reduces an individual response to fit its
-output budget. Wide tables keep all schema entries but request only a fixed
-width viewport column window (up to 256 columns) as the user scrolls. The viewer
-requires datetime filter values to include `Z` or a numeric timezone offset in
-both modes. The R request contract can interpret offset-free datetimes using the
-session timezone, but the viewer applies the same explicit input rule to
-Snapshot and Paged tables because it cannot infer that timezone from a cached
-Snapshot.
-
-## Real R end-to-end tests
+### Real R end-to-end tests
 
 The `e2e_test.ts`, `cell_e2e_test.ts`, and `tree_e2e_test.ts` regressions use
-`arf` to control a headless R process. They run the installed `jdv` package
-against the real Deno server and route R traffic through a test-only TCP relay
-that records compact JSON frame metadata. The relay is outside the production
-server and lets tests check request counts, Snapshot descriptors, and Paged
-responses without changing server behavior.
+arf to control a headless R process. They run the installed jdv package against
+the real Deno server and route R traffic through a test-only TCP relay that
+records compact JSON frame metadata. The relay is outside the production server
+and lets tests check request counts, Snapshot descriptors, and Paged responses
+without changing server behavior.
 
-Build or install `jdv` into a scratch library with `devtools`, then run the
-focused E2E file with that library selected:
+Build or install jdv into a scratch library with devtools, then run the full E2E
+task with that library and an existing Chromium executable selected:
 
 ```sh
-JDV_TEST_R_LIB=/path/to/scratch-library mise exec -- deno test -A server/tests/e2e_test.ts
+JDV_TEST_R_LIB=/path/to/scratch-library \
+JDV_TEST_BROWSER=/path/to/existing/chromium \
+mise exec -- deno task test:e2e
 ```
 
 `mise install` provisions arf for local development, and the manual `E2E test`
 workflow provisions it on each platform. These three files are included in
 `deno task test:e2e`; the Deno-only workflow does not load them. The test
-process prepends the selected scratch library to `.libPaths()`, loads `jdv` from
+process prepends the selected scratch library to `.libPaths()`, loads jdv from
 that exact library, and logs the package and DLL paths once. These tests cover
 Snapshot queries without R requests, Paged queries without serializing the full
 table at registration, request handling while R is in a top-level wait,
@@ -319,3 +340,25 @@ the two query modes. The reconnect case also checks that the old table and
 shared registry entries are released before the new Paged request succeeds. The
 tests do not use the `jdv_rpc(NULL)` polling loop from the unit integration
 fixture.
+
+### Refresh bundled sources
+
+Run these commands from the repository root. The vendor scripts accept paths to
+local upstream checkouts. To refresh cJSON, check out the pinned `v1.7.19`
+source and pass its directory:
+
+```sh
+r-pkg/dev/vendor-cjson.sh --from-upstream /path/to/cJSON
+```
+
+To regenerate the nanoarrow bundle, check out revision
+`ea215b000788ec2e94fc88bad5249290c94b01cd` and pass that checkout:
+
+```sh
+python3 r-pkg/dev/vendor-nanoarrow.py \
+  --upstream-dir /path/to/nanoarrow
+```
+
+The nanoarrow generator runs the upstream bundler, omits C++ wrappers, and
+mechanically aggregates the flatcc headers. Its provenance file and SHA-256
+manifests are regenerated with the bundle.

@@ -4,9 +4,17 @@
 \name{jdv-package}
 \alias{jdv}
 \alias{jdv-package}
-\title{jdv: JSON Data Viewer}
+\title{jdv: Lightweight Data Viewer}
 \description{
-A dependency-free table engine and data viewer foundation for R objects. Bundled JSON support provides a basis for exchanging table data with external display applications.
+A lightweight data viewer with no package dependencies. It sends data frames, lists, and other R objects, as well as 'Apache Arrow' data, over a local connection to an external viewer application, and answers the viewer's requests for sorted, filtered, and paged rows. Arrow data is read through the Arrow C stream interface and sent as Arrow IPC without conversion to R vectors.
+}
+\seealso{
+Useful links:
+\itemize{
+  \item \url{https://github.com/eitsupi/jdv}
+  \item Report bugs at \url{https://github.com/eitsupi/jdv/issues}
+}
+
 }
 \author{
 \strong{Maintainer}: Tatsuya Shima \email{ts1s1andn@gmail.com}
