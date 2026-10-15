@@ -10,7 +10,9 @@ import {
   finishRFixture,
   fixtureFrames,
   fixturePid,
+  listenerClosed,
   pathWithin,
+  probeListenerSocket,
   ProcessLines,
   removeCacheDirectory,
   stopRChild,
@@ -417,5 +419,107 @@ Deno.test("browser cleanup uses owned server force shutdown and retains the orig
   if (caught instanceof AggregateError) {
     assertEquals(caught.cause === original, true);
     assertEquals(caught.errors, [original]);
+  }
+});
+
+Deno.test("listener refusal survives delayed close without connection timer overwriting it", async () => {
+  const socket = new EventEmitter() as EventEmitter & { destroy(): void };
+  socket.destroy = () => {
+    setTimeout(() => socket.emit("close"), 10);
+  };
+  const probing = probeListenerSocket(socket, "fake:refused", 2, 50);
+  socket.emit(
+    "error",
+    Object.assign(new Error("refused"), { code: "ECONNREFUSED" }),
+  );
+  assertEquals(await probing, true);
+});
+
+Deno.test("listener probes distinguish active, unexpected error, and unclosed socket", async () => {
+  for (const active of [true, false]) {
+    const socket = new EventEmitter() as EventEmitter & { destroy(): void };
+    socket.destroy = () => {
+      queueMicrotask(() => socket.emit("close"));
+    };
+    const unexpected = Object.assign(new Error("permission denied"), {
+      code: "EACCES",
+    });
+    const probing = probeListenerSocket(socket, "fake:outcome", 20, 20);
+    let caught: unknown;
+    if (active) {
+      socket.emit("connect");
+      assertEquals(await probing, false);
+    } else {
+      socket.emit("error", unexpected);
+      try {
+        await probing;
+      } catch (error) {
+        caught = error;
+      }
+      assertEquals(caught === unexpected, true);
+    }
+  }
+  const socket = new EventEmitter() as EventEmitter & { destroy(): void };
+  socket.destroy = () => {};
+  const probing = probeListenerSocket(socket, "fake:unclosed", 2, 2);
+  socket.emit(
+    "error",
+    Object.assign(new Error("refused"), { code: "ECONNREFUSED" }),
+  );
+  let caught: unknown;
+  try {
+    await probing;
+  } catch (error) {
+    caught = error;
+  }
+  assertEquals(String(caught).includes("socket did not close"), true);
+  socket.removeAllListeners();
+});
+
+Deno.test("listener connect timeout retains its phase and closes the probe socket", async () => {
+  const socket = new EventEmitter() as EventEmitter & { destroy(): void };
+  let destroyed = false;
+  socket.destroy = () => {
+    destroyed = true;
+    queueMicrotask(() => socket.emit("close"));
+  };
+  let caught: unknown;
+  try {
+    await probeListenerSocket(socket, "fake:pending", 2, 20);
+  } catch (error) {
+    caught = error;
+  }
+  assertEquals(destroyed, true);
+  assertEquals(String(caught).includes("during connect"), true);
+  assertEquals(String(caught).includes("events="), true);
+});
+
+Deno.test("listener probe confirms a real TCP listener is active then refused after close", async () => {
+  const server = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const address = server.addr as Deno.NetAddr;
+  const url = `tcp://127.0.0.1:${address.port}`;
+  try {
+    assertEquals(await listenerClosed(url), false);
+  } finally {
+    server.close();
+  }
+  assertEquals(await listenerClosed(url), true);
+});
+
+Deno.test("listener probes preserve late refusal and live results through separately bounded close", async () => {
+  for (const active of [false, true]) {
+    const socket = new EventEmitter() as EventEmitter & { destroy(): void };
+    socket.destroy = () => {
+      setTimeout(() => socket.emit("close"), 10);
+    };
+    const probing = probeListenerSocket(socket, "fake:late-outcome", 15, 15);
+    setTimeout(() => {
+      if (active) socket.emit("connect");
+      else {socket.emit(
+          "error",
+          Object.assign(new Error("refused"), { code: "ECONNREFUSED" }),
+        );}
+    }, 10);
+    assertEquals(await probing, !active);
   }
 });

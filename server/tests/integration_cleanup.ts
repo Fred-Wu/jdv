@@ -56,37 +56,88 @@ async function assertMissing(path: string): Promise<void> {
   throw new Error(`Server shutdown left its file behind: ${path}`);
 }
 
-function listenerClosed(address: string): Promise<boolean> {
+export function listenerClosed(address: string): Promise<boolean> {
   const pipePrefix = "npipe:////./pipe/";
   const options = address.startsWith(pipePrefix)
     ? { path: `\\\\.\\pipe\\${address.slice(pipePrefix.length)}` }
     : address.startsWith("unix://")
     ? { path: address.slice("unix://".length) }
     : { host: new URL(address).hostname, port: Number(new URL(address).port) };
+  return probeListenerSocket(connect(options), address);
+}
+
+export function probeListenerSocket(
+  socket: {
+    once(event: "connect" | "close", listener: () => void): unknown;
+    once(
+      event: "error",
+      listener: (error: Error & { code?: string }) => void,
+    ): unknown;
+    destroy(): unknown;
+  },
+  address: string,
+  connectTimeoutMs = 5_000,
+  closeTimeoutMs = 5_000,
+): Promise<boolean> {
   return new Promise((resolve, reject) => {
-    const socket = connect(options);
-    let result: boolean | Error = new Error(
-      `R listener probe closed without a result: ${address}`,
-    );
-    const timer = setTimeout(() => {
+    let result: boolean | Error | undefined;
+    const events: string[] = [];
+    let closing = false;
+    let closeTimer: ReturnType<typeof setTimeout> | undefined;
+    const beginClose = () => {
+      if (closing) return;
+      closing = true;
+      clearTimeout(connectTimer);
+      closeTimer = setTimeout(() => {
+        const error = new Error(
+          `Listener probe socket did not close: ${address}; events=${
+            events.join(",")
+          }; result=${String(result)}`,
+        );
+        reject(
+          result instanceof Error
+            ? new AggregateError(
+              [result, error],
+              "Listener probe and socket cleanup failed.",
+              { cause: result },
+            )
+            : error,
+        );
+      }, closeTimeoutMs);
+      socket.destroy();
+    };
+    const connectTimer = setTimeout(() => {
       result = new Error(
-        `Timed out probing the stopped R listener: ${address}`,
+        `Timed out probing the stopped R listener during connect: ${address}; events=${
+          events.join(",")
+        }`,
       );
-      socket.destroy();
-    }, 250);
+      beginClose();
+    }, connectTimeoutMs);
     socket.once("connect", () => {
+      events.push("connect");
+      if (closing) return;
       result = false;
-      socket.destroy();
+      beginClose();
     });
-    socket.once("error", (error: Error & { code?: string }) => {
-      result = error.code === "ENOENT" || error.code === "ECONNREFUSED"
-        ? true
-        : error;
-    });
+    socket.once(
+      "error",
+      (error: Error & { code?: string }) => {
+        events.push(`error:${error.code ?? error.message}`);
+        if (closing) return;
+        result = error.code === "ENOENT" || error.code === "ECONNREFUSED"
+          ? true
+          : error;
+        beginClose();
+      },
+    );
     socket.once("close", () => {
-      clearTimeout(timer);
+      clearTimeout(connectTimer);
+      if (closeTimer !== undefined) clearTimeout(closeTimer);
       if (result instanceof Error) reject(result);
-      else resolve(result);
+      else if (result === undefined) {
+        reject(new Error(`Listener probe closed without a result: ${address}`));
+      } else resolve(result);
     });
   });
 }
