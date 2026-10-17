@@ -39,7 +39,7 @@ test_that("internal grid source dispatch preserves matrix recognition", {
   expect_identical(source(matrix)$data, matrix)
   expect_identical(source(list(value = 1:2))$kind, "tree")
 
-  registered <- jdv_register(matrix, mode = "snapshot")
+  registered <- register_view(matrix, mode = "snapshot")
   on.exit(.jdv_close_internal(registered$id), add = TRUE)
   expect_identical(rpc_json(registered$open)$params$nrow, 2L)
 })
@@ -81,7 +81,7 @@ test_that("registration returns snapshots and reuses titled generations", {
   .jdv_close_internal()
   on.exit(.jdv_close_internal(), add = TRUE)
   x <- data.frame(id = c(1, NA), text = c("one", "two"))
-  first <- jdv_register(x, title = "table", mode = "snapshot")
+  first <- register_view(x, title = "table", mode = "snapshot")
   open <- rpc_json(first$open)
   expect_identical(open$method, "view/open")
   expect_match(first$id, "^v-[0-9]+$")
@@ -119,10 +119,10 @@ test_that("registration returns snapshots and reuses titled generations", {
   expect_identical(open$params$mode, "snapshot")
   expect_length(open$params$data$columns, 2)
   expect_identical(open$params$data$row_index, list(1L, 2L))
-  expect_named(first, c("id", "open", "notifications"))
+  expect_named(first, c("id", "generation", "open", "notifications"))
   expect_length(first$notifications, 0)
 
-  second <- jdv_register(x, title = "table", mode = "paged")
+  second <- register_view(x, title = "table", mode = "paged")
   second_open <- rpc_json(second$open)
   expect_identical(second$id, first$id)
   expect_identical(second_open$params$generation, 2L)
@@ -147,7 +147,7 @@ test_that("registration returns snapshots and reuses titled generations", {
     "view/close",
     list(view = first$id, generation = 2)
   )$error)
-  after_close <- jdv_register(x, title = "table", mode = "paged")
+  after_close <- register_view(x, title = "table", mode = "paged")
   expect_false(identical(after_close$id, first$id))
   expect_identical(rpc_json(after_close$open)$params$generation, 1L)
 })
@@ -173,7 +173,7 @@ test_that("view/schema preserves schema arrays for factors", {
     one_level = factor(c("only", "only"), levels = "only"),
     no_levels = factor(c(NA, NA), levels = character())
   )
-  registered <- jdv_register(x, mode = "paged")
+  registered <- register_view(x, mode = "paged")
   open_columns <- rpc_json(registered$open)$params$columns
   schema_columns <- rpc_call(
     "view/schema",
@@ -203,11 +203,11 @@ test_that("Snapshot keeps custom integer64 missing labels in display", {
         int64_fixture(c("1", NA)),
         class = c("rpc_custom64", "integer64")
       )
-      registered <- jdv_register(data.frame(value = custom), mode = "snapshot")
+      registered <- register_view(data.frame(value = custom), mode = "snapshot")
       wire <- rpc_json(registered$open)$params$data$columns[[1]]
       expect_identical(wire$display, list("1", "<missing>"))
 
-      standard <- jdv_register(
+      standard <- register_view(
         data.frame(value = int64_fixture(c("1", NA))),
         mode = "snapshot"
       )
@@ -232,7 +232,7 @@ test_that("RPC pages preserve schema, channel errors, and source row indices", {
       paste0("v", x)
     },
     {
-      registered <- jdv_register(x, mode = "paged")
+      registered <- register_view(x, mode = "paged")
       reply <- rpc_call(
         "table/rows",
         list(
@@ -271,7 +271,7 @@ test_that("RPC retains typed query error details", {
       as.numeric(x)
     },
     {
-      registered <- jdv_register(x, mode = "paged")
+      registered <- register_view(x, mode = "paged")
       fail <- TRUE
       response <- rpc_call(
         "table/rows",
@@ -293,7 +293,7 @@ test_that(
   {
     .jdv_close_internal()
     on.exit(.jdv_close_internal(), add = TRUE)
-    registered <- jdv_register(data.frame(x = 1:2), mode = "paged")
+    registered <- register_view(data.frame(x = 1:2), mode = "paged")
     params <- list(
       view = registered$id,
       generation = 1,
@@ -363,10 +363,10 @@ test_that(
   {
     .jdv_close_internal()
     on.exit(.jdv_close_internal(), add = TRUE)
-    old <- jdv_register(data.frame(x = 1:3), title = "same", mode = "paged")
+    old <- register_view(data.frame(x = 1:3), title = "same", mode = "paged")
     entry <- get(old$id, envir = .jdv_state$entries)
     entry$inflight <- 1L
-    replacement <- jdv_register(
+    replacement <- register_view(
       data.frame(x = 10:12),
       title = "same",
       mode = "paged"
@@ -380,12 +380,12 @@ test_that(
     expect_true(entry$closed)
 
     .jdv_close_internal()
-    jdv_register(data.frame(x = 1), mode = "paged")
-    jdv_register(data.frame(x = 2), mode = "paged")
-    jdv_register(data.frame(x = 3), mode = "paged")
+    register_view(data.frame(x = 1), mode = "paged")
+    register_view(data.frame(x = 2), mode = "paged")
+    register_view(data.frame(x = 3), mode = "paged")
     options(jdv.max_tables = 1)
     on.exit(options(jdv.max_tables = NULL), add = TRUE)
-    next_table <- jdv_register(data.frame(x = 4), mode = "paged")
+    next_table <- register_view(data.frame(x = 4), mode = "paged")
     expect_length(next_table$notifications, 3)
     expect_true(all(vapply(
       next_table$notifications,
@@ -418,12 +418,12 @@ test_that(
         }
         if (trigger) {
           trigger <<- FALSE
-          jdv_register(x, title = "reentrant", mode = "paged")
+          register_view(x, title = "reentrant", mode = "paged")
         }
         NextMethod("[[")
       },
       {
-        registered <- jdv_register(x, title = "reentrant", mode = "paged")
+        registered <- register_view(x, title = "reentrant", mode = "paged")
         trigger <- TRUE
         schema <- rpc_call(
           "view/schema",
@@ -454,7 +454,7 @@ test_that(
     options(jdv.collation = "locale")
     on.exit(options(jdv.collation = old), add = TRUE)
     x <- data.frame(text = c("z", "a"))
-    first <- jdv_register(x, title = "refresh", mode = "paged")
+    first <- register_view(x, title = "refresh", mode = "paged")
     expect_identical(rpc_json(first$open)$params$collation, "locale")
     x$text <- c("changed", "values")
     page <- rpc_call(
@@ -462,7 +462,7 @@ test_that(
       list(view = first$id, generation = 1, limit = 2)
     )
     expect_identical(page$result$data$columns[[1]]$data$values, list("z", "a"))
-    refreshed <- jdv_register(
+    refreshed <- register_view(
       x,
       title = "refresh",
       mode = "paged",
@@ -480,7 +480,7 @@ test_that("the page row cap is captured when a paged table is registered", {
   on.exit(options(jdv.max_page_rows = old), add = TRUE)
   options(jdv.max_page_rows = 2)
   x <- data.frame(value = 1:5)
-  first <- jdv_register(x, title = "row-cap", mode = "paged")
+  first <- register_view(x, title = "row-cap", mode = "paged")
   first_page <- rpc_call(
     "table/rows",
     list(view = first$id, generation = 1, limit = 5)
@@ -493,7 +493,7 @@ test_that("the page row cap is captured when a paged table is registered", {
     list(view = first$id, generation = 1, limit = 5)
   )
   expect_identical(still_capped$result$limit, 2L)
-  refreshed <- jdv_register(x, title = "row-cap", mode = "paged")
+  refreshed <- register_view(x, title = "row-cap", mode = "paged")
   refreshed_page <- rpc_call(
     "table/rows",
     list(view = refreshed$id, generation = 2, limit = 5)
@@ -509,7 +509,7 @@ test_that("auto registration budgets compact zero-column row indices", {
     class = "data.frame",
     row.names = c(NA_integer_, -800000000L)
   )
-  registered <- jdv_register(x, mode = "auto")
+  registered <- register_view(x, mode = "auto")
   open <- rpc_json(registered$open)
   expect_identical(open$params$mode, "paged")
   expect_identical(open$params$nrow, 800000000L)
@@ -518,7 +518,7 @@ test_that("auto registration budgets compact zero-column row indices", {
     registered$id,
     envir = .jdv_state$entries
   )$holder))
-  expect_error(jdv_register(x, mode = "snapshot"), class = "jdv_query_error")
+  expect_error(register_view(x, mode = "snapshot"), class = "jdv_query_error")
 })
 
 test_that("row pages shrink to fit the configured message bound", {
@@ -537,7 +537,7 @@ test_that("row pages shrink to fit the configured message bound", {
       rep(strrep("x", 100), length(x))
     },
     {
-      registered <- jdv_register(x, mode = "paged")
+      registered <- register_view(x, mode = "paged")
       response <- jdv_rpc(rpc_request(
         "table/rows",
         list(view = registered$id, generation = 1, limit = 30)
@@ -560,7 +560,7 @@ test_that("public calls leave last value and process options intact", {
   options_before <- options()
   set.seed(234)
   rng_before <- .Random.seed
-  registered <- jdv_register(data.frame(x = 1:3), mode = "paged")
+  registered <- register_view(data.frame(x = 1:3), mode = "paged")
   rpc_call("table/rows", list(view = registered$id, generation = 1))
   expect_identical(.Last.value, previous)
   expect_identical(options(), options_before)

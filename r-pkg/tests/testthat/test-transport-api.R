@@ -3,8 +3,8 @@ local({
   on.exit(unlink(socket_directory, recursive = TRUE), add = TRUE)
   # Restore file-owned notification state even when a test fails.
   state <- .jdv_state
-  initial_outbox <- state$outbox
-  on.exit(state$outbox <- initial_outbox, add = TRUE)
+  initial_session <- save_notification_session()
+  on.exit(restore_notification_session(initial_session), add = TRUE)
 
   transport_rpc_json <- function(value) {
     skip_if_not_installed("jsonlite")
@@ -181,6 +181,8 @@ local({
     python <- Sys.which("python3")
     skip_if(!nzchar(python), "python3 is required for the local mock host")
 
+    # An embedded session left by an earlier test would own notifications.
+    jdv_disconnect()
     socket_path <- tempfile("jdv-transport-", tmpdir = socket_directory)
     ready_path <- tempfile("jdv-transport-ready-")
     result_path <- tempfile("jdv-transport-result-")
@@ -643,16 +645,16 @@ local({
       options(jdv.address = old_socket)
       expect_true(wait_for_file(old_ready))
       counter_before <- .jdv_state$session_counter
-      shared_id <- jdv_register(
-        data.frame(value = 99),
-        title = "registered-only",
-        mode = "paged"
-      )$id
       old_id <- jdv_view(
         data.frame(value = 11:13),
         title = "reconnect",
         mode = "paged"
       )
+      shared_id <- register_view(
+        data.frame(value = 99),
+        title = "registered-only",
+        mode = "paged"
+      )$id
       expect_true(wait_for_file(old_result))
       old_record <- jsonlite::fromJSON(old_result, simplifyVector = FALSE)
       expect_identical(old_record$open$params$generation, 1L)
@@ -707,6 +709,28 @@ local({
       expect_false("error" %in% names(new_record$response))
     }
   )
+
+  test_that("a connected transport owns notifications", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
+    jdv_disconnect()
+    observed <- NULL
+    with_mock_transport(
+      "fragmented",
+      data.frame(value = 11:13),
+      before_poll = function() {
+        observed <<- list(
+          connection = jdv_connection(),
+          error = tryCatch(jdv_notifications(), error = identity)
+        )
+      }
+    )
+    expect_identical(observed$connection$owner, "transport")
+    expect_identical(observed$connection$state, "connected")
+    expect_s3_class(observed$error, "error")
+    expect_match(conditionMessage(observed$error), "owns the notifications")
+  })
 
   test_that("a finalizer cannot unload an active transport callback", {
     skip_on_cran()
@@ -1174,8 +1198,8 @@ local({
   })
 
   test_that("synchronous expired requests return a typed error", {
-    registered <- jdv_register(data.frame(value = 1), mode = "paged")
-    on.exit(.jdv_close_internal(registered$id), add = TRUE)
+    registered <- register_view(data.frame(value = 1), mode = "paged")
+    on.exit(jdv_disconnect(), add = TRUE)
     response <- transport_rpc_call(
       "view/schema",
       list(view = registered$id, generation = 1),
@@ -1190,11 +1214,10 @@ local({
   })
 
   test_that("closing an embedding-only registration does not connect", {
-    registered <- jdv_register(data.frame(value = 1), mode = "paged")
+    registered <- register_view(data.frame(value = 1), mode = "paged")
     on.exit(
       {
-        .jdv_close_internal(registered$id)
-        .jdv_state$outbox <- list()
+        jdv_disconnect()
       },
       add = TRUE
     )
@@ -1278,61 +1301,77 @@ local({
     expect_null(jdv_rpc('{"method":"cancel","params":{"id":1}}'))
   })
 
-  test_that("offline close, eviction, and cascade never reach a fresh viewer", {
-    skip_on_cran()
-    skip_if_not_installed("jsonlite")
-    skip_if_not_installed("callr")
-    for (action in c("close", "eviction", "cascade")) {
-      jdv_close()
-      old_options <- options(jdv.max_tables = 2L)
-      tryCatch(
-        {
-          root <- jdv_register(list(child = list(value = 1L)))
-          if (action != "close") {
-            child <- transport_rpc_json(transport_rpc_call(
-              "object/open",
-              list(
-                view = root$id,
-                generation = 1,
-                path = list(list(type = "index", index = 1))
+  test_that(
+    "embedded close, eviction, and cascade stay out of a fresh viewer",
+    {
+      skip_on_cran()
+      skip_if_not_installed("jsonlite")
+      skip_if_not_installed("callr")
+      closed_views <- function(messages) {
+        parsed <- lapply(messages, transport_rpc_json)
+        parsed <- Filter(function(x) identical(x$method, "view/closed"), parsed)
+        vapply(parsed, function(x) x$params$view, "")
+      }
+      for (action in c("close", "eviction", "cascade")) {
+        jdv_disconnect()
+        old_options <- options(jdv.max_tables = 2L)
+        tryCatch(
+          {
+            root <- register_view(list(child = list(value = 1L)))
+            if (action != "close") {
+              child <- transport_rpc_json(transport_rpc_call(
+                "object/open",
+                list(
+                  view = root$id,
+                  generation = 1,
+                  path = list(list(type = "index", index = 1))
+                )
+              ))$result
+            }
+            if (action == "eviction") {
+              replacement <- register_view(data.frame(value = 1L))
+              expect_setequal(
+                closed_views(replacement$notifications),
+                c(root$id, child$view)
               )
-            ))$result
-          }
-          if (action == "eviction") {
-            replacement <- jdv_register(data.frame(value = 1L))
-            notices <- lapply(replacement$notifications, transport_rpc_json)
-            expect_setequal(
-              vapply(notices, function(x) x$params$view, ""),
-              c(root$id, child$view)
+              expect_false(exists(
+                root$id,
+                .jdv_state$entries,
+                inherits = FALSE
+              ))
+            } else {
+              .jdv_close_internal(root$id, notify = TRUE)
+              expect_length(
+                closed_views(jdv_notifications()),
+                if (action == "cascade") 2L else 1L
+              )
+            }
+            # The embedded session keeps ownership until it is ended explicitly.
+            expect_error(jdv_connect("unix:///tmp/jdv-none"), "jdv_disconnect")
+            expect_error(jdv_view(data.frame(value = 1L)), "jdv_disconnect")
+            expect_identical(jdv_connection()$state, "embedded")
+            jdv_disconnect()
+            expect_null(.jdv_transport_status())
+            expect_identical(jdv_notifications(), character())
+            received <- with_mock_transport(
+              "fragmented",
+              data.frame(value = 11:13)
             )
-            expect_false(exists(root$id, .jdv_state$entries, inherits = FALSE))
-          } else {
-            .jdv_close_internal(root$id, notify = TRUE)
-            expect_length(
-              .jdv_state$outbox,
-              if (action == "cascade") 2L else 1L
+            expect_identical(received$open$method, "view/open")
+            expect_identical(
+              received$responses[[1L]]$result$data$row_index,
+              list(1L, 2L)
             )
+            expect_length(.jdv_state$queue, 0L)
+          },
+          finally = {
+            jdv_disconnect()
+            options(old_options)
           }
-          .jdv_close_internal()
-          expect_null(.jdv_transport_status())
-          received <- with_mock_transport(
-            "fragmented",
-            data.frame(value = 11:13)
-          )
-          expect_identical(received$open$method, "view/open")
-          expect_identical(
-            received$responses[[1L]]$result$data$row_index,
-            list(1L, 2L)
-          )
-          expect_length(.jdv_state$outbox, 0L)
-        },
-        finally = {
-          jdv_close()
-          options(old_options)
-        }
-      )
+        )
+      }
     }
-  })
+  )
 
   test_that(
     "active connections retain cascade and eviction close notifications",
@@ -1423,7 +1462,7 @@ local({
       )
       expect_identical(
         vapply(opened, function(message) message$params$view, ""),
-        c(anchor, root, victim, replacement)
+        c(anchor, root, child$view, victim, replacement)
       )
     }
   )
@@ -1719,7 +1758,7 @@ local({
     jdv_connect()
     first <- jdv_view(mtcars, title = "life-disc-1")
     second <- jdv_view(mtcars, title = "life-disc-2")
-    registered <- jdv_register(mtcars, title = "life-disc-embedded")
+    registered <- register_view(mtcars, title = "life-disc-embedded")
     expect_length(ls(.jdv_state$entries, all.names = TRUE), 3L)
 
     state <- jdv_disconnect()

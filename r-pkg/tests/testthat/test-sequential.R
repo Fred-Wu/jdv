@@ -257,7 +257,7 @@ test_that(
     expect_identical(state$released, 1L)
     state$on_page <- NULL
     view <- .jdv_sequential_register(NULL, title = "new")
-    state$on_page <- function() jdv_register(list(value = 1), title = "new")
+    state$on_page <- function() register_view(list(value = 1), title = "new")
     expect_identical(
       sequential_error(sequential_request(view)),
       "stale_generation"
@@ -306,7 +306,7 @@ test_that("eviction and mixed tree cascades release stream children once", {
     },
     .package = "jdv"
   )
-  parent <- jdv_register(list(
+  parent <- register_view(list(
     child = structure(list(), class = "jdvSequentialFixture")
   ))
   response <- .jdv_json_parse(jdv_rpc(.jdv_json_encode(list(
@@ -341,7 +341,7 @@ test_that(
             identical(x$params$access, "sequential")
         ) {
           changed <<- TRUE
-          jdv_register(list(intervening = 1), title = "transaction")
+          register_view(list(intervening = 1), title = "transaction")
         }
         original_encode(x, ...)
       },
@@ -361,10 +361,10 @@ test_that("eviction callbacks revalidate a title before committing a stream", {
   old <- options(jdv.max_tables = 2L)
   on.exit(options(old), add = TRUE)
   .jdv_sequential_register(NULL, title = "anchor")
-  jdv_register(list(other = 1), title = "other")
+  register_view(list(other = 1), title = "other")
   state$on_release <- function() {
     state$on_release <- NULL
-    jdv_register(list(intervening = 2), title = "target")
+    register_view(list(intervening = 2), title = "target")
   }
   current <- .jdv_sequential_register(NULL, title = "target")
   expect_identical(.jdv_json_parse(current$open)$params$generation, 2)
@@ -382,7 +382,7 @@ test_that(
       state$on_release <- function() {
         state$on_release <- NULL
         if (replace) {
-          jdv_register(list(replacement = 1), title = "release")
+          register_view(list(replacement = 1), title = "release")
         } else {
           .jdv_close_internal(first$id)
         }

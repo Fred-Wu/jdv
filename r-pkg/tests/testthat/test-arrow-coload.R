@@ -6,7 +6,7 @@ test_that("Arrow and nanoarrow coexist with the table registry", {
   loadNamespace("nanoarrow")
   table <- arrow::arrow_table(x = 1:3)
   expect_equal(as.data.frame(table), data.frame(x = 1:3))
-  registered <- jdv_register(data.frame(x = 1:3), mode = "snapshot")
+  registered <- register_view(data.frame(x = 1:3), mode = "snapshot")
   on.exit(.jdv_close_internal(registered$id, notify = FALSE), add = TRUE)
   expect_type(registered$open, "character")
   expect_length(registered$open, 1L)

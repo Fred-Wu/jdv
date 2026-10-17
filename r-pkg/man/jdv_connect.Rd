@@ -21,16 +21,21 @@ from \code{options(jdv.address = ...)}, then \code{JDV_ADDRESS}, then
 A list describing the connection after the call. \code{\link[=jdv_connect]{jdv_connect()}} and
 \code{\link[=jdv_disconnect]{jdv_disconnect()}} return it invisibly. The members are:
 \itemize{
-\item \code{state}: \code{"disconnected"}, \code{"connected"}, or \code{"closing"} (the connection
-is closed and its cleanup is still pending).
+\item \code{state}: \code{"disconnected"}, \code{"embedded"} (an embedded notification session
+is active; see \code{\link[=jdv_notifications]{jdv_notifications()}}), \code{"connected"}, or \code{"closing"} (the
+connection is closed and its cleanup is still pending).
 \item \code{connected}: \code{TRUE} only in the \code{"connected"} state.
+\item \code{owner}: who receives notifications: \code{"none"}, \code{"embedded"} (the host
+calls \code{\link[=jdv_notifications]{jdv_notifications()}}), or \code{"transport"} (the built-in viewer
+connection).
 \item \code{persistent}: \code{TRUE} for an explicit connection made or promoted by
 \code{\link[=jdv_connect]{jdv_connect()}}.
 \item \code{address}: the connected address, or \code{NULL}.
 \item \code{last_disconnect_reason}: a short string for the most recent disconnect,
 or \code{NULL} if there has been none. Values include \code{"disconnect"}
 (\code{\link[=jdv_disconnect]{jdv_disconnect()}}), \code{"last_view_closed"}, \code{"peer_closed"},
-\code{"send_failed"}, \code{"register_failed"}, and \code{"unloaded"}.
+\code{"send_failed"}, \code{"register_failed"}, \code{"notification_overflow"}, and
+\code{"unloaded"}.
 }
 }
 \description{
@@ -51,7 +56,10 @@ existing connection and does not repeat \code{hello}.
 
 A peer disconnect, a failed send, or package unload ends the session. jdv
 does not reconnect automatically, and views are not resent to a later
-session. \code{\link[=jdv_disconnect]{jdv_disconnect()}} is idempotent and also releases views registered
-with \code{\link[=jdv_register]{jdv_register()}}. \code{\link[=jdv_connection]{jdv_connection()}} has no side effects: it neither
-connects nor polls.
+session. \code{\link[=jdv_disconnect]{jdv_disconnect()}} is idempotent and also ends an embedded session,
+releasing views registered with \code{\link[=jdv_register]{jdv_register()}} and discarding its queued
+notifications. Ownership never moves implicitly: while an embedded session is
+active, \code{\link[=jdv_connect]{jdv_connect()}} and \code{\link[=jdv_view]{jdv_view()}} fail until \code{\link[=jdv_disconnect]{jdv_disconnect()}} is
+called. \code{\link[=jdv_connection]{jdv_connection()}} has no side effects: it neither connects nor
+polls.
 }

@@ -30,7 +30,7 @@ local({
         data.frame(value = 3:4)
       ))
     )
-    parent <- jdv_register(source, mode = "paged", collation = "C")
+    parent <- register_view(source, mode = "paged", collation = "C")
     on.exit(.jdv_close_internal(parent$id), add = TRUE)
 
     explicit_paged <- open_grid_cell(
@@ -64,7 +64,7 @@ local({
   })
 
   test_that("tree children ignore valid grid options", {
-    parent <- jdv_register(list(child = list(value = 1L)))
+    parent <- register_view(list(child = list(value = 1L)))
     on.exit(.jdv_close_internal(parent$id), add = TRUE)
     response <- rpc(
       "object/open",
@@ -83,7 +83,7 @@ local({
   })
 
   test_that("object open strictly validates optional grid options", {
-    parent <- jdv_register(data.frame(payload = I(list(data.frame(x = 1L)))))
+    parent <- register_view(data.frame(payload = I(list(data.frame(x = 1L)))))
     on.exit(.jdv_close_internal(parent$id), add = TRUE)
     base <- list(
       view = parent$id,
@@ -109,7 +109,7 @@ local({
   })
 
   test_that("object children do not accept child registration options", {
-    parent <- jdv_register(list(child = list(value = 1L)))
+    parent <- register_view(list(child = list(value = 1L)))
     on.exit(.jdv_close_internal(parent$id), add = TRUE)
     base <- list(
       view = parent$id,

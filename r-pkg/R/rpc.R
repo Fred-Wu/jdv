@@ -7,7 +7,11 @@
   state$next_id <- 0
   state$sequence <- 0
   state$eviction_pins <- character()
-  state$outbox <- list()
+  state$queue <- list()
+  state$queue_bytes <- 0
+  state$queue_max_messages <- Inf
+  state$queue_max_bytes <- Inf
+  state$embedded <- FALSE
   state$rpc_depth <- 0L
   state$transport <- NULL
   state$transport_limits <- NULL
@@ -26,6 +30,143 @@
 .jdv_assert_active <- function() {
   if (isTRUE(.jdv_state$unloading)) {
     stop("The jdv namespace is shutting down.", call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+# Notifications share one FIFO per session. The owner is the built-in transport
+# when one is connected; otherwise an embedded session started by the first
+# registration, drained with jdv_notifications().
+.jdv_notification_limits <- function() {
+  max_tables <- .jdv_option_limit("jdv.max_tables", 64)
+  list(
+    messages = .jdv_option_limit(
+      "jdv.notification_max_messages",
+      max(256, 4 * max_tables)
+    ),
+    bytes = .jdv_option_limit(
+      "jdv.notification_max_bytes",
+      min(.Machine$integer.max, 4 * .jdv_max_message_bytes()),
+      1024
+    )
+  )
+}
+
+.jdv_queue_reset <- function(limits = NULL) {
+  .jdv_state$queue <- list()
+  .jdv_state$queue_bytes <- 0
+  if (!is.null(limits)) {
+    .jdv_state$queue_max_messages <- limits$messages
+    .jdv_state$queue_max_bytes <- limits$bytes
+  }
+  invisible(NULL)
+}
+
+# Take every queued message in FIFO order.
+.jdv_queue_take <- function() {
+  messages <- if (length(.jdv_state$queue)) {
+    unname(unlist(.jdv_state$queue, use.names = FALSE))
+  } else {
+    character()
+  }
+  .jdv_queue_reset()
+  messages
+}
+
+.jdv_session_owner <- function() {
+  if (!is.null(.jdv_state$transport)) {
+    "transport"
+  } else if (isTRUE(.jdv_state$embedded)) {
+    "embedded"
+  } else {
+    "none"
+  }
+}
+
+# Push one notification. Without a session there is nobody to deliver to. An
+# overflow ends the session instead of dropping notifications.
+.jdv_notify <- function(message) {
+  if (identical(.jdv_session_owner(), "none")) {
+    return(invisible(NULL))
+  }
+  bytes <- nchar(message, type = "bytes")
+  if (
+    length(.jdv_state$queue) + 1 > .jdv_state$queue_max_messages ||
+      .jdv_state$queue_bytes + bytes > .jdv_state$queue_max_bytes
+  ) {
+    .jdv_session_overflow()
+  }
+  .jdv_state$queue[[length(.jdv_state$queue) + 1L]] <- message
+  .jdv_state$queue_bytes <- .jdv_state$queue_bytes + bytes
+  invisible(NULL)
+}
+
+.jdv_session_overflow <- function() {
+  .jdv_queue_reset()
+  .jdv_close_internal(notify = FALSE)
+  if (identical(.jdv_session_owner(), "transport")) {
+    # The disconnect callback records the reason once cleanup runs.
+    .jdv_transport_close("notification_overflow")
+  } else {
+    .jdv_state$embedded <- FALSE
+    .jdv_state$last_disconnect_reason <- "notification_overflow"
+  }
+  stop(structure(
+    list(
+      message = paste(
+        "The notification queue overflowed; the viewer session was ended",
+        "and all views were closed."
+      ),
+      call = NULL
+    ),
+    class = c("jdv_notification_overflow", "error", "condition")
+  ))
+}
+
+# Start an embedded session when nothing owns notifications yet. Returns TRUE
+# when this call started one.
+.jdv_session_ensure <- function() {
+  if (!identical(.jdv_session_owner(), "none")) {
+    return(FALSE)
+  }
+  limits <- .jdv_notification_limits()
+  .jdv_queue_reset(limits)
+  .jdv_state$embedded <- TRUE
+  hello <- .jdv_hello(list(
+    max_message_bytes = as.integer(.jdv_max_message_bytes()),
+    max_request_bytes = as.integer(.jdv_max_request_bytes())
+  ))
+  tryCatch(
+    .jdv_notify(.jdv_json_encode(hello)),
+    error = function(error) {
+      .jdv_state$embedded <- FALSE
+      .jdv_queue_reset()
+      stop(error)
+    }
+  )
+  TRUE
+}
+
+# Drop an embedded session that a failed first registration left empty.
+.jdv_session_discard_empty <- function() {
+  if (
+    isTRUE(.jdv_state$embedded) &&
+      is.null(.jdv_state$transport) &&
+      !length(ls(.jdv_state$entries, all.names = TRUE))
+  ) {
+    .jdv_state$embedded <- FALSE
+    .jdv_queue_reset()
+  }
+  invisible(NULL)
+}
+
+.jdv_assert_not_embedded <- function() {
+  if (isTRUE(.jdv_state$embedded) && is.null(.jdv_state$transport)) {
+    stop(
+      "An embedded notification session is active; ",
+      "call jdv_disconnect() before opening a viewer connection.",
+      call. = FALSE
+    )
   }
   invisible(NULL)
 }
@@ -436,6 +577,9 @@ jdv_json_object <- function(x = list()) {
     tryCatch(
       .jdv_close_internal(child_id, notify = notify, reason = "parent_closed"),
       error = function(error) {
+        if (inherits(error, "jdv_notification_overflow")) {
+          stop(error)
+        }
         if (exists(child_id, envir = .jdv_state$entries, inherits = FALSE)) {
           rm(list = child_id, envir = .jdv_state$entries)
         }
@@ -499,18 +643,6 @@ jdv_json_object <- function(x = list()) {
       ) {
         parent$children <- setdiff(parent$children, entry$id)
       }
-      if (notify) {
-        .jdv_state$outbox[[
-          length(.jdv_state$outbox) + 1L
-        ]] <- .jdv_close_notification(entry, reason)
-        outbox_limit <- tryCatch(
-          max(64L, 4L * .jdv_option_limit("jdv.max_tables", 64)),
-          error = function(error) 256L
-        )
-        if (length(.jdv_state$outbox) > outbox_limit) {
-          .jdv_state$outbox <- utils::tail(.jdv_state$outbox, outbox_limit)
-        }
-      }
       title_key <- if (is.null(entry$title)) {
         NULL
       } else {
@@ -527,6 +659,10 @@ jdv_json_object <- function(x = list()) {
         rm(list = title_key, envir = .jdv_state$titles)
       }
       .jdv_close_entry(entry)
+      # Notify last so an overflow cannot leave this entry half released.
+      if (notify) {
+        .jdv_notify(.jdv_close_notification(entry, reason))
+      }
     }
   }
   invisible(NULL)
@@ -587,9 +723,12 @@ jdv_json_object <- function(x = list()) {
 #' arbitrary user method allocations, R allocator and GC overhead, or transient
 #' R-internal string conversion and sorting scratch.
 #' @return
-#' A list containing a view `id`, its `open` JSON message, and any pending
-#' transport notifications as JSON strings in `notifications` (for example, a
-#' `view/closed` message emitted when the registry evicts an older view).
+#' A list with the view `id` and its `generation`. The `view/open` message, and
+#' any `view/closed` messages emitted when the registry evicts or replaces older
+#' views, are queued as notifications. With an embedded host, take them with
+#' [jdv_notifications()]; see [jdv_spec] for the delivery order. If the
+#' notification queue overflows, the session ends, every view is closed, and the
+#' call fails.
 #' @export
 jdv_register <- function(
   x,
@@ -599,18 +738,46 @@ jdv_register <- function(
 ) {
   .jdv_assert_active()
   mode <- match.arg(mode)
-  if (missing(collation)) {
+  collation <- if (missing(collation)) NULL else match.arg(collation)
+  registered <- .jdv_register_internal(x, title, mode, collation)
+  if (
+    identical(.jdv_session_owner(), "transport") && .jdv_state$rpc_depth == 0L
+  ) {
+    # Outside a viewer request nothing else would send the queued messages.
+    .jdv_transport_flush()
+  }
+  list(id = registered$id, generation = registered$generation)
+}
+
+# Register without sending. `emit = FALSE` leaves the view/open message out of
+# the queue; the caller owns it (see object/open, where it follows the
+# response). Returns the id, generation, open JSON, and descriptor if any.
+.jdv_register_internal <- function(x, title, mode, collation, emit = TRUE) {
+  .jdv_assert_active()
+  if (is.null(collation)) {
     collation <- getOption("jdv.collation", "C")
   }
   collation <- match.arg(collation, c("C", "locale"))
+  started <- .jdv_session_ensure()
+  completed <- FALSE
+  on.exit(if (started && !completed) .jdv_session_discard_empty(), add = TRUE)
   source <- jdv_source(x)
   x <- source$data
-  if (identical(source$kind, "tree")) {
-    return(.jdv_tree_register(x, title = title))
+  registered <- if (identical(source$kind, "tree")) {
+    .jdv_tree_register(x, title = title)
+  } else if (identical(source$access, "sequential")) {
+    .jdv_sequential_register(x, title = title)
+  } else {
+    .jdv_grid_register(x, title, mode, collation)
   }
-  if (identical(source$access, "sequential")) {
-    return(.jdv_sequential_register(x, title = title))
+  if (emit) {
+    .jdv_notify(registered$open)
   }
+  completed <- TRUE
+  registered
+}
+
+.jdv_grid_register <- function(x, title, mode, collation) {
   if (!is.null(title)) {
     title <- query_string(title, 4096L)
   }
@@ -817,15 +984,9 @@ jdv_register <- function(
     .jdv_close_children(old, notify = TRUE)
     .jdv_close_entry(old)
   }
-  notifications <- if (length(.jdv_state$outbox)) {
-    unname(unlist(.jdv_state$outbox, use.names = FALSE))
-  } else {
-    character()
-  }
-  .jdv_state$outbox <- list()
   .jdv_assert_active()
   committed <- TRUE
-  list(id = id, open = open, notifications = notifications)
+  list(id = id, generation = generation, open = open)
 }
 
 .jdv_fields <- function(x, allowed, required = allowed) {
@@ -1097,6 +1258,8 @@ jdv_register <- function(
     }
     result <- descriptor$params
     attr(result, "jdv_child_id") <- registered$id
+    # The child's view/open is queued only once the response is final.
+    attr(result, "jdv_child_open") <- registered$open
     committed <- TRUE
     return(result)
   }
@@ -1234,7 +1397,9 @@ jdv_register <- function(
 #' at most the configured drain batch. This recovery path bypasses the event
 #' gate and does not run reentrantly. A JSON request string is handled
 #' synchronously as an embedding API and remains independent of the transport.
-#' Notifications such as `wake` and `cancel` return `NULL`.
+#' Notifications such as `wake` and `cancel` return `NULL`. The response never
+#' carries notifications: an embedding host takes them with
+#' [jdv_notifications()] and delivers them before the response.
 #'
 #' @param request One JSON request string, or `NULL` to poll the active viewer.
 #' @return A JSON response string or NULL for a notification.
@@ -1325,9 +1490,11 @@ jdv_rpc <- function(request = NULL) {
   }
   work_budget <- if (is.list(result)) attr(result, "jdv_work_budget") else NULL
   child_id <- if (is.list(result)) attr(result, "jdv_child_id") else NULL
+  child_open <- if (is.list(result)) attr(result, "jdv_child_open") else NULL
   if (is.list(result)) {
     attr(result, "jdv_work_budget") <- NULL
     attr(result, "jdv_child_id") <- NULL
+    attr(result, "jdv_child_open") <- NULL
   }
   if (inherits(result, "jdv_binary_result")) {
     result <- tryCatch(
@@ -1437,6 +1604,9 @@ jdv_rpc <- function(request = NULL) {
     }
   }
   if (!inherits(encoded, "error")) {
+    if (!is.null(child_open)) {
+      .jdv_notify(child_open)
+    }
     return(encoded)
   }
   limit_failure <- inherits(encoded, "jdv_query_error") &&

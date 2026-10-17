@@ -244,13 +244,7 @@
       "The stream view was replaced during registration."
     )
   }
-  notifications <- if (length(.jdv_state$outbox)) {
-    unname(unlist(.jdv_state$outbox, use.names = FALSE))
-  } else {
-    character()
-  }
-  .jdv_state$outbox <- list()
-  list(id = id, open = open, notifications = notifications)
+  list(id = id, generation = generation, open = open)
 }
 
 .jdv_sequential_next <- function(entry, params) {

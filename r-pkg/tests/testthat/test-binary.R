@@ -437,14 +437,14 @@ test_that(
       ),
       supervise = TRUE
     )
-    original_outbox <- .jdv_state$outbox
+    original_session <- save_notification_session()
     original_options <- options(jdv.address = NULL)
     on.exit(
       {
         .jdv_close_internal(notify = FALSE)
         try(.Call(C_jdv_transport_close), silent = TRUE)
         try(.Call(C_jdv_transport_cleanup), silent = TRUE)
-        .jdv_state$outbox <- original_outbox
+        restore_notification_session(original_session)
         options(original_options)
         if (host$is_alive()) {
           host$kill()
@@ -459,7 +459,6 @@ test_that(
     }
     expect_true(file.exists(ready))
     options(jdv.address = readLines(ready, warn = FALSE))
-    spare <- jdv_register(data.frame(x = 0), mode = "paged")
     original <- .jdv_process_request
     removed <- FALSE
     local_mocked_bindings(
@@ -482,7 +481,9 @@ test_that(
       },
       .package = "jdv"
     )
+    jdv_disconnect()
     jdv_view(data.frame(x = 1:3), mode = "paged")
+    spare <- register_view(data.frame(x = 0), mode = "paged")
     deadline <- Sys.time() + 15
     while (!file.exists(result) && Sys.time() < deadline) {
       jdv_rpc(NULL)
@@ -497,6 +498,6 @@ test_that(
     }
     host$wait(5000)
     expect_no_error(host$get_result())
-    expect_length(.jdv_state$outbox, 0L)
+    expect_length(.jdv_state$queue, 0L)
   }
 )

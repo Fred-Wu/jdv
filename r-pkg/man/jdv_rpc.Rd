@@ -17,5 +17,7 @@ With no argument or \code{NULL}, explicitly poll the active transport and proces
 at most the configured drain batch. This recovery path bypasses the event
 gate and does not run reentrantly. A JSON request string is handled
 synchronously as an embedding API and remains independent of the transport.
-Notifications such as \code{wake} and \code{cancel} return \code{NULL}.
+Notifications such as \code{wake} and \code{cancel} return \code{NULL}. The response never
+carries notifications: an embedding host takes them with
+\code{\link[=jdv_notifications]{jdv_notifications()}} and delivers them before the response.
 }

@@ -2,8 +2,8 @@ local({
   socket_directory <- jdv_test_uds_directory()
   on.exit(unlink(socket_directory, recursive = TRUE), add = TRUE)
   state <- .jdv_state
-  saved_outbox <- state$outbox
-  on.exit(state$outbox <- saved_outbox, add = TRUE)
+  saved_session <- save_notification_session()
+  on.exit(restore_notification_session(saved_session), add = TRUE)
   rpc <- function(view, path, method = "object/open") {
     request <- list(
       id = 1,
@@ -49,7 +49,7 @@ local({
     expect_true(all(vapply(allowed, column_drillable, logical(1))))
     expect_false(any(vapply(denied, column_drillable, logical(1))))
     for (mode in c("snapshot", "paged")) {
-      root <- jdv_register(frame(list(1)), mode = mode)
+      root <- register_view(frame(list(1)), mode = mode)
       descriptor <- .jdv_json_parse(root$open)$params
       expect_true(descriptor$columns[[1]]$drillable)
       expect_true(descriptor$capabilities$children)
@@ -75,7 +75,7 @@ local({
   })
 
   test_that("snapshots retain source references only for drillable columns", {
-    plain <- jdv_register(data.frame(a = 1:2), mode = "snapshot")
+    plain <- register_view(data.frame(a = 1:2), mode = "snapshot")
     on.exit(close(plain), add = TRUE)
     entry <- get(plain$id, state$entries)
     expect_null(entry$source)
@@ -83,7 +83,7 @@ local({
     expect_null(entry$fingerprint)
     expect_false(.jdv_json_parse(plain$open)$params$capabilities$children)
     source <- frame(list(list(a = 1), list(b = 2)))
-    root <- jdv_register(source, mode = "snapshot")
+    root <- register_view(source, mode = "snapshot")
     on.exit(close(root), add = TRUE)
     entry <- get(root$id, state$entries)
     expect_identical(entry$source, source)
@@ -107,7 +107,7 @@ local({
       row.names = .set_row_names(3L)
     )
     for (mode in c("snapshot", "paged")) {
-      root <- jdv_register(source, mode = mode)
+      root <- register_view(source, mode = mode)
       on.exit(close(root), add = TRUE)
       if (mode == "paged") {
         response <- jdv_rpc(.jdv_json_encode(list(
@@ -135,7 +135,7 @@ local({
       expect_identical(get(opened$view, state$entries)$tree_value, 30L)
     }
     for (column in list(data.frame(a = 1:2, b = 3:4), matrix(1:6, 2))) {
-      root <- jdv_register(frame(column), mode = "snapshot")
+      root <- register_view(frame(column), mode = "snapshot")
       on.exit(close(root), add = TRUE)
       opened <- rpc(root, list(cell(2)))$result
       expect_identical(opened$kind, "grid")
@@ -149,7 +149,7 @@ local({
   test_that(
     "cell validation rejects malformed mixed and non-drillable selectors",
     {
-      root <- jdv_register(frame(list(list(a = 1))), mode = "paged")
+      root <- register_view(frame(list(list(a = 1))), mode = "paged")
       on.exit(close(root), add = TRUE)
       bad <- list(
         list(),
@@ -171,10 +171,10 @@ local({
         rpc(root, list(), "object/children")$error$code,
         "unsupported"
       )
-      plain <- jdv_register(data.frame(a = 1))
+      plain <- register_view(data.frame(a = 1))
       on.exit(close(plain), add = TRUE)
       expect_identical(rpc(plain, list(cell()))$error$code, "invalid_request")
-      tree <- jdv_register(list(1))
+      tree <- register_view(list(1))
       on.exit(close(tree), add = TRUE)
       expect_identical(
         rpc(tree, list(c(index(), cell())))$error$code,
@@ -212,7 +212,7 @@ local({
         },
         assign.env = env
       )
-      root <- jdv_register(frame(list(env)))
+      root <- register_view(frame(list(env)))
       on.exit(close(root), add = TRUE)
       opened <- rpc(root, list(cell()))$result
       expect_identical(get(opened$view, state$entries)$tree_value, env)
@@ -237,7 +237,7 @@ local({
   test_that(
     "list extraction bypasses subset dispatch and cell counts toward path depth",
     {
-      root <- jdv_register(frame(I(list(list(answer = 42L)))))
+      root <- register_view(frame(I(list(list(answer = 42L)))))
       on.exit(close(root), add = TRUE)
       with_column_method("[", "AsIs", function(...) stop("must not dispatch"), {
         opened <- rpc(root, list(cell()))$result
@@ -250,7 +250,7 @@ local({
       for (i in seq_len(31)) {
         value <- list(value)
       }
-      deep <- jdv_register(frame(list(value)))
+      deep <- register_view(frame(list(value)))
       on.exit(close(deep), add = TRUE)
       path <- c(list(cell()), rep(list(index()), 31))
       opened <- rpc(deep, path)$result
@@ -262,7 +262,7 @@ local({
       stale <- deep
       stale$generation <- 2
       expect_identical(rpc(stale, list(cell()))$error$code, "stale_generation")
-      denied <- jdv_register(frame(structure(
+      denied <- register_view(frame(structure(
         list(1),
         class = c("unknown", "AsIs")
       )))
@@ -276,7 +276,7 @@ local({
       data.frame(x = 1:2),
       class = c("cell_bad_frame", "data.frame")
     )
-    root <- jdv_register(frame(column), mode = "paged")
+    root <- register_view(frame(column), mode = "paged")
     on.exit(close(root), add = TRUE)
     with_column_method(
       "[",
@@ -293,7 +293,7 @@ local({
     {
       old <- options(jdv.max_tables = 64)
       on.exit(options(old), add = TRUE)
-      root <- jdv_register(frame(list(list(data.frame(x = 1), list(7)))))
+      root <- register_view(frame(list(list(data.frame(x = 1), list(7)))))
       on.exit(close(root), add = TRUE)
       branch <- rpc(root, list(cell()))$result
       grid <- rpc(branch, list(index()))$result
@@ -322,8 +322,8 @@ local({
     on.exit(options(old), add = TRUE)
     for (value in list(list(1), data.frame(x = 1))) {
       for (fail in c(FALSE, TRUE)) {
-        anchor <- jdv_register(list(anchor = 1))
-        parent <- jdv_register(frame(list(value)))
+        anchor <- register_view(list(anchor = 1))
+        parent <- register_view(frame(list(value)))
         on.exit(close(parent), add = TRUE)
         namespace <- asNamespace("jdv")
         original <- get(".jdv_json_encode", namespace)
@@ -344,7 +344,7 @@ local({
           lockBinding(".jdv_json_encode", namespace)
         })
         expect_identical(!is.null(response$error), fail)
-        messages <- lapply(state$outbox, .jdv_json_parse)
+        messages <- lapply(state$queue, .jdv_json_parse)
         expect_equal(
           sum(vapply(
             messages,
@@ -358,7 +358,7 @@ local({
           expect_length(get(parent$id, state$entries)$children, 0)
         }
         close(parent)
-        state$outbox <- list()
+        .jdv_queue_reset()
       }
     }
   })
@@ -443,6 +443,8 @@ local({
               expect_true(file.exists(path))
             }
             wait(ready)
+            # Earlier tests may have left an embedded session behind.
+            jdv_disconnect()
             anchor <- jdv_view(list(anchor = 1), title = NULL)
             value <- if (grid_child) data.frame(x = 1) else list(1)
             parent <- jdv_view(
@@ -472,13 +474,15 @@ local({
               # Replacing the child queues an eviction for a notification-only RPC.
               replacement <- .jdv_tree_register_child(list(2), parent_entry)
             } else if (scenario == "send_failure") {
-              state$outbox <- list(original(
+              oversized <- original(
                 list(
                   method = "view/closed",
                   params = list(view = "fault", reason = strrep("x", 6000))
                 ),
                 limit = 10000
-              ))
+              )
+              state$queue <- list(oversized)
+              state$queue_bytes <- nchar(oversized, type = "bytes")
             }
             file.create(control)
             wait(result, TRUE)
@@ -536,11 +540,11 @@ local({
                 Filter(function(x) identical(x$id, "close"), messages),
                 1
               )[[1]]$result$closed)
-              expect_length(state$outbox, 0)
+              expect_length(state$queue, 0)
             } else if (scenario %in% c("send_failure", "disconnect")) {
               expect_false(isTRUE(.jdv_transport_status()$connected))
               expect_length(ls(state$entries), 0)
-              expect_length(state$outbox, 0)
+              expect_length(state$queue, 0)
             }
           },
           finally = cleanup()

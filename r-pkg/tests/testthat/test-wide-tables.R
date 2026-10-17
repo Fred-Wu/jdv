@@ -18,7 +18,7 @@ test_that("wide tables register and explicitly selected columns render", {
 
   for (mode in c("paged", "snapshot")) {
     for (table in list(frame, matrix)) {
-      registered <- jdv_register(table, mode = mode)
+      registered <- register_view(table, mode = mode)
       descriptor <- .jdv_json_parse(
         registered$open,
         limit = .jdv_max_message_bytes()
@@ -83,7 +83,7 @@ test_that("wide cell grids and descriptor message limits are honored", {
     row.names = .set_row_names(1L)
   )
   expect_query_code(
-    jdv_register(descriptor_table, mode = "paged"),
+    register_view(descriptor_table, mode = "paged"),
     "limit_exceeded"
   )
 })

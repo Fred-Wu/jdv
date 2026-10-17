@@ -62,7 +62,7 @@ test_that("wide packed data-frame missingness fails before slicing cells", {
       class = "data.frame",
       row.names = seq_len(64L)
     )
-    registered <- jdv_register(source, mode = "paged")
+    registered <- register_view(source, mode = "paged")
     expect_identical(registered$open != "", TRUE)
     entry <- .jdv_state$entries[[registered$id]]
     expect_identical(entry$holder$limits$work_bytes, as.integer(7 * 1024^2))
@@ -175,7 +175,7 @@ test_that("public registration and RPC encode with unset work options", {
   ))
   on.exit(restore(), add = TRUE)
 
-  paged <- jdv_register(data.frame(value = 1:100), mode = "paged")
+  paged <- register_view(data.frame(value = 1:100), mode = "paged")
   expect_true(nzchar(paged$open))
   paged_reply <- jdv_budget_test_rpc(
     "table/rows",
@@ -185,7 +185,7 @@ test_that("public registration and RPC encode with unset work options", {
   expect_identical(paged_reply$result$data$row_index, list(1L, 2L))
 
   .jdv_close_internal(paged$id)
-  snapshot <- jdv_register(data.frame(value = 1:3), mode = "auto")
+  snapshot <- register_view(data.frame(value = 1:3), mode = "auto")
   expect_identical(
     jsonlite::fromJSON(snapshot$open, simplifyVector = FALSE)$params$mode,
     "snapshot"
@@ -200,7 +200,7 @@ test_that("one-row wide double packed matrices return a shape summary", {
 
   packed <- matrix(as.double(seq_len(20000L)), nrow = 1L)
   source <- data.frame(packed = I(packed))
-  registered <- jdv_register(source, mode = "paged")
+  registered <- register_view(source, mode = "paged")
   reply <- jdv_budget_test_rpc(
     "table/rows",
     list(view = registered$id, generation = 1, offset = 0, limit = 1)
@@ -241,12 +241,12 @@ test_that("page sizing bounds packed matrix and frame row slicing", {
     for (source in sources) {
       counter$slices <- 0L
       expect_error(
-        jdv_register(source, mode = "snapshot"),
+        register_view(source, mode = "snapshot"),
         class = "jdv_query_error"
       )
       expect_identical(counter$slices, 0L)
 
-      registered <- jdv_register(source, mode = "auto")
+      registered <- register_view(source, mode = "auto")
       descriptor <- jsonlite::fromJSON(
         registered$open,
         simplifyVector = FALSE
@@ -339,7 +339,7 @@ test_that("oversized Date and factor formatter results remain limit errors", {
     }
     run_case <- function() {
       with_column_method("[", case$class, subset_method, {
-        registered <- jdv_register(
+        registered <- register_view(
           data.frame(value = case$value),
           mode = "paged"
         )
@@ -408,7 +408,7 @@ test_that("compound filter masks fail before full columns are materialized", {
   restore <- jdv_budget_test_options(list(jdv.max_work_bytes = 256 * 1024))
   on.exit(restore(), add = TRUE)
 
-  registered <- jdv_register(
+  registered <- register_view(
     data.frame(value = seq_len(10000L)),
     mode = "paged"
   )

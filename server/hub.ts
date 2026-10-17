@@ -793,10 +793,8 @@ export class Hub {
         return;
       }
     }
-    if (
-      pending.method === "object/open" && isObject(message.result) &&
-      currentGeneration
-    ) this.#registerChildView(session, pending.view, message.result);
+    // A child view is registered from R's view/open notification, which is
+    // sent before this response; the response never creates or revives a view.
     const closedCurrentView = pending.method === "view/close" &&
       currentGeneration &&
       isObject(message.result) && message.result.closed === true &&
@@ -843,27 +841,6 @@ export class Hub {
       this.#closeCachedView(session, pending.view, pending.generation);
     }
     this.#scheduleDrain(session);
-  }
-
-  #registerChildView(
-    session: RSession,
-    parentView: string,
-    descriptor: JsonObject,
-  ): void {
-    const parent = session.views.get(parentView);
-    if (
-      !parent || !isObject(descriptor) ||
-      (descriptor.kind !== "grid" && descriptor.kind !== "tree") ||
-      descriptor.view === parentView
-    ) return;
-    if (descriptor.parent !== undefined && descriptor.parent !== parentView) {
-      return;
-    }
-    const notification: JsonObject = {
-      method: "view/open",
-      params: descriptor,
-    };
-    this.#registerView(session, notification, parentView);
   }
 
   #registerView(

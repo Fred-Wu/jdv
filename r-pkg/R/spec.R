@@ -81,20 +81,18 @@
 #' forward-only Arrow grid views through the optional nanoarrow producer
 #' adapter. Their `mode` and `collation` arguments do not change sequential
 #' access. Other objects use the tree view by default. `jdv_register()` returns
-#' `list(id, open, notifications)`. `open` is a `view/open` JSON message.
-#' `notifications` is a character vector of pending notification JSON messages,
-#' or `character()` when there are none. The embedding host must deliver each
-#' notification in vector order before delivering `open`. Registration does not
-#' open a socket.
+#' `list(id, generation)` and does not open a socket. Its `view/open` message,
+#' and every other notification, is queued; see the Notification delivery
+#' section.
 #'
 #' `jdv_view()` registers the view, opens the local connection on first use
-#' (unless [jdv_connect()] already did), sends `hello` on a new connection,
-#' pending `view/closed` notifications, then `view/open`, and returns the view
-#' id invisibly. The R API keeps the return-list key `id` and generates opaque
-#' view id strings such as `v-1`; consumers must not interpret the id format.
-#' Its default title is the deparsed expression passed as `x`; an explicit
-#' `title = NULL` creates a new slot. `jdv_close(id)` closes one view, and
-#' `jdv_close()` closes every view. Closing the last view stops a connection
+#' (unless [jdv_connect()] already did), sends `hello` on a new connection, then
+#' the queued notifications (`view/closed`, then `view/open`), and returns the
+#' view id invisibly. The R API keeps the return-list key `id` and generates
+#' opaque view id strings such as `v-1`; consumers must not interpret the id
+#' format. Its default title is the deparsed expression passed as `x`; an
+#' explicit `title = NULL` creates a new slot. `jdv_close(id)` closes one view,
+#' and `jdv_close()` closes every view. Closing the last view stops a connection
 #' that [jdv_view()] opened implicitly, after the close notification and any
 #' pending response are sent; a persistent connection from [jdv_connect()] stays
 #' open until [jdv_disconnect()]. [jdv_rpc()] with no argument or `NULL`
@@ -211,19 +209,20 @@
 #' ```
 #'
 #' The example omits schema entries for brevity. `view/open` has no request id
-#' and is not passed to `jdv_rpc()`; it is returned by `jdv_register()` for the
-#' host to deliver. `kind` is `grid`; `access` is `snapshot` or `random` for
-#' Snapshot or Paged mode, respectively; and `encoding` is `r-json`. Every
-#' descriptor includes all six `capabilities` fields shown for a grid: `seek`,
-#' `sort`, `filter`, and `known_total` are `true`; `next` is `false`. Grid
-#' `children` is `true` if and only if at least one column has
-#' `drillable: true`. Tree descriptors use `kind: "tree"`, `access: "random"`,
-#' `encoding: "r-json"`, and capabilities `seek: true`, `sort: false`,
-#' `filter: false`, `known_total: true`, `next: false`, and `children: true`.
-#' Tree descriptors omit grid-only fields (`mode`, `nrow`, `ncol`, `row_names`,
-#' `columns`, and `data`). A tree descriptor includes an empty `path` at its
-#' root. A child descriptor may include `parent`, the parent view id. `title`
-#' and `class` are optional; when present, `class` is an array of strings.
+#' and is not passed to `jdv_rpc()`; `jdv_register()` queues it for the host to
+#' deliver (see the Notification delivery section). `kind` is `grid`; `access`
+#' is `snapshot` or `random` for Snapshot or Paged mode, respectively; and
+#' `encoding` is `r-json`. Every descriptor includes all six `capabilities`
+#' fields shown for a grid: `seek`, `sort`, `filter`, and `known_total` are
+#' `true`; `next` is `false`. Grid `children` is `true` if and only if at least
+#' one column has `drillable: true`. Tree descriptors use `kind: "tree"`,
+#' `access: "random"`, `encoding: "r-json"`, and capabilities `seek: true`,
+#' `sort: false`, `filter: false`, `known_total: true`, `next: false`, and
+#' `children: true`. Tree descriptors omit grid-only fields (`mode`, `nrow`,
+#' `ncol`, `row_names`, `columns`, and `data`). A tree descriptor includes an
+#' empty `path` at its root. A child descriptor may include `parent`, the parent
+#' view id. `title` and `class` are optional; when present, `class` is an array
+#' of strings.
 #'
 #' | Descriptor field                                                   | Grid                                     | Tree                         |
 #' | ------------------------------------------------------------------ | ---------------------------------------- | ---------------------------- |
@@ -662,7 +661,7 @@
 #'
 #' | Method            | Direction        | Kind         | Result                                                                             |
 #' | ----------------- | ---------------- | ------------ | ---------------------------------------------------------------------------------- |
-#' | `view/open`       | R/host to viewer | Notification | Descriptor and, for Snapshot, all column payloads. Returned by `jdv_register()`.   |
+#' | `view/open`       | R/host to viewer | Notification | Descriptor and, for Snapshot, all column payloads. Queued by `jdv_register()`.     |
 #' | `view/schema`     | Host to R        | Request      | Current dimensions and schema.                                                     |
 #' | `stream/next`     | Host to R        | Request      | One forward-only Arrow IPC page and cursor metadata.                               |
 #' | `table/rows`      | Host to R        | Request      | One selected page from a Paged view.                                               |
@@ -769,10 +768,14 @@
 #' `object/open` resolves the selected value once, holding that captured value
 #' in the new view. A path that cannot be resolved returns `unavailable`;
 #' malformed paths return `invalid_request`, missing views return
-#' `view_not_found`, and old generations return `stale_generation`. The returned
-#' child descriptor is the direct `view/open.params` descriptor. A tree child
-#' starts a new root with an empty path; the descriptor may identify its parent
-#' with `parent`. The limit is 32 live descendant views total per root, counting
+#' `view_not_found`, and old generations return `stale_generation`. The result
+#' is the child's `view/open.params` descriptor, but the child is registered by
+#' the `view/open` notification that precedes the response (see the Notification
+#' delivery section); a host must not create or revive a view from the response,
+#' and may use it only to find the child. If building the response fails, the
+#' child is closed and no `view/open` for it is sent. A tree child starts a new
+#' root with an empty path; the descriptor may identify its parent with
+#' `parent`. The limit is 32 live descendant views total per root, counting
 #' nested tree and grid views across all levels. Closing a child releases its
 #' slot for a later child view. Closing, replacing, or evicting a parent closes
 #' its descendants; each cascaded child emits `view/closed` with
@@ -852,18 +855,68 @@
 #'
 #' When the registry evicts its oldest active table to satisfy `jdv.max_tables`,
 #' it queues a `view/closed` notification with the evicted `view` and
-#' `generation`. `jdv_register()` drains pending notifications into its
-#' `notifications` return value. An embedding host delivers them in order before
-#' the associated new `view/open`. Explicit host-initiated `view/close` returns
-#' a successful close result without a separate `view/closed` notification.
-#' `jdv_close()` sends `view/closed` for views it closes. Re-registering an
-#' active title replaces the same id with a newer generation; after close or
-#' eviction, a later registration uses a new id and generation 1.
+#' `generation`. The notification enters the session queue ahead of the
+#' associated new `view/open`, and the host delivers both in queue order.
+#' Explicit host-initiated `view/close` returns a successful close result
+#' without a separate `view/closed` notification. `jdv_close()` queues
+#' `view/closed` for views it closes. Re-registering an active title replaces
+#' the same id with a newer generation; after close or eviction, a later
+#' registration uses a new id and generation 1.
 #'
 #' Closing a tree view removes its child views recursively. A `view/closed`
 #' notification for a child closed by its parent includes
 #' `reason: "parent_closed"`; the explicitly closed root has no such reason.
 #' Replacing or evicting a parent has the same descendant-close effect.
+#'
+#'
+#' @section Notification delivery:
+#'
+#'
+#' Every notification R produces for a session (`hello`, `view/open`,
+#' `view/closed`, including evictions, cascaded child closes, and the
+#' `view/open` of a child created by `object/open`) goes through one first-in,
+#' first-out queue. A session has exactly one owner of that queue, reported by
+#' the `owner` field of [jdv_connection()]:
+#'
+#' - `"transport"`: the built-in connection, whenever one is open. The
+#'   transport sends the queue itself, before the response of the request being
+#'   handled, so a notification always precedes the response that caused it.
+#' - `"embedded"`: a session started by [jdv_register()] when no connection
+#'   exists. `hello` is queued before the first `view/open`. The host takes the
+#'   queue with [jdv_notifications()], which returns the JSON messages in order.
+#'   The session remains after its last view closes so the final `view/closed`
+#'   can be taken, and ends with [jdv_disconnect()].
+#'
+#' Ownership never moves implicitly: [jdv_connect()] and [jdv_view()] fail while
+#' an embedded session exists, and [jdv_notifications()] fails while the
+#' transport owns the queue. An embedding host delivers every message taken by
+#' [jdv_notifications()] in order, and delivers the string returned by
+#' [jdv_rpc()] only after the notifications produced by that request. For
+#' `object/open`, the child's `view/open` is in the queue when [jdv_rpc()]
+#' returns, so the host registers the child from that notification and uses the
+#' response only to find it. [jdv_rpc()] never embeds notifications in its
+#' response.
+#'
+#' ```r
+#' id <- jdv_register(mtcars)$id
+#' deliver(jdv_notifications())         # hello, view/open
+#' response <- jdv_rpc(request_json)    # a request received from the viewer
+#' deliver(jdv_notifications())         # notifications caused by the request
+#' deliver(response)
+#' ```
+#'
+#' The queue is bounded by `jdv.notification_max_messages` (default
+#' `max(256, 4 * jdv.max_tables)`) and `jdv.notification_max_bytes` (default
+#' `4 * jdv.max_message_bytes`), both read when the session starts. Messages are
+#' never dropped silently: when adding one would exceed a limit, the session
+#' ends, every view is closed, the queue is discarded, and
+#' `last_disconnect_reason` of [jdv_connection()] becomes
+#' `"notification_overflow"`. The operation that overflowed fails with an error
+#' of class `jdv_notification_overflow`. With the built-in transport the queue
+#' is normally sent right away, so an overflow mostly affects an embedded host
+#' that does not take its notifications. A host must treat the end of a session,
+#' seen as an error from R or as `last_disconnect_reason`, as the loss of every
+#' view.
 #'
 #'
 #' @section `hello`:
@@ -905,12 +958,13 @@
 #' message semantics.
 #'
 #' The transport emits `hello` as part of connection setup. It is not a method
-#' handled by `jdv_rpc()` and is not returned by `jdv_register()`. The R process
-#' does not retry a failed request or automatically reconnect after disconnect;
-#' the next [jdv_view()] or [jdv_connect()] call starts a new session. A
-#' disconnect closes every active registry entry and releases its retained table
-#' data. Entries created with `jdv_register()` share this process-wide registry
-#' and are cleared by a viewer disconnect as well.
+#' handled by `jdv_rpc()`. For an embedded session it is the first message in
+#' the queue; see the Notification delivery section. The R process does not
+#' retry a failed request or automatically reconnect after disconnect; the next
+#' [jdv_view()] or [jdv_connect()] call starts a new session. A disconnect
+#' closes every active registry entry and releases its retained table data.
+#' Entries created with `jdv_register()` share this process-wide registry and
+#' are cleared by a viewer disconnect as well.
 #'
 #' `params.limits` reports the effective limits captured for this connection:
 #' the maximum complete frames and bytes read in one receive callback, pending

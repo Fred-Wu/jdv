@@ -774,7 +774,7 @@ Deno.test("tree child requests route typed paths and distinguish stale views", a
   hub.close();
 });
 
-Deno.test("object/open caches and broadcasts a child even after browser detach", async () => {
+Deno.test("object/open registers the child from R's notification even after browser detach", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
   hub.acceptR(connection);
@@ -806,31 +806,31 @@ Deno.test("object/open caches and broadcasts a child even after browser detach",
   assertEquals((request.params as JsonRecord).mode, "snapshot");
   assertEquals((request.params as JsonRecord).collation, "locale");
   hub.detach(browser);
-  connection.inject({
-    id: request.id,
-    result: {
-      view: "child-grid",
-      generation: 1,
-      kind: "grid",
-      access: "snapshot",
-      encoding: "r-json",
-      mode: "snapshot",
-      title: "Child table",
-      parent: "tree-root",
-      nrow: 1,
-      ncol: 1,
-      columns: [{ position: 0, name: "x", type: "integer" }],
-      capabilities: {
-        seek: true,
-        sort: true,
-        filter: true,
-        known_total: true,
-        next: false,
-        children: false,
-      },
-      data: { columns: ["x"], rows: [[5]] },
+  const descriptor = {
+    view: "child-grid",
+    generation: 1,
+    kind: "grid",
+    access: "snapshot",
+    encoding: "r-json",
+    mode: "snapshot",
+    title: "Child table",
+    parent: "tree-root",
+    nrow: 1,
+    ncol: 1,
+    columns: [{ position: 0, name: "x", type: "integer" }],
+    capabilities: {
+      seek: true,
+      sort: true,
+      filter: true,
+      known_total: true,
+      next: false,
+      children: false,
     },
-  });
+    data: { columns: ["x"], rows: [[5]] },
+  };
+  // R announces the child with a notification ahead of the response.
+  connection.inject(notification("view/open", descriptor));
+  connection.inject({ id: request.id, result: descriptor });
   await new Promise((resolve) => setTimeout(resolve, 10));
   const lateBrowser = new MemoryBrowser();
   hub.attach(lateBrowser);
@@ -860,6 +860,119 @@ Deno.test("object/open caches and broadcasts a child even after browser detach",
     ((childClosed.message as JsonRecord).params as JsonRecord).reason,
     "parent_closed",
   );
+  hub.close();
+});
+
+const CHILD_DESCRIPTOR = {
+  view: "child-grid",
+  generation: 1,
+  kind: "grid",
+  access: "snapshot",
+  encoding: "r-json",
+  mode: "snapshot",
+  parent: "tree-root",
+  nrow: 1,
+  ncol: 1,
+  columns: [{ position: 0, name: "x", type: "integer" }],
+  capabilities: {
+    seek: true,
+    sort: true,
+    filter: true,
+    known_total: true,
+    next: false,
+    children: false,
+  },
+  data: { columns: ["x"], rows: [[5]] },
+};
+
+async function openChildRequest(
+  hub: Hub,
+  connection: MemoryConnection,
+  browser: MemoryBrowser,
+  session: string,
+): Promise<JsonRecord> {
+  openTree(connection, "tree-root");
+  await browser.nextMessage((message) => message.type === "view/open");
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "open-child",
+    session,
+    method: "object/open",
+    params: {
+      view: "tree-root",
+      generation: 1,
+      path: [{ type: "index", index: 2 }],
+    },
+  });
+  return await connection.nextWrite(0);
+}
+
+function viewIds(browser: MemoryBrowser): string[] {
+  const session = (browser.messages[0].sessions as JsonRecord[])[0];
+  return (session.views as JsonRecord[]).map((item) =>
+    (item.params as JsonRecord).view as string
+  );
+}
+
+Deno.test("an object/open response alone never registers a child view", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-84-1", limits: { ...DEFAULT_LIMITS } },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  const request = await openChildRequest(hub, connection, browser, "r-84-1");
+  connection.inject({ id: request.id, result: CHILD_DESCRIPTOR });
+  const delivered = await browser.nextMessage((message) =>
+    message.type === "response" && message.id === "open-child"
+  );
+  assertEquals((delivered.result as JsonRecord).view, "child-grid");
+  const lateBrowser = new MemoryBrowser();
+  hub.attach(lateBrowser);
+  assertEquals(viewIds(lateBrowser), ["tree-root"]);
+  assertEquals(
+    browser.messages.some((message) =>
+      message.type === "view/open" &&
+      ((message.message as JsonRecord).params as JsonRecord).view ===
+        "child-grid"
+    ),
+    false,
+  );
+  hub.close();
+});
+
+Deno.test("a closed child is not revived by a late object/open response", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: { protocol: 1, session: "r-85-1", limits: { ...DEFAULT_LIMITS } },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  const request = await openChildRequest(hub, connection, browser, "r-85-1");
+  connection.inject(notification("view/open", CHILD_DESCRIPTOR));
+  connection.inject(notification("view/closed", {
+    view: "child-grid",
+    generation: 1,
+  }));
+  await browser.nextMessage((message) =>
+    message.type === "view/closed" &&
+    ((message.message as JsonRecord).params as JsonRecord).view === "child-grid"
+  );
+  connection.inject({ id: request.id, result: CHILD_DESCRIPTOR });
+  await browser.nextMessage((message) =>
+    message.type === "response" && message.id === "open-child"
+  );
+  const lateBrowser = new MemoryBrowser();
+  hub.attach(lateBrowser);
+  assertEquals(viewIds(lateBrowser), ["tree-root"]);
   hub.close();
 });
 

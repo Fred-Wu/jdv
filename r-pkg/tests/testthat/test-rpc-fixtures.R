@@ -121,9 +121,9 @@ test_that("public RPC round-trips every shared query fixture", {
     with_query_methods({
       for (case in fixture$cases) {
         x <- query_fixture_table(case$columns)
-        paged <- jdv_register(x, mode = "paged")
+        paged <- register_view(x, mode = "paged")
         registrations <- c(registrations, paged$id)
-        snapshot <- jdv_register(x, mode = "snapshot")
+        snapshot <- register_view(x, mode = "snapshot")
         registrations <- c(registrations, snapshot$id)
 
         open_message <- jsonlite::fromJSON(

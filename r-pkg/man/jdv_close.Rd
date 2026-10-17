@@ -22,5 +22,7 @@ stops the transport event source and closes the local connection, after the
 \code{view/closed} notification (and, for a viewer request, its response) has been
 sent. A persistent connection from \code{\link[=jdv_connect]{jdv_connect()}} stays open. A close
 requested from inside a viewer callback is safe; native source cleanup is
-deferred until the callback returns.
+deferred until the callback returns. In an embedded session (see
+\code{\link[=jdv_notifications]{jdv_notifications()}}) the \code{view/closed} messages are queued for the host and
+the session stays open.
 }

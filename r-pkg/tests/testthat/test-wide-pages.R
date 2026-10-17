@@ -31,7 +31,7 @@ test_that("omitted and null cols return every wide matrix column", {
     ncol = column_count,
     dimnames = list(NULL, sprintf("v%05d", seq_len(column_count)))
   )
-  registered <- jdv_register(values, mode = "paged")
+  registered <- register_view(values, mode = "paged")
 
   omitted <- wide_page_rpc(registered)
   expect_null(omitted$error)

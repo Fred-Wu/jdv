@@ -39,6 +39,9 @@ def main():
 
             send(1, "table/rows", 4)
             closed = read()
+            while closed.get("method") == "view/open":
+                # Another view registered after the first one announces itself.
+                closed = read()
             assert closed.get("method") == "view/closed", closed
             header = read()
             assert header["id"] == 1, header

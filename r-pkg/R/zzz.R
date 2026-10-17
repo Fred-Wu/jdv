@@ -17,7 +17,8 @@
   .Call(C_jdv_arrow_cleanup)
   .jdv_transport_remove_task_callback()
   .jdv_close_internal(notify = FALSE)
-  .jdv_state$outbox <- list()
+  .jdv_queue_reset()
+  .jdv_state$embedded <- FALSE
   .jdv_state$transport <- NULL
   .jdv_state$transport_hello <- FALSE
   .jdv_state$transport_persistent <- FALSE

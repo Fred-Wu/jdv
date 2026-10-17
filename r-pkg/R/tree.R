@@ -617,18 +617,7 @@
     }
     parent$children <- c(parent$children, id)
   }
-  notifications <- if (length(.jdv_state$outbox)) {
-    unname(unlist(.jdv_state$outbox, use.names = FALSE))
-  } else {
-    character()
-  }
-  .jdv_state$outbox <- list()
-  list(
-    id = id,
-    open = open,
-    descriptor = descriptor,
-    notifications = notifications
-  )
+  list(id = id, generation = generation, open = open, descriptor = descriptor)
 }
 
 .jdv_tree_register_child <- function(
@@ -651,8 +640,7 @@
   }
   source <- jdv_source(x)
   if (identical(source$kind, "tree")) {
-    registered <- .jdv_tree_register(source$data, parent = parent)
-    return(.jdv_tree_restore_notifications(registered))
+    return(.jdv_tree_register(source$data, parent = parent))
   }
 
   old_pins <- .jdv_state$eviction_pins
@@ -662,12 +650,13 @@
     cursor <- cursor$parent_entry
   }
   on.exit(.jdv_state$eviction_pins <- old_pins, add = TRUE)
-  registered <- if (is.null(collation)) {
-    jdv_register(x, mode = mode)
-  } else {
-    jdv_register(x, mode = mode, collation = collation)
-  }
-  registered <- .jdv_tree_restore_notifications(registered)
+  registered <- .jdv_register_internal(
+    x,
+    title = NULL,
+    mode = mode,
+    collation = collation,
+    emit = FALSE
+  )
   child <- get(registered$id, envir = .jdv_state$entries, inherits = FALSE)
   committed <- FALSE
   on.exit(
@@ -707,13 +696,6 @@
   }
   parent$children <- c(parent$children, child$id)
   committed <- TRUE
-  registered
-}
-
-# Child RPC responses carry descriptors separately from lifecycle notifications.
-.jdv_tree_restore_notifications <- function(registered) {
-  .jdv_state$outbox <- c(as.list(registered$notifications), .jdv_state$outbox)
-  registered$notifications <- character()
   registered
 }
 

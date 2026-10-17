@@ -26,9 +26,12 @@ omitted, \code{getOption("jdv.collation", "C")} supplies the default; an
 explicit argument takes precedence.}
 }
 \value{
-A list containing a view \code{id}, its \code{open} JSON message, and any pending
-transport notifications as JSON strings in \code{notifications} (for example, a
-\code{view/closed} message emitted when the registry evicts an older view).
+A list with the view \code{id} and its \code{generation}. The \code{view/open} message, and
+any \code{view/closed} messages emitted when the registry evicts or replaces older
+views, are queued as notifications. With an embedded host, take them with
+\code{\link[=jdv_notifications]{jdv_notifications()}}; see \link{jdv_spec} for the delivery order. If the
+notification queue overflows, the session ends, every view is closed, and the
+call fails.
 }
 \description{
 Register an object for a transport-independent viewer

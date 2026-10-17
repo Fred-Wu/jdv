@@ -161,7 +161,7 @@
     return(invisible(NULL))
   }
   .jdv_close_internal(notify = FALSE)
-  .jdv_state$outbox <- list()
+  .jdv_queue_reset()
   .jdv_state$transport <- NULL
   .jdv_state$transport_limits <- NULL
   .jdv_state$transport_hello <- FALSE
@@ -198,10 +198,15 @@
   } else {
     "closing"
   }
-  live <- !identical(state, "disconnected")
+  owner <- .jdv_session_owner()
+  if (identical(owner, "embedded")) {
+    state <- "embedded"
+  }
+  live <- state %in% c("connected", "closing")
   list(
     state = state,
     connected = identical(state, "connected"),
+    owner = owner,
     persistent = live && isTRUE(.jdv_state$transport_persistent),
     address = if (identical(state, "connected")) {
       .jdv_state$transport_address
@@ -217,10 +222,9 @@
     identical(.jdv_state$transport_epoch, epoch) &&
       !isTRUE(.jdv_state$unloading) &&
       !is.null(.jdv_state$transport) &&
-      length(.jdv_state$outbox)
+      length(.jdv_state$queue)
   ) {
-    notifications <- unname(unlist(.jdv_state$outbox, use.names = FALSE))
-    .jdv_state$outbox <- list()
+    notifications <- .jdv_queue_take()
     # The native callback accepts one response; send lifecycle JSONL first.
     failed <- function(error) {
       if (identical(.jdv_state$transport_epoch, epoch)) {
@@ -344,6 +348,7 @@
   .jdv_assert_active()
   .jdv_transport_housekeeping()
   .jdv_assert_active()
+  .jdv_assert_not_embedded()
   status <- .jdv_transport_status()
   if (!is.null(status) && isTRUE(status$connected)) {
     return(invisible(NULL))
@@ -386,9 +391,8 @@
     .jdv_transport_disconnect(epoch)
     stop("The viewer transport disconnected during setup.", call. = FALSE)
   }
-  # A new connection must not inherit close events from an offline registry.
-  # Subsequent registration queues this connection's eviction notifications.
-  .jdv_state$outbox <- list()
+  # A new connection must not inherit notifications from an earlier session.
+  .jdv_queue_reset(.jdv_notification_limits())
   .jdv_state$transport_limits <- list(
     max_receive_frames = status$max_receive_frames,
     max_receive_bytes = status$max_receive_bytes,
@@ -416,7 +420,7 @@
   invisible(NULL)
 }
 
-.jdv_hello <- function() {
+.jdv_hello <- function(limits = .jdv_state$transport_limits) {
   .jdv_state$session_counter <- .jdv_state$session_counter + 1L
   list(
     method = "hello",
@@ -426,7 +430,7 @@
       pid = as.integer(Sys.getpid()),
       r_version = as.character(getRversion()),
       jdv_version = as.character(utils::packageVersion("jdv")),
-      limits = .jdv_state$transport_limits
+      limits = limits
     )
   )
 }
@@ -446,6 +450,29 @@
   invisible(NULL)
 }
 
+# Send everything queued to the connected transport, closing it on failure.
+.jdv_transport_flush <- function() {
+  status <- .jdv_transport_status()
+  if (is.null(status) || !isTRUE(status$connected)) {
+    return(invisible(NULL))
+  }
+  messages <- .jdv_queue_take()
+  if (!length(messages)) {
+    return(invisible(NULL))
+  }
+  tryCatch(
+    .jdv_transport_send(messages),
+    error = function(error) {
+      if (!isTRUE(.jdv_state$unloading)) {
+        try(.jdv_transport_close("send_failed"), silent = TRUE)
+        .jdv_transport_housekeeping()
+      }
+      stop(error)
+    }
+  )
+  invisible(NULL)
+}
+
 #' Manage the local jdv viewer connection
 #'
 #' [jdv_connect()] opens the local viewer connection and sends `hello`
@@ -460,16 +487,21 @@
 #' @return
 #' A list describing the connection after the call. [jdv_connect()] and
 #' [jdv_disconnect()] return it invisibly. The members are:
-#'   * `state`: `"disconnected"`, `"connected"`, or `"closing"` (the connection
-#'     is closed and its cleanup is still pending).
+#'   * `state`: `"disconnected"`, `"embedded"` (an embedded notification session
+#'     is active; see [jdv_notifications()]), `"connected"`, or `"closing"` (the
+#'     connection is closed and its cleanup is still pending).
 #'   * `connected`: `TRUE` only in the `"connected"` state.
+#'   * `owner`: who receives notifications: `"none"`, `"embedded"` (the host
+#'     calls [jdv_notifications()]), or `"transport"` (the built-in viewer
+#'     connection).
 #'   * `persistent`: `TRUE` for an explicit connection made or promoted by
 #'     [jdv_connect()].
 #'   * `address`: the connected address, or `NULL`.
 #'   * `last_disconnect_reason`: a short string for the most recent disconnect,
 #'     or `NULL` if there has been none. Values include `"disconnect"`
 #'     ([jdv_disconnect()]), `"last_view_closed"`, `"peer_closed"`,
-#'     `"send_failed"`, `"register_failed"`, and `"unloaded"`.
+#'     `"send_failed"`, `"register_failed"`, `"notification_overflow"`, and
+#'     `"unloaded"`.
 #' @details
 #' A connection opened implicitly by [jdv_view()] is closed after its last view
 #' is closed. Calling [jdv_connect()] while such a connection is open promotes
@@ -481,9 +513,12 @@
 #'
 #' A peer disconnect, a failed send, or package unload ends the session. jdv
 #' does not reconnect automatically, and views are not resent to a later
-#' session. [jdv_disconnect()] is idempotent and also releases views registered
-#' with [jdv_register()]. [jdv_connection()] has no side effects: it neither
-#' connects nor polls.
+#' session. [jdv_disconnect()] is idempotent and also ends an embedded session,
+#' releasing views registered with [jdv_register()] and discarding its queued
+#' notifications. Ownership never moves implicitly: while an embedded session is
+#' active, [jdv_connect()] and [jdv_view()] fail until [jdv_disconnect()] is
+#' called. [jdv_connection()] has no side effects: it neither connects nor
+#' polls.
 #' @export
 jdv_connect <- function(address = NULL) {
   .jdv_assert_active()
@@ -498,6 +533,7 @@ jdv_connect <- function(address = NULL) {
   }
   .jdv_transport_housekeeping()
   .jdv_assert_active()
+  .jdv_assert_not_embedded()
   status <- .jdv_transport_status()
   if (!is.null(status) && isTRUE(status$pending_cleanup)) {
     stop(
@@ -523,16 +559,8 @@ jdv_connect <- function(address = NULL) {
   .jdv_transport_connect(address)
   .jdv_assert_active()
   .jdv_state$transport_persistent <- TRUE
-  tryCatch(
-    .jdv_transport_send(.jdv_json_encode(.jdv_hello())),
-    error = function(error) {
-      if (!isTRUE(.jdv_state$unloading)) {
-        try(.jdv_transport_close("send_failed"), silent = TRUE)
-        .jdv_transport_housekeeping()
-      }
-      stop(error)
-    }
-  )
+  .jdv_notify(.jdv_json_encode(.jdv_hello()))
+  .jdv_transport_flush()
   .jdv_state$transport_hello <- TRUE
   invisible(.jdv_connection_state())
 }
@@ -550,7 +578,11 @@ jdv_disconnect <- function() {
   .jdv_assert_active()
   # Release the registry now even if the native cleanup callback is deferred.
   .jdv_close_internal(notify = FALSE)
-  .jdv_state$outbox <- list()
+  .jdv_queue_reset()
+  if (isTRUE(.jdv_state$embedded) && is.null(.jdv_state$transport)) {
+    .jdv_state$embedded <- FALSE
+    .jdv_state$last_disconnect_reason <- "disconnect"
+  }
   invisible(.jdv_connection_state())
 }
 
@@ -559,6 +591,67 @@ jdv_disconnect <- function() {
 jdv_connection <- function() {
   .jdv_assert_active()
   .jdv_connection_state()
+}
+
+#' Take pending notifications for an embedding host
+#'
+#' An embedding host that drives [jdv_rpc()] itself owns the notification queue
+#' of an embedded session. The session starts with the first [jdv_register()]
+#' call made while no viewer connection exists, and queues `hello` before the
+#' first `view/open`. [jdv_notifications()] removes and returns everything
+#' queued so far, in the order the messages were produced. The session, and its
+#' queue, outlive the last view so that the final `view/closed` messages can be
+#' taken; [jdv_disconnect()] ends it.
+#'
+#' @return
+#' A character vector of JSON notification messages in FIFO order, one message
+#' per element and without a trailing newline. It is `character()` when nothing
+#' is queued, no session has been started, or the session has ended; the call
+#' never starts a session. Taking the messages hands delivery to the caller; the
+#' call is not an acknowledgement. It is an error when the built-in viewer
+#' connection owns the notifications, which are then sent by the transport.
+#' @details
+#' Every notification source uses the same queue: registration, closing,
+#' eviction when `jdv.max_tables` is reached, closing of child views together
+#' with their parent, and the `view/open` of a child created by `object/open`.
+#' Deliver the messages before the response of a request handled by [jdv_rpc()]
+#' in the same turn. A queue that outgrows `jdv.notification_max_messages`
+#' (default `max(256, 4 * jdv.max_tables)`) or `jdv.notification_max_bytes`
+#' (default `4 * jdv.max_message_bytes`), both read when the session starts,
+#' ends the session instead of discarding messages: every view is closed, the
+#' queue is dropped, `last_disconnect_reason` of [jdv_connection()] becomes
+#' `"notification_overflow"`, and the operation that overflowed it fails.
+#' @examples
+#' library(jdv)
+#' id <- jdv_register(mtcars)$id
+#' notifications <- jdv_notifications()
+#' length(notifications)
+#' response <- jdv_rpc(sprintf(
+#'   '{"id":1,"method":"view/close","params":{"view":"%s","generation":1}}',
+#'   id
+#' ))
+#' jdv_notifications()
+#' jdv_disconnect()
+#' @export
+jdv_notifications <- function() {
+  .jdv_assert_active()
+  if (identical(.jdv_session_owner(), "transport")) {
+    stop(
+      "The viewer connection owns the notifications; ",
+      "jdv_notifications() is only for an embedded session.",
+      call. = FALSE
+    )
+  }
+  if (!isTRUE(.jdv_state$embedded)) {
+    return(character())
+  }
+  messages <- if (length(.jdv_state$queue)) {
+    as.character(unlist(.jdv_state$queue, use.names = FALSE))
+  } else {
+    character()
+  }
+  .jdv_queue_reset()
+  messages
 }
 
 #' Open an object in the local jdv viewer
@@ -613,11 +706,13 @@ jdv_view <- function(
   if (missing(title)) {
     title <- deparse1(substitute(x))
   }
+  mode <- match.arg(mode)
+  collation <- if (missing(collation)) NULL else match.arg(collation)
   source <- jdv_source(x)
   x <- source$data
-  mode <- match.arg(mode)
   .jdv_transport_housekeeping()
   .jdv_assert_active()
+  .jdv_assert_not_embedded()
   status <- .jdv_transport_status()
   if (!is.null(status) && isTRUE(status$pending_cleanup)) {
     stop(
@@ -635,12 +730,11 @@ jdv_view <- function(
   had_entries <- length(ls(.jdv_state$entries, all.names = TRUE)) > 0L
   .jdv_transport_connect()
   .jdv_assert_active()
+  if (!isTRUE(.jdv_state$transport_hello)) {
+    .jdv_notify(.jdv_json_encode(.jdv_hello()))
+  }
   registered <- tryCatch(
-    if (missing(collation)) {
-      jdv_register(x, title = title, mode = mode)
-    } else {
-      jdv_register(x, title = title, mode = mode, collation = collation)
-    },
+    .jdv_register_internal(x, title, mode, collation),
     error = function(error) {
       if (!isTRUE(.jdv_state$unloading) && !was_connected && !had_entries) {
         try(.jdv_transport_close("register_failed"), silent = TRUE)
@@ -650,11 +744,7 @@ jdv_view <- function(
     }
   )
   .jdv_assert_active()
-  messages <- c(
-    if (!isTRUE(.jdv_state$transport_hello)) .jdv_json_encode(.jdv_hello()),
-    registered$notifications,
-    registered$open
-  )
+  messages <- .jdv_queue_take()
   registered_entry <- get(
     registered$id,
     envir = .jdv_state$entries,
@@ -691,7 +781,9 @@ jdv_view <- function(
 #' `view/closed` notification (and, for a viewer request, its response) has been
 #' sent. A persistent connection from [jdv_connect()] stays open. A close
 #' requested from inside a viewer callback is safe; native source cleanup is
-#' deferred until the callback returns.
+#' deferred until the callback returns. In an embedded session (see
+#' [jdv_notifications()]) the `view/closed` messages are queued for the host and
+#' the session stays open.
 #' @export
 jdv_close <- function(id = NULL) {
   .jdv_assert_active()
@@ -711,7 +803,11 @@ jdv_close <- function(id = NULL) {
     character()
   }
   if (!length(ids)) {
-    if (is.null(id) && !isTRUE(.jdv_state$transport_persistent)) {
+    if (
+      is.null(id) &&
+        !is.null(.jdv_state$transport) &&
+        !isTRUE(.jdv_state$transport_persistent)
+    ) {
       .jdv_assert_active()
       .jdv_transport_close("last_view_closed")
       .jdv_assert_active()
@@ -723,16 +819,11 @@ jdv_close <- function(id = NULL) {
   for (table_id in ids) {
     .jdv_close_internal(table_id, notify = TRUE)
   }
-  notifications <- if (length(.jdv_state$outbox)) {
-    unname(unlist(.jdv_state$outbox, use.names = FALSE))
-  } else {
-    character()
-  }
-  .jdv_state$outbox <- list()
   .jdv_assert_active()
   status <- .jdv_transport_status()
   send_error <- NULL
   if (!is.null(status) && isTRUE(status$connected)) {
+    notifications <- .jdv_queue_take()
     send_error <- tryCatch(
       {
         .jdv_transport_send(notifications)
@@ -751,8 +842,12 @@ jdv_close <- function(id = NULL) {
       .jdv_assert_active()
       .jdv_transport_close("last_view_closed")
     }
-  } else if (!length(ls(.jdv_state$entries, all.names = TRUE))) {
+  } else if (
+    !is.null(.jdv_state$transport) &&
+      !length(ls(.jdv_state$entries, all.names = TRUE))
+  ) {
     .jdv_state$transport <- NULL
+    .jdv_queue_reset()
   }
   if (inherits(send_error, "error")) {
     stop(send_error)

@@ -85,20 +85,18 @@ matrices register as grid views. Arrow Table and RecordBatchReader objects,
 forward-only Arrow grid views through the optional nanoarrow producer
 adapter. Their \code{mode} and \code{collation} arguments do not change sequential
 access. Other objects use the tree view by default. \code{jdv_register()} returns
-\code{list(id, open, notifications)}. \code{open} is a \code{view/open} JSON message.
-\code{notifications} is a character vector of pending notification JSON messages,
-or \code{character()} when there are none. The embedding host must deliver each
-notification in vector order before delivering \code{open}. Registration does not
-open a socket.
+\code{list(id, generation)} and does not open a socket. Its \code{view/open} message,
+and every other notification, is queued; see the Notification delivery
+section.
 
 \code{jdv_view()} registers the view, opens the local connection on first use
-(unless \code{\link[=jdv_connect]{jdv_connect()}} already did), sends \code{hello} on a new connection,
-pending \code{view/closed} notifications, then \code{view/open}, and returns the view
-id invisibly. The R API keeps the return-list key \code{id} and generates opaque
-view id strings such as \code{v-1}; consumers must not interpret the id format.
-Its default title is the deparsed expression passed as \code{x}; an explicit
-\code{title = NULL} creates a new slot. \code{jdv_close(id)} closes one view, and
-\code{jdv_close()} closes every view. Closing the last view stops a connection
+(unless \code{\link[=jdv_connect]{jdv_connect()}} already did), sends \code{hello} on a new connection, then
+the queued notifications (\code{view/closed}, then \code{view/open}), and returns the
+view id invisibly. The R API keeps the return-list key \code{id} and generates
+opaque view id strings such as \code{v-1}; consumers must not interpret the id
+format. Its default title is the deparsed expression passed as \code{x}; an
+explicit \code{title = NULL} creates a new slot. \code{jdv_close(id)} closes one view,
+and \code{jdv_close()} closes every view. Closing the last view stops a connection
 that \code{\link[=jdv_view]{jdv_view()}} opened implicitly, after the close notification and any
 pending response are sent; a persistent connection from \code{\link[=jdv_connect]{jdv_connect()}} stays
 open until \code{\link[=jdv_disconnect]{jdv_disconnect()}}. \code{\link[=jdv_rpc]{jdv_rpc()}} with no argument or \code{NULL}
@@ -214,19 +212,20 @@ A view descriptor is sent as a notification:
 }\if{html}{\out{</div>}}
 
 The example omits schema entries for brevity. \code{view/open} has no request id
-and is not passed to \code{jdv_rpc()}; it is returned by \code{jdv_register()} for the
-host to deliver. \code{kind} is \code{grid}; \code{access} is \code{snapshot} or \code{random} for
-Snapshot or Paged mode, respectively; and \code{encoding} is \code{r-json}. Every
-descriptor includes all six \code{capabilities} fields shown for a grid: \code{seek},
-\code{sort}, \code{filter}, and \code{known_total} are \code{true}; \code{next} is \code{false}. Grid
-\code{children} is \code{true} if and only if at least one column has
-\code{drillable: true}. Tree descriptors use \code{kind: "tree"}, \code{access: "random"},
-\code{encoding: "r-json"}, and capabilities \code{seek: true}, \code{sort: false},
-\code{filter: false}, \code{known_total: true}, \code{next: false}, and \code{children: true}.
-Tree descriptors omit grid-only fields (\code{mode}, \code{nrow}, \code{ncol}, \code{row_names},
-\code{columns}, and \code{data}). A tree descriptor includes an empty \code{path} at its
-root. A child descriptor may include \code{parent}, the parent view id. \code{title}
-and \code{class} are optional; when present, \code{class} is an array of strings.\tabular{lll}{
+and is not passed to \code{jdv_rpc()}; \code{jdv_register()} queues it for the host to
+deliver (see the Notification delivery section). \code{kind} is \code{grid}; \code{access}
+is \code{snapshot} or \code{random} for Snapshot or Paged mode, respectively; and
+\code{encoding} is \code{r-json}. Every descriptor includes all six \code{capabilities}
+fields shown for a grid: \code{seek}, \code{sort}, \code{filter}, and \code{known_total} are
+\code{true}; \code{next} is \code{false}. Grid \code{children} is \code{true} if and only if at least
+one column has \code{drillable: true}. Tree descriptors use \code{kind: "tree"},
+\code{access: "random"}, \code{encoding: "r-json"}, and capabilities \code{seek: true},
+\code{sort: false}, \code{filter: false}, \code{known_total: true}, \code{next: false}, and
+\code{children: true}. Tree descriptors omit grid-only fields (\code{mode}, \code{nrow},
+\code{ncol}, \code{row_names}, \code{columns}, and \code{data}). A tree descriptor includes an
+empty \code{path} at its root. A child descriptor may include \code{parent}, the parent
+view id. \code{title} and \code{class} are optional; when present, \code{class} is an array
+of strings.\tabular{lll}{
    Descriptor field \tab Grid \tab Tree \cr
    \code{view}, \code{generation}, \code{kind}, \code{access}, \code{encoding}, \code{capabilities} \tab Required \tab Required \cr
    \code{title} \tab Optional \tab Optional \cr
@@ -657,7 +656,7 @@ any output path detach the browser. Repeated close/detach is harmless.
 \section{Methods}{
 \tabular{llll}{
    Method \tab Direction \tab Kind \tab Result \cr
-   \code{view/open} \tab R/host to viewer \tab Notification \tab Descriptor and, for Snapshot, all column payloads. Returned by \code{jdv_register()}. \cr
+   \code{view/open} \tab R/host to viewer \tab Notification \tab Descriptor and, for Snapshot, all column payloads. Queued by \code{jdv_register()}. \cr
    \code{view/schema} \tab Host to R \tab Request \tab Current dimensions and schema. \cr
    \code{stream/next} \tab Host to R \tab Request \tab One forward-only Arrow IPC page and cursor metadata. \cr
    \code{table/rows} \tab Host to R \tab Request \tab One selected page from a Paged view. \cr
@@ -764,10 +763,14 @@ source references are released when the view closes.
 \code{object/open} resolves the selected value once, holding that captured value
 in the new view. A path that cannot be resolved returns \code{unavailable};
 malformed paths return \code{invalid_request}, missing views return
-\code{view_not_found}, and old generations return \code{stale_generation}. The returned
-child descriptor is the direct \code{view/open.params} descriptor. A tree child
-starts a new root with an empty path; the descriptor may identify its parent
-with \code{parent}. The limit is 32 live descendant views total per root, counting
+\code{view_not_found}, and old generations return \code{stale_generation}. The result
+is the child's \code{view/open.params} descriptor, but the child is registered by
+the \code{view/open} notification that precedes the response (see the Notification
+delivery section); a host must not create or revive a view from the response,
+and may use it only to find the child. If building the response fails, the
+child is closed and no \code{view/open} for it is sent. A tree child starts a new
+root with an empty path; the descriptor may identify its parent with
+\code{parent}. The limit is 32 live descendant views total per root, counting
 nested tree and grid views across all levels. Closing a child releases its
 slot for a later child view. Closing, replacing, or evicting a parent closes
 its descendants; each cascaded child emits \code{view/closed} with
@@ -847,18 +850,68 @@ it.
 
 When the registry evicts its oldest active table to satisfy \code{jdv.max_tables},
 it queues a \code{view/closed} notification with the evicted \code{view} and
-\code{generation}. \code{jdv_register()} drains pending notifications into its
-\code{notifications} return value. An embedding host delivers them in order before
-the associated new \code{view/open}. Explicit host-initiated \code{view/close} returns
-a successful close result without a separate \code{view/closed} notification.
-\code{jdv_close()} sends \code{view/closed} for views it closes. Re-registering an
-active title replaces the same id with a newer generation; after close or
-eviction, a later registration uses a new id and generation 1.
+\code{generation}. The notification enters the session queue ahead of the
+associated new \code{view/open}, and the host delivers both in queue order.
+Explicit host-initiated \code{view/close} returns a successful close result
+without a separate \code{view/closed} notification. \code{jdv_close()} queues
+\code{view/closed} for views it closes. Re-registering an active title replaces
+the same id with a newer generation; after close or eviction, a later
+registration uses a new id and generation 1.
 
 Closing a tree view removes its child views recursively. A \code{view/closed}
 notification for a child closed by its parent includes
 \code{reason: "parent_closed"}; the explicitly closed root has no such reason.
 Replacing or evicting a parent has the same descendant-close effect.
+}
+
+\section{Notification delivery}{
+
+
+Every notification R produces for a session (\code{hello}, \code{view/open},
+\code{view/closed}, including evictions, cascaded child closes, and the
+\code{view/open} of a child created by \code{object/open}) goes through one first-in,
+first-out queue. A session has exactly one owner of that queue, reported by
+the \code{owner} field of \code{\link[=jdv_connection]{jdv_connection()}}:
+\itemize{
+\item \code{"transport"}: the built-in connection, whenever one is open. The
+transport sends the queue itself, before the response of the request being
+handled, so a notification always precedes the response that caused it.
+\item \code{"embedded"}: a session started by \code{\link[=jdv_register]{jdv_register()}} when no connection
+exists. \code{hello} is queued before the first \code{view/open}. The host takes the
+queue with \code{\link[=jdv_notifications]{jdv_notifications()}}, which returns the JSON messages in order.
+The session remains after its last view closes so the final \code{view/closed}
+can be taken, and ends with \code{\link[=jdv_disconnect]{jdv_disconnect()}}.
+}
+
+Ownership never moves implicitly: \code{\link[=jdv_connect]{jdv_connect()}} and \code{\link[=jdv_view]{jdv_view()}} fail while
+an embedded session exists, and \code{\link[=jdv_notifications]{jdv_notifications()}} fails while the
+transport owns the queue. An embedding host delivers every message taken by
+\code{\link[=jdv_notifications]{jdv_notifications()}} in order, and delivers the string returned by
+\code{\link[=jdv_rpc]{jdv_rpc()}} only after the notifications produced by that request. For
+\code{object/open}, the child's \code{view/open} is in the queue when \code{\link[=jdv_rpc]{jdv_rpc()}}
+returns, so the host registers the child from that notification and uses the
+response only to find it. \code{\link[=jdv_rpc]{jdv_rpc()}} never embeds notifications in its
+response.
+
+\if{html}{\out{<div class="sourceCode r">}}\preformatted{id <- jdv_register(mtcars)$id
+deliver(jdv_notifications())         # hello, view/open
+response <- jdv_rpc(request_json)    # a request received from the viewer
+deliver(jdv_notifications())         # notifications caused by the request
+deliver(response)
+}\if{html}{\out{</div>}}
+
+The queue is bounded by \code{jdv.notification_max_messages} (default
+\code{max(256, 4 * jdv.max_tables)}) and \code{jdv.notification_max_bytes} (default
+\code{4 * jdv.max_message_bytes}), both read when the session starts. Messages are
+never dropped silently: when adding one would exceed a limit, the session
+ends, every view is closed, the queue is discarded, and
+\code{last_disconnect_reason} of \code{\link[=jdv_connection]{jdv_connection()}} becomes
+\code{"notification_overflow"}. The operation that overflowed fails with an error
+of class \code{jdv_notification_overflow}. With the built-in transport the queue
+is normally sent right away, so an overflow mostly affects an embedded host
+that does not take its notifications. A host must treat the end of a session,
+seen as an error from R or as \code{last_disconnect_reason}, as the loss of every
+view.
 }
 
 \section{\code{hello}}{
@@ -899,12 +952,13 @@ the handshake with \code{unsupported}; it must not continue with incompatible
 message semantics.
 
 The transport emits \code{hello} as part of connection setup. It is not a method
-handled by \code{jdv_rpc()} and is not returned by \code{jdv_register()}. The R process
-does not retry a failed request or automatically reconnect after disconnect;
-the next \code{\link[=jdv_view]{jdv_view()}} or \code{\link[=jdv_connect]{jdv_connect()}} call starts a new session. A
-disconnect closes every active registry entry and releases its retained table
-data. Entries created with \code{jdv_register()} share this process-wide registry
-and are cleared by a viewer disconnect as well.
+handled by \code{jdv_rpc()}. For an embedded session it is the first message in
+the queue; see the Notification delivery section. The R process does not
+retry a failed request or automatically reconnect after disconnect; the next
+\code{\link[=jdv_view]{jdv_view()}} or \code{\link[=jdv_connect]{jdv_connect()}} call starts a new session. A disconnect
+closes every active registry entry and releases its retained table data.
+Entries created with \code{jdv_register()} share this process-wide registry and
+are cleared by a viewer disconnect as well.
 
 \code{params.limits} reports the effective limits captured for this connection:
 the maximum complete frames and bytes read in one receive callback, pending

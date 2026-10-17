@@ -69,6 +69,7 @@ const COLUMN_WIDTH = 180;
 const ROW_WIDTH = 86;
 const knownSessions = new Map();
 const knownTables = new Map();
+const tableWaiters = new Map();
 const arrowPageCache = createArrowPageCache();
 let selected = null;
 let nextWindowFrame = 0;
@@ -284,7 +285,41 @@ function addTable(session, message) {
     cacheUse: ++cacheUseClock,
   });
   renderLists();
+  const waiters = tableWaiters.get(key);
+  if (waiters) {
+    tableWaiters.delete(key);
+    for (const wake of waiters) wake();
+  }
   if (replaceSelected) openView(session, descriptor);
+}
+
+// A child view is registered from R's view/open notification, which precedes
+// the object/open response. Return its record, waiting briefly if the
+// notification has not been processed yet.
+async function announcedTable(session, view, generation, timeoutMs = 2000) {
+  const key = `${session}\0${view}`;
+  const lookup = () => {
+    const record = knownTables.get(key);
+    return record?.descriptor.generation === generation ? record : null;
+  };
+  const found = lookup();
+  if (found) return found;
+  await new Promise((resolve) => {
+    const waiters = tableWaiters.get(key) ?? [];
+    const wake = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      const current = tableWaiters.get(key)?.filter((item) => item !== wake);
+      if (current?.length) tableWaiters.set(key, current);
+      else tableWaiters.delete(key);
+      resolve();
+    }, timeoutMs);
+    waiters.push(wake);
+    tableWaiters.set(key, waiters);
+  });
+  return lookup();
 }
 
 function arrowPageKey(session, view, generation, page) {
@@ -941,11 +976,28 @@ async function openChild(state, path) {
   try {
     const response = await promise;
     if (!isActiveView(state)) return;
-    const descriptor = response?.result;
+    const reply = response?.result;
+    if (
+      typeof reply?.view !== "string" ||
+      !Number.isSafeInteger(reply.generation)
+    ) {
+      throw new Error("R returned an invalid child view reply.");
+    }
+    // The response only identifies the child; its view/open notification
+    // registered it, and a child closed meanwhile is never reopened here.
+    const record = await announcedTable(
+      state.session,
+      reply.view,
+      reply.generation,
+    );
+    if (!isActiveView(state)) return;
+    const descriptor = record?.descriptor;
+    if (!descriptor) {
+      throw new Error("The child view is no longer open.");
+    }
     if (!viewSupport(descriptor)) {
       throw new Error("R returned an invalid child view descriptor.");
     }
-    addTable(state.session, { method: "view/open", params: descriptor });
     if (descriptor.kind === "tree") {
       openTree(state.session, descriptor, state);
     } else {

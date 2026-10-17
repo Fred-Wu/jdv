@@ -37,7 +37,7 @@ test_that(
     value <- rep("x", n)
     value[[hidden]] <- strrep("z", 1024^2)
 
-    registered <- jdv_register(data.frame(value = value), mode = "auto")
+    registered <- register_view(data.frame(value = value), mode = "auto")
     expect_identical(mode_safety_rpc_json(registered$open)$params$mode, "paged")
   }
 )
@@ -50,7 +50,7 @@ test_that("auto row estimates include compact zero-column row indices", {
     class = "data.frame",
     row.names = c(NA_integer_, -800000000L)
   )
-  registered <- jdv_register(x, mode = "auto")
+  registered <- register_view(x, mode = "auto")
   expect_identical(mode_safety_rpc_json(registered$open)$params$mode, "paged")
   reply <- mode_safety_rpc_call(
     "table/rows",
@@ -70,9 +70,9 @@ test_that("auto falls back when only snapshot row names exceed the budget", {
 
   x <- data.frame(value = 1)
   rownames(x) <- strrep("row", 700)
-  expect_error(jdv_register(x, mode = "snapshot"), class = "jdv_query_error")
+  expect_error(register_view(x, mode = "snapshot"), class = "jdv_query_error")
 
-  registered <- jdv_register(x, mode = "auto")
+  registered <- register_view(x, mode = "auto")
   descriptor <- mode_safety_rpc_json(registered$open)$params
   expect_identical(descriptor$mode, "paged")
   expect_null(descriptor$row_names)
@@ -88,7 +88,7 @@ test_that(
 
     value <- I(list(list(payload = strrep("x", 10000))))
     expect_error(
-      jdv_register(data.frame(value = value), mode = "snapshot"),
+      register_view(data.frame(value = value), mode = "snapshot"),
       class = "jdv_query_error"
     )
   }
@@ -112,7 +112,7 @@ test_that("oversized user channel results fail the request without downgrade", {
       }
     },
     {
-      registered <- jdv_register(x, mode = "paged")
+      registered <- register_view(x, mode = "paged")
       reply <- mode_safety_rpc_call(
         "table/rows",
         list(view = registered$id, generation = 1, offset = 0, limit = 2)
@@ -141,7 +141,7 @@ test_that("deterministic registration leaves the R random state untouched", {
   )
   set.seed(2026)
   before <- .Random.seed
-  registered <- jdv_register(
+  registered <- register_view(
     data.frame(number = seq_len(100), text = rep("value", 100)),
     mode = "auto"
   )

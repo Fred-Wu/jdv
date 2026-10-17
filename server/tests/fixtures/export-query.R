@@ -7,6 +7,7 @@ fixture_path <- args[[1L]]
 output_path <- args[[2L]]
 fixture <- jsonlite::fromJSON(fixture_path, simplifyVector = FALSE)
 register <- getFromNamespace("jdv_register", "jdv")
+notifications <- getFromNamespace("jdv_notifications", "jdv")
 
 column_from_fixture <- function(column) {
   values <- column$values
@@ -96,8 +97,9 @@ xtfrm.query_record <- function(x, ...) as.numeric(x)
 xtfrm.query_reverse_numeric <- function(x, ...) -as.numeric(unclass(x))
 
 export_table <- function(x) {
-  result <- register(x, mode = "snapshot")
-  jsonlite::fromJSON(result$open, simplifyVector = FALSE)
+  register(x, mode = "snapshot")
+  messages <- notifications()
+  jsonlite::fromJSON(messages[[length(messages)]], simplifyVector = FALSE)
 }
 
 snapshots <- lapply(fixture$cases, function(case) {

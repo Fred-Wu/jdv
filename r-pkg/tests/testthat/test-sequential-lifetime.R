@@ -15,8 +15,8 @@ sequential_lifetime_next <- function(view, max_rows = 2L) {
 }
 
 with_sequential_lifetime <- function(code) {
-  outbox <- .jdv_state$outbox
-  on.exit(.jdv_state$outbox <- outbox, add = TRUE)
+  saved_session <- save_notification_session()
+  on.exit(restore_notification_session(saved_session), add = TRUE)
   with_arrow_owner(function(owner) {
     on.exit(.jdv_close_internal(notify = FALSE), add = TRUE)
     code(owner)
@@ -28,7 +28,7 @@ test_that(
   {
     with_sequential_lifetime(function(owner) {
       fetched <- 0L
-      view <- jdv_register(owner$stream(
+      view <- register_view(owner$stream(
         lengths = 7L,
         hook = function(event) if (event == "next") fetched <<- fetched + 1L
       ))
@@ -52,9 +52,9 @@ test_that(
 
 test_that("replacement and eviction release registry-owned carried batches", {
   with_sequential_lifetime(function(owner) {
-    old <- jdv_register(owner$stream(lengths = 7L), title = "lifetime-slot")
+    old <- register_view(owner$stream(lengths = 7L), title = "lifetime-slot")
     expect_s3_class(sequential_lifetime_next(old), "jdv_binary_packet")
-    replacement <- jdv_register(
+    replacement <- register_view(
       owner$stream(lengths = 7L),
       title = "lifetime-slot"
     )
@@ -71,9 +71,9 @@ test_that("replacement and eviction release registry-owned carried batches", {
 
     options_before <- options(jdv.max_tables = 1L)
     on.exit(options(options_before), add = TRUE)
-    evicted <- jdv_register(owner$stream(lengths = 7L))
+    evicted <- register_view(owner$stream(lengths = 7L))
     expect_s3_class(sequential_lifetime_next(evicted), "jdv_binary_packet")
-    retained <- jdv_register(owner$stream(lengths = 7L))
+    retained <- register_view(owner$stream(lengths = 7L))
     expect_false(exists(evicted$id, .jdv_state$entries, inherits = FALSE))
     expect_equal(owner$counts(), c(3, 3, 3, 1))
     .jdv_close_internal(retained$id, notify = FALSE)
@@ -85,7 +85,7 @@ test_that(
   "closing a tree parent releases a captured sequential child's carry",
   {
     with_sequential_lifetime(function(owner) {
-      parent <- jdv_register(list(child = owner$stream(lengths = 7L)))
+      parent <- register_view(list(child = owner$stream(lengths = 7L)))
       opened <- .jdv_json_parse(jdv_rpc(.jdv_json_encode(list(
         id = "lifetime-child",
         method = "object/open",
@@ -115,10 +115,10 @@ test_that(
 
 test_that("get_next may close another carried stream without releasing inside the producer", {
   with_sequential_lifetime(function(owner) {
-    other <- jdv_register(owner$stream(lengths = 7L))
+    other <- register_view(owner$stream(lengths = 7L))
     expect_s3_class(sequential_lifetime_next(other), "jdv_binary_packet")
     during <- NULL
-    active <- jdv_register(owner$stream(
+    active <- register_view(owner$stream(
       lengths = 7L,
       hook = function(event) {
         if (event == "next") {
@@ -141,7 +141,7 @@ test_that("get_next close or replacement cannot publish bytes from an obsolete r
   with_sequential_lifetime(function(owner) {
     view <- NULL
     during <- NULL
-    view <- jdv_register(owner$stream(
+    view <- register_view(owner$stream(
       lengths = 7L,
       hook = function(event) {
         if (event == "next") {
@@ -157,12 +157,12 @@ test_that("get_next close or replacement cannot publish bytes from an obsolete r
     expect_equal(owner$counts(), c(1, 1, 1, 0))
 
     replacement <- NULL
-    view <- jdv_register(
+    view <- register_view(
       owner$stream(
         lengths = 7L,
         hook = function(event) {
           if (event == "next") {
-            replacement <<- jdv_register(
+            replacement <<- register_view(
               list(current = TRUE),
               title = "lifetime-reentry"
             )

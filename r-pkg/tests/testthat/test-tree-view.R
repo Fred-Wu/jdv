@@ -1,8 +1,8 @@
 local({
   # Restore file-owned notification state even when a test fails.
   state <- .jdv_state
-  initial_outbox <- state$outbox
-  on.exit(state$outbox <- initial_outbox, add = TRUE)
+  initial_session <- save_notification_session()
+  on.exit(restore_notification_session(initial_session), add = TRUE)
 
   has_binding_api <- getRversion() >= "4.6.0"
 
@@ -20,7 +20,7 @@ local({
   test_that(
     "tree descriptors expose bounded typed children and captured values",
     {
-      root <- jdv_register(list(items = list(answer = 42L)))
+      root <- register_view(list(items = list(answer = 42L)))
       on.exit(.jdv_close_internal(root$id), add = TRUE)
       descriptor <- .jdv_json_parse(root$open)$params
       expect_identical(descriptor$kind, "tree")
@@ -66,7 +66,7 @@ local({
   )
 
   test_that("implicit tree classes match base R class semantics", {
-    root <- jdv_register(list(
+    root <- register_view(list(
       numeric = 1.5,
       matrix = matrix(1:4, nrow = 2),
       array = array(1:4, dim = c(2, 2, 1)),
@@ -97,7 +97,7 @@ local({
       length.jdvExplosive <- function(x) stop("length dispatched")
       format.jdvExplosive <- function(x, ...) stop("format dispatched")
       value <- structure(list(child = 1:2), class = "jdvExplosive")
-      root <- jdv_register(value)
+      root <- register_view(value)
       on.exit(.jdv_close_internal(root$id), add = TRUE)
       page <- tree_call(
         root,
@@ -142,7 +142,7 @@ local({
         },
         env
       )
-      env_view <- jdv_register(env)
+      env_view <- register_view(env)
       on.exit(.jdv_close_internal(env_view$id), add = TRUE)
       env_page <- tree_call(
         env_view,
@@ -189,7 +189,7 @@ local({
   )
 
   test_that("tree paging reads bounded ALTREP prefixes and distinguishes aliases from cycles", {
-    root <- jdv_register(as.integer(seq_len(100000000L)))
+    root <- register_view(as.integer(seq_len(100000000L)))
     on.exit(.jdv_close_internal(root$id), add = TRUE)
     page <- tree_call(
       root,
@@ -207,7 +207,7 @@ local({
     cyclic$left <- shared
     cyclic$right <- shared
     cyclic$self <- cyclic
-    env_view <- jdv_register(cyclic)
+    env_view <- register_view(cyclic)
     on.exit(.jdv_close_internal(env_view$id), add = TRUE)
     children <- tree_call(
       env_view,
@@ -233,7 +233,7 @@ local({
   test_that(
     "tree paths validate and parent close cascades to opened children",
     {
-      root <- jdv_register(list(child = list(value = 1L)))
+      root <- register_view(list(child = list(value = 1L)))
       empty_open <- tree_rpc(
         "object/open",
         list(view = root$id, generation = 1, path = list())
@@ -251,7 +251,7 @@ local({
         params = list(view = root$id, generation = 1)
       ))))
       expect_true(response$result$closed)
-      notification <- .jdv_json_parse(tail(.jdv_state$outbox, 1)[[1]])
+      notification <- .jdv_json_parse(tail(.jdv_state$queue, 1)[[1]])
       expect_identical(notification$method, "view/closed")
       expect_identical(notification$params$view, child_id)
       expect_identical(notification$params$reason, "parent_closed")
@@ -267,7 +267,7 @@ local({
       )
       expect_identical(stale$error$code, "view_not_found")
 
-      active_root <- jdv_register(list(value = 1L))
+      active_root <- register_view(list(value = 1L))
       on.exit(.jdv_close_internal(active_root$id), add = TRUE)
       too_deep <- rep(list(list(type = "index", index = 1)), 33)
       request <- list(
@@ -290,7 +290,7 @@ local({
 
   test_that("tree child labels preserve duplicate, empty, and absent names", {
     named <- structure(list(1L, 2L, 3L), names = c("same", "", "same"))
-    root <- jdv_register(named)
+    root <- register_view(named)
     on.exit(.jdv_close_internal(root$id), add = TRUE)
     page <- tree_call(
       root,
@@ -306,7 +306,7 @@ local({
       c(1, 2, 3)
     )
 
-    unnamed <- jdv_register(list(1L, 2L))
+    unnamed <- register_view(list(1L, 2L))
     on.exit(.jdv_close_internal(unnamed$id), add = TRUE)
     unnamed_page <- tree_call(
       unnamed,
@@ -326,7 +326,7 @@ local({
       long_name <- strrep("x", 1001)
       assign(long_name, 1L, envir = env)
       env$ordinary <- 2L
-      root <- jdv_register(env)
+      root <- register_view(env)
       on.exit(.jdv_close_internal(root$id), add = TRUE)
 
       page <- tree_call(
@@ -353,7 +353,7 @@ local({
     "pairlists and S4 storage are traversed without dispatching .Data",
     {
       pairs <- pairlist(NULL, 2L, named = 3L)
-      root <- jdv_register(pairs)
+      root <- register_view(pairs)
       on.exit(.jdv_close_internal(root$id), add = TRUE)
       page <- tree_call(
         root,
@@ -384,7 +384,7 @@ local({
       note_slot <- .Call(C_jdv_tree_child, object, "slot", 0, "note")
       expect_identical(note_slot$status, "value")
       expect_identical(note_slot$value, "safe")
-      s4_root <- jdv_register(object)
+      s4_root <- register_view(object)
       on.exit(.jdv_close_internal(s4_root$id), add = TRUE)
       s4_page <- tree_call(
         s4_root,
@@ -408,7 +408,7 @@ local({
   test_that("removed bindings and stale generations have distinct errors", {
     env <- new.env(parent = emptyenv())
     env$item <- 1L
-    root <- jdv_register(env)
+    root <- register_view(env)
     on.exit(.jdv_close_internal(root$id), add = TRUE)
     rm("item", envir = env)
     missing <- tree_rpc(
@@ -421,9 +421,9 @@ local({
     )
     expect_identical(missing$error$code, "unavailable")
 
-    old <- jdv_register(list(value = 1L), title = "tree-generation")
+    old <- register_view(list(value = 1L), title = "tree-generation")
     on.exit(.jdv_close_internal(old$id), add = TRUE)
-    current <- jdv_register(list(value = 2L), title = "tree-generation")
+    current <- register_view(list(value = 2L), title = "tree-generation")
     expect_identical(current$id, old$id)
     stale <- tree_rpc(
       "object/children",
@@ -433,7 +433,7 @@ local({
   })
 
   test_that("object-open uses the output limit instead of the request limit", {
-    root <- jdv_register(list(child = list(value = 1L)))
+    root <- register_view(list(child = list(value = 1L)))
     on.exit(.jdv_close_internal(root$id), add = TRUE)
     old_options <- options(jdv.max_request_bytes = 128)
     on.exit(options(old_options), add = TRUE)
@@ -458,7 +458,7 @@ local({
   })
 
   test_that("failed final object-open encoding rolls back the child", {
-    root <- jdv_register(list(child = list(value = 1L)))
+    root <- register_view(list(child = list(value = 1L)))
     on.exit(.jdv_close_internal(root$id), add = TRUE)
     namespace <- asNamespace("jdv")
     original <- get(".jdv_json_encode", namespace)
@@ -501,7 +501,7 @@ local({
   test_that(
     "the lineage caps live descendants at 32 and closes grid children",
     {
-      root <- jdv_register(list(
+      root <- register_view(list(
         nested = list(value = 1L),
         table = data.frame(x = 1L)
       ))

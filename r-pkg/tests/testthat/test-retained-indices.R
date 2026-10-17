@@ -79,7 +79,7 @@ test_that("generation replacement and view close release retained indices", {
   .jdv_close_internal()
   on.exit(.jdv_close_internal(), add = TRUE)
 
-  first <- jdv_register(
+  first <- register_view(
     data.frame(value = seq_len(20L)),
     title = "retained-index-lifecycle",
     mode = "paged"
@@ -90,7 +90,7 @@ test_that("generation replacement and view close release retained indices", {
   query_page(old_holder, limit = 1L, sort = list(list(col = 0L, desc = TRUE)))
   expect_false(is.null(old_holder$recent_indices))
 
-  second <- jdv_register(
+  second <- register_view(
     data.frame(value = seq_len(20L) + 100L),
     title = "retained-index-lifecycle",
     mode = "paged"

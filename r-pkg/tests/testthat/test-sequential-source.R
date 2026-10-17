@@ -13,7 +13,11 @@ test_that(
     local_mocked_bindings(
       .jdv_sequential_register = function(x, title = NULL) {
         seen[[length(seen) + 1L]] <<- x
-        list(id = "sequential-adapter")
+        list(
+          id = "sequential-adapter",
+          generation = 1,
+          open = '{"method":"view/open","params":{"view":"sequential-adapter"}}'
+        )
       },
       .package = "jdv"
     )
@@ -22,7 +26,7 @@ test_that(
       expect_identical(source$kind, "grid")
       expect_identical(source$access, "sequential")
       expect_identical(source$data, object)
-      expect_identical(jdv_register(object)$id, "sequential-adapter")
+      expect_identical(register_view(object)$id, "sequential-adapter")
     }
     expect_identical(seen, objects)
   }
@@ -36,7 +40,7 @@ test_that(
     frame <- polars::pl$DataFrame(id = 1:3, label = c("a", "b", "c"))
     expect_true(inherits(frame, "polars_data_frame"))
     expect_identical(jdv_source(frame)$access, "sequential")
-    view <- jdv_register(frame)
+    view <- register_view(frame)
     on.exit(.jdv_close_internal(view$id), add = TRUE)
     descriptor <- .jdv_json_parse(view$open)$params
     expect_identical(descriptor$kind, "grid")
@@ -65,7 +69,7 @@ test_that("registration calls get_schema without fetching even one batch", {
     source <- owner$stream(
       hook = function(event) if (event == "next") calls <<- calls + 1L
     )
-    view <- jdv_register(source)
+    view <- register_view(source)
     expect_identical(calls, 0L)
     expect_identical(owner$counts()[[3L]], 0L)
     expect_identical(.jdv_json_parse(view$open)$params$access, "sequential")
