@@ -1,6 +1,18 @@
 name: R CMD check
 
 "on":
+  push:
+    branches:
+      - main
+    paths:
+      - r-pkg/**
+      - .github/workflows/r-pkg-check.yaml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - r-pkg/**
+      - .github/workflows/r-pkg-check.yaml
   workflow_dispatch:
 
 concurrency:
