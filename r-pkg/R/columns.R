@@ -272,7 +272,9 @@ col_sort_key.POSIXlt <- function(x, collation = "C", ...) {
 }
 
 #' @export
-col_display.list <- function(x, ...) vapply(x, cell_preview, character(1L))
+col_display.list <- function(x, ...) {
+  vapply(x, cell_preview, character(1L), frame_cell = TRUE)
+}
 #' @export
 col_display.matrix <- function(x, ...) {
   if (ncol(x) > 100) {
@@ -405,10 +407,14 @@ col_is_na.data.frame <- function(x, ...) {
 }
 
 # A cell has a shared traversal budget; summaries avoid formatting huge objects.
-cell_preview <- function(x) {
+# A data.frame at the top level is normally one packed row of a data.frame
+# column, so it is previewed by its values. With `frame_cell`, it is a whole
+# cell of a list column and is summarized instead, as is a data.frame held in
+# a plain list.
+cell_preview <- function(x, frame_cell = FALSE) {
   budget <- new.env(parent = emptyenv())
   budget$remaining <- 100L
-  preview <- function(value, depth) {
+  preview <- function(value, depth, summarize_frame) {
     shape <- dim(value)
     size <- if (is.null(shape)) length(value) else prod(shape)
     if (
@@ -418,6 +424,7 @@ cell_preview <- function(x) {
         is.function(value) ||
         isS4(value) ||
         inherits(value, "integer64") ||
+        (is.data.frame(value) && summarize_frame) ||
         (is.object(value) &&
           is.list(value) &&
           !identical(class(value), "AsIs") &&
@@ -437,9 +444,18 @@ cell_preview <- function(x) {
       return("NULL")
     }
     if (is.list(value) && !inherits(value, "POSIXlt")) {
-      parts <- vapply(value, preview, character(1L), depth = depth + 1L)
+      parts <- vapply(
+        value,
+        preview,
+        character(1L),
+        depth = depth + 1L,
+        summarize_frame = !is.data.frame(value)
+      )
       if (!is.null(names(value))) {
-        parts <- paste0(substr(names(value), 1L, 1000L), " = ", parts)
+        # Only named elements get a prefix, as in a partially named list().
+        labels <- substr(names(value), 1L, 1000L)
+        named <- !is.na(labels) & nzchar(labels)
+        parts[named] <- paste0(labels[named], " = ", parts[named])
       }
       return(paste0("list(", paste(parts, collapse = ", "), ")"))
     }
@@ -450,7 +466,7 @@ cell_preview <- function(x) {
     }
     paste(substr(parts, 1L, 1000L), collapse = ", ")
   }
-  value <- preview(x, 0L)
+  value <- preview(x, 0L, frame_cell)
   if (nchar(value) > 1000L) paste0(substr(value, 1L, 999L), "\u2026") else value
 }
 

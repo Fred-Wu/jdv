@@ -1,10 +1,14 @@
 #' @noRd
 jdv_source <- function(x, ...) {
   dispatch <- x
+  # A classed matrix or data.frame without the base class is dispatched through
+  # a placeholder carrying the class vector plus the base class. The placeholder
+  # is an integer vector because R rejects some classes on a list (for example
+  # "factor").
   if (is.matrix(x) && !inherits(x, "matrix")) {
-    dispatch <- structure(list(), class = c(class(x), "matrix"))
+    dispatch <- structure(integer(), class = c(class(x), "matrix"))
   } else if (is.data.frame(x) && !inherits(x, "data.frame")) {
-    dispatch <- structure(list(), class = c(class(x), "data.frame"))
+    dispatch <- structure(integer(), class = c(class(x), "data.frame"))
   }
   UseMethod("jdv_source", dispatch)
 }

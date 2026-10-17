@@ -705,3 +705,117 @@ test_that(
     )
   }
 )
+
+test_that("data.frames held in list cells are summarized", {
+  frame <- mtcars[1:2, 1:2]
+  expect_identical(
+    cell_preview(list(frame, 1)),
+    "list(<data.frame [2 x 2]>, 1)"
+  )
+  expect_identical(
+    cell_preview(list(a = list(frame))),
+    "list(a = list(<data.frame [2 x 2]>))"
+  )
+  expect_identical(
+    cell_preview(frame, frame_cell = TRUE),
+    "<data.frame [2 x 2]>"
+  )
+  # A top-level data.frame without `frame_cell` is a packed row of values.
+  expect_identical(cell_preview(frame[1, ]), "list(mpg = 21, cyl = 6)")
+  # Lists and matrices keep their value previews.
+  expect_identical(cell_preview(matrix(1:4, 2L)), "1, 2, 3, 4")
+  expect_identical(cell_preview(list(a = 1, 2)), "list(a = 1, 2)")
+
+  x <- data.frame(id = 1:2)
+  x$l <- list(frame, matrix(1:4, 2L))
+  expected <- c("<data.frame [2 x 2]>", "1, 2, 3, 4")
+  out <- column_extract(x$l)
+  expect_identical(out$data$display, expected)
+  expect_true(out$schema$drillable)
+
+  snapshot <- snapshot_table(x)
+  expect_identical(snapshot$columns[[2L]]$data$display, expected)
+  expect_true(snapshot$schema[[2L]]$drillable)
+  holder <- paged_table(x)
+  expect_true(holder$schema[[2L]]$drillable)
+  expect_identical(
+    column_extract(holder$source[[2L]], channels = "display")$data$display,
+    expected
+  )
+  # A row of the packed parent keeps its value preview.
+  expect_identical(
+    column_extract(x)$data$display[[1L]],
+    "list(id = 1, l = list(<data.frame [2 x 2]>))"
+  )
+})
+
+test_that("classed factor matrices register as grids", {
+  codes <- factor(c("a", "b", "a", "b", "c", "c"))
+  make <- function(cls) {
+    x <- codes
+    dim(x) <- c(3L, 2L)
+    if (!identical(cls, "factor")) {
+      class(x) <- cls
+    }
+    x
+  }
+  source <- getFromNamespace("jdv_source", "jdv")
+  for (cls in list("factor", c("ordered", "factor"), c("foo", "factor"))) {
+    x <- make(cls)
+    expect_identical(source(x)$kind, "grid")
+    holder <- paged_table(x)
+    snapshot <- snapshot_table(x)
+    expect_identical(
+      vapply(holder$schema, function(s) s$type, character(1L)),
+      c("factor", "factor")
+    )
+    expect_identical(
+      column_extract(x[, 1L, drop = FALSE])$data$display,
+      c("a", "b", "a")
+    )
+    sort <- list(list(col = 0L, desc = TRUE))
+    expect_identical(query_indices(holder, sort), c(2L, 1L, 3L))
+    expect_identical(snapshot_indices(snapshot, sort), c(2L, 1L, 3L))
+    equals <- list(op = "text_equals", col = 0L, value = "a")
+    expect_identical(query_indices(holder, filter = equals), c(1L, 3L))
+    expect_identical(snapshot_indices(snapshot, filter = equals), c(1L, 3L))
+    members <- list(op = "in", col = 1L, values = list("c"))
+    expect_identical(query_indices(holder, filter = members), 2:3)
+    expect_identical(snapshot_indices(snapshot, filter = members), 2:3)
+  }
+  big <- factor(rep(c("x", "y"), 5000L))
+  dim(big) <- c(5000L, 2L)
+  expect_identical(paged_table(big)$nrow, 5000L)
+})
+
+test_that("classed matrix and data.frame dispatch is unchanged", {
+  source <- getFromNamespace("jdv_source", "jdv")
+  date_matrix <- structure(
+    matrix(c(19000, 19001, 19002, 19003), 2L),
+    class = "Date"
+  )
+  expect_identical(source(date_matrix)$kind, "grid")
+  expect_identical(source(date_matrix)$data, date_matrix)
+  frame <- structure(
+    list(a = 1:2),
+    class = c("foo", "data.frame"),
+    row.names = 1:2
+  )
+  expect_identical(source(frame)$kind, "grid")
+  expect_identical(source(mtcars)$kind, "grid")
+  expect_identical(source(list(1))$kind, "tree")
+
+  # User-defined methods are chosen by the class vector, ahead of the base one.
+  registerS3method(
+    "jdv_source",
+    "user_matrix",
+    function(x, ...) "user matrix method",
+    envir = asNamespace("jdv")
+  )
+  on.exit({
+    table <- get(".__S3MethodsTable__.", asNamespace("jdv"))
+    rm(list = "jdv_source.user_matrix", envir = table)
+  })
+  user <- structure(matrix(1:4, 2L), class = "user_matrix")
+  expect_identical(source(user), "user matrix method")
+})
