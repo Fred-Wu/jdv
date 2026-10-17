@@ -159,13 +159,14 @@ jdv_binding <- function(name, env = parent.frame()) {
 # Check an explicit binding before anything is registered: the binding must be
 # readable and hold exactly `x`.
 .jdv_binding_verify <- function(x, binding) {
+  # A malformed argument is reported the same way on every R version.
+  spec <- .jdv_binding_spec(binding)
   if (!.jdv_track_supported()) {
     query_error("unsupported", "Binding tracking requires R 4.6.0 or later.")
   }
   if (identical(jdv_source(x)$access, "sequential")) {
     query_error("unsupported", "Sequential views cannot be tracked.")
   }
-  spec <- .jdv_binding_spec(binding)
   ref <- .Call(C_jdv_weakref_make, spec$env)
   read <- .jdv_binding_read(ref, spec$name)
   if (!.jdv_binding_readable(read)) {

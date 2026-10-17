@@ -57,6 +57,7 @@ test_that("query errors carry their protocol code class", {
     jdv_register(mtcars, binding = list(name = 1, env = env)),
     class = "jdv_error_invalid_argument"
   )
+  skip_if(getRversion() < "4.6.0", "Binding tracking requires R 4.6.0.")
   env$x <- data.frame(a = 1)
   err <- expect_error(
     jdv_register(mtcars, binding = list(name = "x", env = env)),
