@@ -197,7 +197,8 @@
 #'       "filter": true,
 #'       "known_total": true,
 #'       "next": false,
-#'       "children": false
+#'       "children": false,
+#'       "refresh": true
 #'     },
 #'     "collation": "C",
 #'     "nrow": 100,
@@ -212,17 +213,18 @@
 #' and is not passed to `jdv_rpc()`; `jdv_register()` queues it for the host to
 #' deliver (see the Notification delivery section). `kind` is `grid`; `access`
 #' is `snapshot` or `random` for Snapshot or Paged mode, respectively; and
-#' `encoding` is `r-json`. Every descriptor includes all six `capabilities`
-#' fields shown for a grid: `seek`, `sort`, `filter`, and `known_total` are
-#' `true`; `next` is `false`. Grid `children` is `true` if and only if at least
-#' one column has `drillable: true`. Tree descriptors use `kind: "tree"`,
+#' `encoding` is `r-json`. Every descriptor includes all seven `capabilities`
+#' fields shown for a grid: `seek`, `sort`, `filter`, `known_total`, and
+#' `refresh` are `true`; `next` is `false`. Grid `children` is `true` if and
+#' only if at least one column has `drillable: true`. `refresh` tells the host
+#' that `view/refresh` is accepted. Tree descriptors use `kind: "tree"`,
 #' `access: "random"`, `encoding: "r-json"`, and capabilities `seek: true`,
-#' `sort: false`, `filter: false`, `known_total: true`, `next: false`, and
-#' `children: true`. Tree descriptors omit grid-only fields (`mode`, `nrow`,
-#' `ncol`, `row_names`, `columns`, and `data`). A tree descriptor includes an
-#' empty `path` at its root. A child descriptor may include `parent`, the parent
-#' view id. `title` and `class` are optional; when present, `class` is an array
-#' of strings.
+#' `sort: false`, `filter: false`, `known_total: true`, `next: false`,
+#' `children: true`, and `refresh: true`. Tree descriptors omit grid-only fields
+#' (`mode`, `nrow`, `ncol`, `row_names`, `columns`, and `data`). A tree
+#' descriptor includes an empty `path` at its root. A child descriptor may
+#' include `parent`, the parent view id. `title` and `class` are optional; when
+#' present, `class` is an array of strings.
 #'
 #' | Descriptor field                                                   | Grid                                     | Tree                         |
 #' | ------------------------------------------------------------------ | ---------------------------------------- | ---------------------------- |
@@ -417,13 +419,14 @@
 #' Sequential descriptors have `kind: "grid"`, `access: "sequential"`,
 #' `encoding: "arrow-ipc"`, `mode: "sequential"`, `nrow: null`, and a known
 #' `ncol`. Only the `next` capability is true; `seek`, `sort`, `filter`,
-#' `known_total`, and `children` are false. Registration calls the producer's
-#' `get_schema` but never `get_next`. It moves one exported Arrow stream into
-#' native ownership. Close, replacement, eviction, parent cascade, namespace
-#' unload, and R disconnection release the stream and any carried batch exactly
-#' once. A release callback may execute R code; registry identity and generation
-#' are rechecked before publishing its result. Releases requested inside an
-#' active producer callback are deferred until that callback has finished.
+#' `known_total`, `children`, and `refresh` are false. Registration calls the
+#' producer's `get_schema` but never `get_next`. It moves one exported Arrow
+#' stream into native ownership. Close, replacement, eviction, parent cascade,
+#' namespace unload, and R disconnection release the stream and any carried
+#' batch exactly once. A release callback may execute R code; registry identity
+#' and generation are rechecked before publishing its result. Releases requested
+#' inside an active producer callback are deferred until that callback has
+#' finished.
 #'
 #' `schema` contains the original logical Arrow schema recursively: `format`,
 #' `name`, `flags`, `metadata`, `metadata_encoding`, `children`, and
@@ -667,6 +670,7 @@
 #' | `table/rows`      | Host to R        | Request      | One selected page from a Paged view.                                               |
 #' | `object/children` | Host to R        | Request      | One page of children at a typed object path.                                       |
 #' | `object/open`     | Host to R        | Request      | Registers the captured value at a typed path as a child view.                      |
+#' | `view/refresh`    | Host to R        | Request      | Rebuilds a view from its captured value as the next generation of the same id.     |
 #' | `view/close`      | Host to R        | Request      | Closes one view generation.                                                        |
 #' | `view/closed`     | R to host        | Notification | Removes a closed, replaced, or evicted generation from the host cache.             |
 #' | `hello`           | R to host        | Notification | Announces protocol and runtime versions for a new connection.                      |
@@ -842,6 +846,66 @@
 #' `limit_exceeded`. Final JSON encoding can still shorten the page to protect
 #' against unusually large values or custom formatters. Snapshot registrations
 #' reject row requests with `unsupported` because their payload is host-cached.
+#'
+#'
+#' @section `view/refresh`:
+#'
+#'
+#' ```json
+#' {"id": "refresh-1", "method": "view/refresh",
+#'  "params": {"view": "v-1", "generation": 3}}
+#' ```
+#'
+#' Parameters are `view` and `generation`; other fields are rejected with
+#' `invalid_request`. The result is
+#' `{"view": "v-1", "previous_generation": 3, "generation": 4, "refreshed": true}`.
+#' A view is refreshable when its descriptor says `capabilities.refresh: true`.
+#'
+#' The view is rebuilt from the value captured when it was registered, not from
+#' any variable that held that value, so the rebuild shows the same data unless
+#' the captured object is a reference object that changed in place. The rebuild
+#' happens even if nothing changed and always advances the generation by one.
+#' The registration `mode` and `collation` are reused as they were requested: an
+#' `"auto"` mode is decided again (a grid may move between Snapshot and Paged,
+#' and the effective mode is never frozen), an explicit mode is kept, and an
+#' omitted collation reads `jdv.collation` again. A refresh of a titled view
+#' keeps its title association, so a later registration with that title
+#' continues from the refreshed generation.
+#'
+#' The replacement is built first. Only if the view, its generation, and (for a
+#' child view) its parent are still current is it published, as one step, under
+#' the same view id with the new generation. Then every descendant view is
+#' closed, deepest first, with `view/closed` notifications carrying
+#' `reason: "parent_closed"`, and the new `view/open` is queued. The old
+#' generation of the refreshed view itself gets no `view/closed`; its
+#' `view/open` successor replaces it. As for any request, these notifications
+#' precede the response. A refresh that fails, is interrupted, or finds the view
+#' stale leaves the generation and all children unchanged. A [jdv_close()] or
+#' [jdv_disconnect()] issued by user code while the replacement is being built
+#' keeps its effect: the closed view is not revived and the request fails with
+#' `view_not_found`. [jdv_register()], `object/open`, or another refresh
+#' attempted by user code during the rebuild fails with `in_use`. If the
+#' notification queue overflows, the session ends as described under
+#' Notification delivery.
+#'
+#' Refreshing a child view keeps it a child of the same parent generation (the
+#' descriptor repeats `parent`); it is refused with `view_not_found` once the
+#' parent was refreshed, replaced, or closed. Sequential views are not
+#' refreshable (`unsupported`) because a consumed stream cannot be rewound.
+#' Errors are `invalid_request`, `view_not_found`, `stale_generation`,
+#' `unsupported`, and the usual `limit_exceeded`, `r_error`, and `interrupted`.
+#'
+#' A hub that forwards requests treats a sent `view/refresh` specially. The
+#' successful refresh queues the new generation's `view/open` before its own
+#' response, and a hub normally discards pending requests of an older generation
+#' when it sees a newer `view/open`. The response of a sent `view/refresh` is
+#' not discarded for that reason, whether it reports success or failure, as long
+#' as the request was not timed out, cancelled, or lost to a disconnect. The hub
+#' checks that the response matches the request (same id, view, and requested
+#' generation as `previous_generation`, and a generation one higher on success).
+#' The `view/open` notifications alone update what is displayed; the response
+#' only confirms the operation and must never move the display back to an older
+#' generation.
 #'
 #'
 #' @section `view/close` and `view/closed`:
@@ -1155,7 +1219,7 @@
 #' | `stale_generation` | The request names a generation that is no longer active.                                                                                                        |
 #' | `view_not_found`   | The view id is missing or closed.                                                                                                                               |
 #' | `cache_changed`    | A host-only sequential append cursor differs from the observed tail; refresh the host page catalog before advancing.                                            |
-#' | `in_use`           | Another browser owns the sequential lease, a next request is still pending, or a reentrant operation cannot proceed.                                            |
+#' | `in_use`           | Another browser owns the sequential lease, a next request is still pending, or a reentrant operation cannot proceed, such as registering during a refresh.      |
 #' | `stream_failed`    | A sequential producer encountered a terminal failure; close or register a new stream to continue.                                                               |
 #' | `method_not_found` | No implementation exists for the requested method.                                                                                                              |
 #'

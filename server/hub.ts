@@ -245,6 +245,7 @@ export class Hub {
         "table/rows",
         "view/schema",
         "view/close",
+        "view/refresh",
         "object/children",
         "object/open",
         "stream/next",
@@ -288,6 +289,21 @@ export class Hub {
         id: browserId,
         code: "stale_generation",
         message: "The view is no longer current.",
+      });
+      return;
+    }
+    if (
+      method === "view/refresh" &&
+      Object.keys(params).some((name) =>
+        name !== "view" && name !== "generation"
+      )
+    ) {
+      client.send({
+        type: "error",
+        id: browserId,
+        session: session.id,
+        code: "invalid_request",
+        message: "view/refresh accepts only view and generation.",
       });
       return;
     }
@@ -737,8 +753,28 @@ export class Hub {
     this.#releaseRequestSlot(session, pending);
     const view = session.views.get(pending.view);
     const currentGeneration = view?.generation === pending.generation;
+    // A sent view/refresh is a generation-moving command: R queues the new
+    // view/open before the response, so the response is expected to arrive
+    // after its own generation was superseded. Cancel, timeout, close, and
+    // disconnect still end it (localEnded); it never touches display state.
+    const refreshAck = pending.method === "view/refresh";
     const deliver = !pending.localEnded && pending.state === "live" &&
-      currentGeneration && Date.now() < pending.deadline;
+      (currentGeneration || refreshAck) && Date.now() < pending.deadline;
+    if (refreshAck && !isRefreshResponse(pending, message)) {
+      if (deliver) {
+        pending.client?.send({
+          type: "error",
+          id: pending.browserId,
+          session: session.id,
+          code: "invalid_request",
+          message:
+            "R returned a refresh response that does not match the request.",
+        });
+      }
+      this.#finishPending(session, pending);
+      this.#scheduleDrain(session);
+      return;
+    }
     if (
       body && isObject(message.result) &&
       (message.result.view !== pending.view ||
@@ -868,7 +904,7 @@ export class Hub {
     if (previous) {
       this.#streamCache.drop(previous);
       this.#closeDescendants(session, viewId);
-      this.#cancelViewGeneration(session, viewId, previous.generation);
+      this.#cancelViewGeneration(session, viewId, previous.generation, true);
     }
     session.views.set(viewId, {
       generation,
@@ -993,9 +1029,16 @@ export class Hub {
     session: RSession,
     view: string,
     generation: number,
+    keepSentRefresh = false,
   ): void {
     for (const pending of session.pending.values()) {
       if (pending.view === view && pending.generation === generation) {
+        // Moving to a newer generation must not cancel the refresh that
+        // caused it; its response is checked when it arrives.
+        if (
+          keepSentRefresh && pending.method === "view/refresh" &&
+          pending.state === "live" && !pending.localEnded
+        ) continue;
         pending.client?.send({
           type: "error",
           id: pending.browserId,
@@ -1654,6 +1697,21 @@ function isTerminalResponse(message: JsonObject): boolean {
   if (hasResult === hasError) return false;
   if (hasResult) return true;
   return isObject(message.error) && typeof message.error.code === "string";
+}
+
+// A refresh response is an error object or the exact acknowledgement of the
+// request: same view, the requested generation as previous_generation, and the
+// next generation.
+function isRefreshResponse(
+  pending: PendingRequest,
+  message: JsonObject,
+): boolean {
+  if (Object.hasOwn(message, "error")) return true;
+  const result = message.result;
+  return isObject(result) && result.view === pending.view &&
+    result.previous_generation === pending.generation &&
+    result.generation === pending.generation + 1 &&
+    result.refreshed === true;
 }
 
 function validStreamProgress(

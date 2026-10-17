@@ -355,7 +355,7 @@ local({
           }
         } else if (scenario %in% c("cancel", "expired")) {
           2L
-        } else if (scenario == "cancel-id-reuse") {
+        } else if (scenario %in% c("cancel-id-reuse", "refresh")) {
           3L
         } else if (scenario == "invalid-cancel") {
           2L
@@ -389,6 +389,8 @@ local({
       list(scenario)
     } else if (scenario == "cancel-id-reuse") {
       list("reused", "reused", "followup")
+    } else if (scenario == "refresh") {
+      list(NULL, "refresh-1", "refresh-stale")
     } else {
       list(
         if (scenario == "maximum-frame") {
@@ -1173,6 +1175,24 @@ local({
     received <- with_mock_transport("invalid-cancel", data.frame(value = 11:13))
     expect_identical(received$responses[[1]]$error$code, "invalid_request")
     expect_identical(received$responses[[2]]$id, "must-survive")
+  })
+
+  test_that("view/refresh over the transport sends view/open before the ACK", {
+    skip_on_cran()
+    skip_if_not_installed("jsonlite")
+    skip_if_not_installed("callr")
+    received <- with_mock_transport("refresh", data.frame(value = 11:13))
+    expect_identical(received$responses[[1]]$method, "view/open")
+    expect_identical(received$responses[[1]]$params$generation, 2L)
+    expect_identical(
+      received$responses[[1]]$params$view,
+      received$open$params$view
+    )
+    expect_identical(received$responses[[2]]$id, "refresh-1")
+    expect_identical(received$responses[[2]]$result$previous_generation, 1L)
+    expect_identical(received$responses[[2]]$result$generation, 2L)
+    expect_true(received$responses[[2]]$result$refreshed)
+    expect_identical(received$responses[[3]]$error$code, "stale_generation")
   })
 
   test_that(

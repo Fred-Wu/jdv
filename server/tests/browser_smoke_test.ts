@@ -2620,3 +2620,382 @@ Deno.test({
     }
   },
 });
+
+function refreshCapabilities() {
+  return { ...gridCapabilities(), refresh: true };
+}
+
+async function respondToRefresh(
+  connection: Deno.Conn,
+  requests: Array<Record<string, unknown>>,
+  shutdown: { requested: boolean },
+  columns: Array<Record<string, unknown>>,
+): Promise<void> {
+  for await (const line of fixtureFrames(connection, shutdown)) {
+    const request = JSON.parse(line) as Record<string, unknown>;
+    if (typeof request.id !== "string") continue;
+    const params = request.params as Record<string, unknown>;
+    requests.push({ method: request.method, ...params });
+    if (request.method === "object/children") {
+      await writeFrame(connection, {
+        id: request.id,
+        result: {
+          view: params.view,
+          generation: params.generation,
+          path: params.path,
+          offset: params.offset,
+          children: [],
+          total_children: 0,
+        },
+        warnings: [],
+      });
+      continue;
+    }
+    if (request.method === "view/refresh") {
+      const generation = Number(params.generation) + 1;
+      if (params.view === "refresh-tree") {
+        // A tree becomes a grid; R sends the new view/open before the reply.
+        await writeFrame(connection, {
+          method: "view/open",
+          params: {
+            view: "refresh-tree",
+            generation,
+            kind: "grid",
+            access: "snapshot",
+            encoding: "r-json",
+            mode: "snapshot",
+            title: "Tree became grid",
+            nrow: 1,
+            ncol: 1,
+            columns: [columns[0]],
+            capabilities: refreshCapabilities(),
+            row_names: null,
+            data: {
+              row_index: [1],
+              row_names: null,
+              columns: [{ values: [7], display: ["7"], na: [false] }],
+            },
+          },
+        });
+      } else {
+        await writeFrame(connection, {
+          method: "view/open",
+          params: {
+            view: "refresh-grid",
+            generation,
+            kind: "grid",
+            access: "random",
+            encoding: "r-json",
+            mode: "paged",
+            title: `Refreshed ${generation}`,
+            nrow: 3,
+            ncol: columns.length,
+            columns,
+            capabilities: refreshCapabilities(),
+          },
+        });
+        if (generation === 3) {
+          // A later update lands before the acknowledgement of this one.
+          await writeFrame(connection, {
+            method: "view/open",
+            params: {
+              view: "refresh-grid",
+              generation: 4,
+              kind: "grid",
+              access: "random",
+              encoding: "r-json",
+              mode: "paged",
+              title: "Refreshed 4",
+              nrow: 3,
+              ncol: columns.length,
+              columns,
+              capabilities: refreshCapabilities(),
+            },
+          });
+        }
+      }
+      await writeFrame(connection, {
+        id: request.id,
+        result: {
+          view: params.view,
+          previous_generation: params.generation,
+          generation,
+          refreshed: true,
+        },
+        warnings: [],
+      });
+      continue;
+    }
+    if (request.method === "table/rows") {
+      const generation = Number(params.generation);
+      const base = generation * 1000;
+      const sort = Array.isArray(params.sort)
+        ? params.sort as Array<Record<string, unknown>>
+        : [];
+      const rows = [base + 1, base + 2, base + 3];
+      if (sort[0]?.desc === true) rows.reverse();
+      await writeFrame(connection, {
+        id: request.id,
+        result: {
+          view: params.view,
+          generation,
+          total: 3,
+          total_unfiltered: 3,
+          offset: 0,
+          limit: 3,
+          data: {
+            row_index: rows,
+            row_names: null,
+            columns: [{
+              schema: columns[0],
+              data: {
+                display: rows.map(String),
+                na: rows.map(() => false),
+              },
+            }],
+          },
+        },
+        warnings: [],
+      });
+      continue;
+    }
+    await writeFrame(connection, {
+      id: request.id,
+      error: { code: "unsupported", message: "Unexpected refresh request." },
+      warnings: [],
+    });
+  }
+}
+
+Deno.test({
+  name: "refresh button reopens the view on the new generation",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const cacheDir = await Deno.makeTempDir({ prefix: "jdv-refresh-browser-" });
+    const server = await phase(
+      "HTTP server startup",
+      () => startServer({ mode: "tcp", httpPort: 0, cacheDir }),
+    );
+    const connection = await phase(
+      "refresh mock R connect",
+      () => connectR(server.socketPath),
+    );
+    const columns = [{
+      position: 0,
+      name: "key",
+      type: "integer",
+      sortable: true,
+      filterable: true,
+    }];
+    await writeFrame(connection, {
+      method: "hello",
+      params: {
+        protocol: 1,
+        session: `r-${Deno.pid}-90`,
+        pid: Deno.pid,
+        r_version: "4.5.0",
+        jdv_version: "0.0.0",
+        limits: {
+          max_receive_frames: 4096,
+          max_receive_bytes: 64 * 1024 * 1024,
+          queue_messages: 256,
+          queue_bytes: 16 * 1024 * 1024,
+          max_request_bytes: 1024 * 1024,
+          max_message_bytes: 10 * 1024 * 1024,
+        },
+      },
+    });
+    await writeFrame(connection, {
+      method: "view/open",
+      params: {
+        view: "refresh-grid",
+        generation: 1,
+        kind: "grid",
+        access: "random",
+        encoding: "r-json",
+        mode: "paged",
+        title: "Refresh grid",
+        nrow: 3,
+        ncol: 1,
+        columns,
+        capabilities: refreshCapabilities(),
+      },
+    });
+    await writeFrame(connection, {
+      method: "view/open",
+      params: {
+        view: "refresh-tree",
+        generation: 1,
+        kind: "tree",
+        access: "random",
+        encoding: "r-json",
+        title: "Refresh tree",
+        class: ["list"],
+        capabilities: {
+          seek: true,
+          sort: false,
+          filter: false,
+          known_total: true,
+          next: false,
+          children: true,
+          refresh: true,
+        },
+      },
+    });
+    const requests: Array<Record<string, unknown>> = [];
+    const shutdown = { requested: false };
+    const responder = respondToRefresh(connection, requests, shutdown, columns);
+    void responder.catch((error) => console.error("[mock R responder]", error));
+    let owned: Awaited<ReturnType<typeof launchOwnedBrowser>> | undefined;
+    const originalFailure: unknown[] = [];
+    const rowIndex = '.tabulator-row [tabulator-field="row_index"]';
+    const refreshes = () =>
+      requests.filter((request) => request.method === "view/refresh");
+
+    try {
+      owned = await launchOwnedBrowser({
+        path: browserExecutable,
+        args: ["--no-sandbox"],
+        ...(browserLibraryPath
+          ? {
+            env: {
+              ...Deno.env.toObject(),
+              LD_LIBRARY_PATH: browserLibraryPath,
+            },
+          }
+          : {}),
+      });
+      const browser = owned.browser;
+      await phase("browser test body", async () => {
+        const page = await browser.newPage("about:blank", {
+          waitUntil: "none",
+        });
+        await page.setViewportSize({ width: 1280, height: 1000 });
+        const pageErrors: string[] = [];
+        collectPageErrors(page, pageErrors);
+        await page.goto(server.url, { waitUntil: "load" });
+        await waitForSelector(page, '#status[data-state="connected"]');
+
+        await clickButton(
+          page,
+          "Open view",
+          "#tables article",
+          0,
+          "Refresh grid",
+        );
+        await waitForSelector(page, `#viewer ${rowIndex}`);
+        assertEquals(await text(page, rowIndex), "1001");
+        assertEquals(await count(page, "#refresh-view:not([hidden])"), 1);
+
+        // Query state: a descending sort changes the first row.
+        await selectOption(page, "#sort-column", "0");
+        await selectOption(page, "#sort-direction", "desc");
+        await clickButton(page, "Add sort");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector(
+            '.tabulator-row [tabulator-field="row_index"]',
+          )?.textContent === "1003";
+        });
+        assertEquals(await count(page, "#sort-list li"), 1);
+
+        await click(page, "#refresh-view");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-title")?.textContent ===
+              "Refreshed 2" &&
+            document.querySelector(
+                '.tabulator-row [tabulator-field="row_index"]',
+              )?.textContent === "2001";
+        });
+        assertEquals(refreshes().length, 1);
+        assertEquals(refreshes()[0].view, "refresh-grid");
+        assertEquals(refreshes()[0].generation, 1);
+        // Sorting, scrolling, and the previous generation's rows are gone.
+        assertEquals(await count(page, "#sort-list li"), 0);
+        assertEquals(
+          requests.filter((request) =>
+            request.method === "table/rows" && request.generation === 2 &&
+            Array.isArray(request.sort) && request.sort.length > 0
+          ).length,
+          0,
+        );
+        // The acknowledgement did not turn into an error or abort.
+        assertEquals(
+          await evaluateElement(
+            page,
+            "#status",
+            (element: BrowserElement) => element.getAttribute("data-state"),
+          ) === "error",
+          false,
+        );
+
+        // A newer update arriving before the acknowledgement wins.
+        await clickButton(
+          page,
+          "Refresh",
+          "#tables article",
+          0,
+          "Refreshed 2",
+        );
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-title")?.textContent ===
+              "Refreshed 4" &&
+            document.querySelector(
+                '.tabulator-row [tabulator-field="row_index"]',
+              )?.textContent === "4001";
+        });
+        await page.waitForTimeout(200);
+        assertEquals(await text(page, "#table-title"), "Refreshed 4");
+        assertEquals(refreshes().length, 2);
+        assertEquals(refreshes()[1].generation, 2);
+        assertEquals(await count(page, "#tables article"), 2);
+
+        // A tree refreshed into a grid follows the new descriptor.
+        await clickButton(
+          page,
+          "Open object",
+          "#tables article",
+          0,
+          "Refresh tree",
+        );
+        await waitForSelector(page, "#tree-viewer:not([hidden])");
+        assertEquals(await count(page, "#tree-refresh:not([hidden])"), 1);
+        await click(page, "#tree-refresh");
+        await waitForSelector(page, "#viewer:not([hidden])");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-title")?.textContent ===
+              "Tree became grid" &&
+            document.querySelector("#tree-viewer")?.hidden === true;
+        });
+        assertEquals(refreshes().length, 3);
+        assertEquals(pageErrors, []);
+      }, 90_000);
+    } catch (error) {
+      originalFailure.push(error);
+      throw error;
+    } finally {
+      shutdown.requested = true;
+      await finishIntegrationCleanup([
+        () => owned?.close(),
+        () => connection.close(),
+        () =>
+          cleanupDeadline(responder, 5_000, "Mock R responder did not stop."),
+        () => phase("HTTP server shutdown", () => server.close(), 5_000),
+        () => assertServerReleased(server),
+        () => removeCacheDirectory(cacheDir),
+      ], originalFailure);
+    }
+  },
+});

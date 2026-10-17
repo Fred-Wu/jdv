@@ -180,11 +180,21 @@ export function createBrowserTransport(socket, handlers = {}) {
     return true;
   }
 
-  function cancelTable(session, table, generation, reason) {
+  // A sent view/refresh moves the view to a newer generation by itself, so
+  // retiring the generation it was sent for must not abort it; its response is
+  // only an acknowledgement. Pass includeRefresh when the view is really gone.
+  function cancelTable(
+    session,
+    table,
+    generation,
+    reason,
+    { includeRefresh = false } = {},
+  ) {
     for (const item of [...pending.values()]) {
       if (
         item.session === session && item.params?.view === table &&
-        item.params?.generation === generation
+        item.params?.generation === generation &&
+        (includeRefresh || item.method !== "view/refresh")
       ) cancel(item.id, reason ?? "The table is no longer available.");
     }
   }

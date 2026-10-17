@@ -194,17 +194,18 @@ Send requests with a unique string id per WebSocket client and session:
 ```
 
 The server accepts `table/rows`, `view/schema`, `object/children`,
-`object/open`, `view/close`, `stream/next`, `stream/cache/info`, and
-`stream/cache/get`. Object requests carry the view generation and a typed path
-rooted at that view. `object/children` is tree-only. Grid `object/open` paths
-start with `{"kind":"cell","row_index":205,"column":2}`: the row is the original
-one-based R index and the column is its zero-based schema position. Optional
-suffix steps use tree path forms. The column must have `drillable: true`, and
-the grid's `capabilities.children` must be true. Object child pages are capped
-at 500 entries; paths are capped at 32 steps. Opening a child registers a
-captured value as a new view. Closing a child releases that view without closing
-its parent. Responses use `type: "response"` and carry the original client id. A
-`busy` event is informational and does not cancel the request. A client may send
+`object/open`, `view/close`, `view/refresh`, `stream/next`, `stream/cache/info`,
+and `stream/cache/get`. Object requests carry the view generation and a typed
+path rooted at that view. `object/children` is tree-only. Grid `object/open`
+paths start with `{"kind":"cell","row_index":205,"column":2}`: the row is the
+original one-based R index and the column is its zero-based schema position.
+Optional suffix steps use tree path forms. The column must have
+`drillable: true`, and the grid's `capabilities.children` must be true. Object
+child pages are capped at 500 entries; paths are capped at 32 steps. Opening a
+child registers a captured value as a new view. Closing a child releases that
+view without closing its parent. Responses use `type: "response"` and carry the
+original client id. A `busy` event is informational and does not cancel the
+request. A client may send
 `{"type":"cancel","id":"page-1","session":"r-1234-1"}`; it is forwarded as an R
 `cancel` notification when the request was already sent. Unsent `table/rows` and
 `object/children` requests use separate coalescing rules. For the same client,
@@ -213,6 +214,23 @@ latest page request. An unsent `object/children` request is replaced only by a
 new request with the same full typed path; a different path stays in its own
 lane. A request already sent to R is allowed to finish; later requests in the
 same lane wait behind it.
+
+`view/refresh` takes only `view` and `generation` and asks R to rebuild the view
+as the next generation; it is offered by views whose descriptor has
+`capabilities.refresh: true`. R sends the new `view/open` (after closing the
+view's children) before the response. A newer `view/open` normally cancels
+requests for the older generation, but a `view/refresh` that was already sent
+keeps its response: the hub delivers its success or error unless the request
+timed out, was cancelled, or the client or session went away. A success is
+checked against the request (same view, `previous_generation` equal to the
+requested generation, and `generation` one higher) and a mismatch becomes an
+`invalid_request` error. The response only acknowledges the operation; clients
+update what they show from `view/open` and must not roll back to an older
+generation because of a late acknowledgement. An unsent refresh for an older
+generation is invalidated like any other stale request. The bundled viewer shows
+a Refresh button for these views and reopens the selected view on the new
+generation with its sort, filter, selection, scroll position, and tree path
+reset.
 
 Browser WebSocket input frames are limited to 64 KiB. Incoming R JSONL frames
 are limited to 10 MiB.

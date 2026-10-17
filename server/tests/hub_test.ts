@@ -2897,3 +2897,332 @@ Deno.test("host cache keeps progress after immediate eviction and accepts legacy
     f.hub.close();
   }
 });
+
+function refreshFixture(session: string, limits: JsonRecord = {}) {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptR(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session,
+      limits: { ...DEFAULT_LIMITS, ...limits },
+    },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  const request = (id: string, method = "view/refresh", generation = 1) =>
+    hub.handleBrowser(browser, {
+      type: "request",
+      id,
+      session,
+      method,
+      params: { view: "table-1", generation },
+    });
+  const refreshed = (
+    id: string,
+    previous = 1,
+    generation = previous + 1,
+  ): JsonRecord => ({
+    id,
+    result: {
+      view: "table-1",
+      previous_generation: previous,
+      generation,
+      refreshed: true,
+    },
+    warnings: [],
+  });
+  return { hub, connection, browser, request, refreshed };
+}
+
+function messagesFor(browser: MemoryBrowser, id: string): JsonRecord[] {
+  return browser.messages.filter((message) => message.id === id);
+}
+
+Deno.test("a successful refresh response is delivered after its own view/open", async () => {
+  const f = refreshFixture("r-9100-1");
+  try {
+    await f.browser.nextMessage((message) => message.type === "view/open");
+    f.request("refresh");
+    const sent = await f.connection.nextWrite(0);
+    assertEquals(sent.method, "view/refresh");
+    assertEquals(sent.params, { view: "table-1", generation: 1 });
+
+    // R queues the new generation's view/open before the response.
+    openTable(f.connection, 2);
+    f.connection.inject(f.refreshed(sent.id as string));
+    const response = await f.browser.nextMessage((message) =>
+      message.type === "response" && message.id === "refresh"
+    );
+    assertEquals((response.result as JsonRecord).generation, 2);
+    const opens = f.browser.messages.filter((message) =>
+      message.type === "view/open"
+    );
+    assertEquals(opens.length, 2);
+    assertEquals(messagesFor(f.browser, "refresh").length, 1);
+    // The next request on the new generation is accepted.
+    f.request("after", "view/schema", 2);
+    const next = await f.connection.nextWrite(1);
+    assertEquals((next.params as JsonRecord).generation, 2);
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("a failed refresh response is delivered even after a newer view/open", async () => {
+  const f = refreshFixture("r-9101-1");
+  try {
+    await f.browser.nextMessage((message) => message.type === "view/open");
+    f.request("failing");
+    const sent = await f.connection.nextWrite(0);
+    openTable(f.connection, 2);
+    f.connection.inject({
+      id: sent.id,
+      error: { code: "stale_generation", message: "stale" },
+      warnings: [],
+    });
+    const error = await f.browser.nextMessage((message) =>
+      message.id === "failing" && message.type === "response"
+    );
+    assertEquals((error.error as JsonRecord).code, "stale_generation");
+
+    f.request("r-error", "view/refresh", 2);
+    const second = await f.connection.nextWrite(1);
+    f.connection.inject({
+      id: second.id,
+      error: { code: "r_error", message: "boom" },
+      warnings: [],
+    });
+    const failure = await f.browser.nextMessage((message) =>
+      message.id === "r-error" && message.type === "response"
+    );
+    assertEquals((failure.error as JsonRecord).code, "r_error");
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("a refresh response that does not match the request is rejected", async () => {
+  const f = refreshFixture("r-9102-1");
+  try {
+    await f.browser.nextMessage((message) => message.type === "view/open");
+    const cases: Array<[string, JsonRecord]> = [
+      ["wrong-previous", { previous_generation: 5, generation: 6 }],
+      ["wrong-next", { previous_generation: 1, generation: 3 }],
+      ["wrong-view", { view: "other", previous_generation: 1, generation: 2 }],
+      ["not-refreshed", {
+        previous_generation: 1,
+        generation: 2,
+        refreshed: false,
+      }],
+    ];
+    let index = 0;
+    for (const [id, override] of cases) {
+      f.request(id);
+      const sent = await f.connection.nextWrite(index++);
+      const base = f.refreshed(sent.id as string).result as JsonRecord;
+      f.connection.inject({
+        id: sent.id,
+        result: { ...base, ...override },
+        warnings: [],
+      });
+      const error = await f.browser.nextMessage((message) =>
+        message.type === "error" && message.id === id
+      );
+      assertEquals(error.code, "invalid_request");
+    }
+    assertEquals(
+      f.browser.messages.some((message) => message.type === "response"),
+      false,
+    );
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("view/refresh accepts only view and generation", async () => {
+  const f = refreshFixture("r-9103-1");
+  try {
+    await f.browser.nextMessage((message) => message.type === "view/open");
+    f.hub.handleBrowser(f.browser, {
+      type: "request",
+      id: "extra",
+      session: "r-9103-1",
+      method: "view/refresh",
+      params: { view: "table-1", generation: 1, mode: "paged" },
+    });
+    const error = await f.browser.nextMessage((message) =>
+      message.id === "extra"
+    );
+    assertEquals(error.code, "invalid_request");
+    f.hub.handleBrowser(f.browser, {
+      type: "request",
+      id: "stale",
+      session: "r-9103-1",
+      method: "view/refresh",
+      params: { view: "table-1", generation: 9 },
+    });
+    const stale = await f.browser.nextMessage((message) =>
+      message.id === "stale"
+    );
+    assertEquals(stale.code, "stale_generation");
+    assertEquals(f.connection.writes.length, 0);
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("an older-generation read is cancelled but the sent refresh survives", async () => {
+  const f = refreshFixture("r-9104-1");
+  try {
+    await f.browser.nextMessage((message) => message.type === "view/open");
+    f.request("read", "view/schema");
+    f.request("refresh");
+    const read = await f.connection.nextWrite(0);
+    const refresh = await f.connection.nextWrite(1);
+    assertEquals(read.method, "view/schema");
+    assertEquals(refresh.method, "view/refresh");
+
+    openTable(f.connection, 2);
+    const stale = await f.browser.nextMessage((message) =>
+      message.type === "error" && message.id === "read"
+    );
+    assertEquals(stale.code, "stale_generation");
+    await waitFor(() =>
+      f.connection.writes.some((line) => {
+        const value = JSON.parse(line) as JsonRecord;
+        return value.method === "cancel" &&
+          (value.params as JsonRecord).id === read.id;
+      })
+    );
+    assertEquals(
+      f.connection.writes.some((line) => {
+        const value = JSON.parse(line) as JsonRecord;
+        return value.method === "cancel" &&
+          (value.params as JsonRecord).id === refresh.id;
+      }),
+      false,
+    );
+    f.connection.inject(f.refreshed(refresh.id as string));
+    await f.browser.nextMessage((message) =>
+      message.type === "response" && message.id === "refresh"
+    );
+    // The late result of the cancelled read is not delivered.
+    f.connection.inject({ id: read.id, result: { columns: [] } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assertEquals(messagesFor(f.browser, "read").length, 1);
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("an unsent refresh of an older generation is invalidated", async () => {
+  const f = refreshFixture("r-9105-1", { queue_messages: 1 });
+  try {
+    await f.browser.nextMessage((message) => message.type === "view/open");
+    f.request("read", "view/schema");
+    f.request("queued-refresh");
+    const read = await f.connection.nextWrite(0);
+    assertEquals(f.connection.writes.length, 1);
+
+    openTable(f.connection, 2);
+    const stale = await f.browser.nextMessage((message) =>
+      message.type === "error" && message.id === "queued-refresh"
+    );
+    assertEquals(stale.code, "stale_generation");
+    f.connection.inject({ id: read.id, result: { columns: [] } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assertEquals(
+      f.connection.writes.filter((line) =>
+        (JSON.parse(line) as JsonRecord).method === "view/refresh"
+      ).length,
+      0,
+    );
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("a refresh still times out, cancels, and ends on disconnect", async () => {
+  const f = refreshFixture("r-9106-1");
+  try {
+    await f.browser.nextMessage((message) => message.type === "view/open");
+    f.hub.handleBrowser(f.browser, {
+      type: "request",
+      id: "times-out",
+      session: "r-9106-1",
+      method: "view/refresh",
+      params: { view: "table-1", generation: 1 },
+      timeoutMs: 100,
+    });
+    const first = await f.connection.nextWrite(0);
+    const timeout = await f.browser.nextMessage((message) =>
+      message.type === "error" && message.code === "timeout"
+    );
+    assertEquals(timeout.id, "times-out");
+    openTable(f.connection, 2);
+    f.connection.inject(f.refreshed(first.id as string));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assertEquals(
+      f.browser.messages.some((message) => message.type === "response"),
+      false,
+    );
+
+    f.request("cancelled", "view/refresh", 2);
+    const second = await f.connection.nextWrite(
+      f.connection.writes.length,
+    );
+    assertEquals(second.method, "view/refresh");
+    f.hub.handleBrowser(f.browser, {
+      type: "cancel",
+      session: "r-9106-1",
+      id: "cancelled",
+    });
+    await f.browser.nextMessage((message) =>
+      message.type === "cancelled" && message.id === "cancelled"
+    );
+    f.connection.inject(f.refreshed(second.id as string, 2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assertEquals(messagesFor(f.browser, "cancelled").length, 1);
+
+    f.request("detached", "view/refresh", 2);
+    const third = await f.connection.nextWrite(f.connection.writes.length);
+    f.hub.detach(f.browser);
+    const before = f.browser.messages.length;
+    f.connection.inject(f.refreshed(third.id as string, 2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assertEquals(f.browser.messages.length, before);
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("an older refresh response never rolls the cached view back", async () => {
+  const f = refreshFixture("r-9107-1");
+  try {
+    await f.browser.nextMessage((message) => message.type === "view/open");
+    f.request("refresh");
+    const sent = await f.connection.nextWrite(0);
+    openTable(f.connection, 2);
+    openTable(f.connection, 3);
+    f.connection.inject(f.refreshed(sent.id as string));
+    await f.browser.nextMessage((message) =>
+      message.type === "response" && message.id === "refresh"
+    );
+    // The hub still serves generation 3 only.
+    f.request("old", "view/schema", 2);
+    const stale = await f.browser.nextMessage((message) =>
+      message.id === "old"
+    );
+    assertEquals(stale.code, "stale_generation");
+    f.request("new", "view/schema", 3);
+    const next = await f.connection.nextWrite(1);
+    assertEquals((next.params as JsonRecord).generation, 3);
+  } finally {
+    f.hub.close();
+  }
+});

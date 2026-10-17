@@ -28,7 +28,15 @@ local({
       expect_length(descriptor$path, 0)
       expect_named(
         descriptor$capabilities,
-        c("seek", "sort", "filter", "known_total", "next", "children")
+        c(
+          "seek",
+          "sort",
+          "filter",
+          "known_total",
+          "next",
+          "children",
+          "refresh"
+        )
       )
 
       page <- tree_call(

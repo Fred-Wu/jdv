@@ -119,6 +119,7 @@ test_that(
     expect_identical(descriptor$encoding, "arrow-ipc")
     expect_false(descriptor$capabilities$known_total)
     expect_true(descriptor$capabilities[["next"]])
+    expect_false(descriptor$capabilities$refresh)
     expect_null(descriptor$nrow)
     expect_identical(descriptor$ncol, 2)
     expect_identical(unlist(descriptor$mapping), 0)

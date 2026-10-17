@@ -111,8 +111,8 @@ test_that("registration returns snapshots and reuses titled generations", {
   expect_identical(
     open$params$capabilities,
     setNames(
-      as.list(c(rep(TRUE, 4L), FALSE, FALSE)),
-      c("seek", "sort", "filter", "known_total", "next", "children")
+      as.list(c(rep(TRUE, 4L), FALSE, FALSE, TRUE)),
+      c("seek", "sort", "filter", "known_total", "next", "children", "refresh")
     )
   )
   expect_null(open$params$total_rows)
@@ -130,7 +130,7 @@ test_that("registration returns snapshots and reuses titled generations", {
   expect_identical(second_open$params$access, "random")
   expect_named(
     second_open$params$capabilities,
-    c("seek", "sort", "filter", "known_total", "next", "children")
+    c("seek", "sort", "filter", "known_total", "next", "children", "refresh")
   )
   expect_rpc_code(
     rpc_call("view/schema", list(view = first$id, generation = 1)),

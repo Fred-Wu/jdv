@@ -305,6 +305,24 @@ def main():
                         "disconnected": True,
                     })
                 return
+            elif args.scenario == "refresh":
+                # The refresh publishes a view/open notification before its own
+                # response; the second request still names the old generation.
+                request["id"] = "refresh-1"
+                request["method"] = "view/refresh"
+                request["params"] = {
+                    "view": params["view"],
+                    "generation": params["generation"],
+                }
+                stale = dict(request, id="refresh-stale")
+                expected_ids = [None, "refresh-1", "refresh-stale"]
+                connection.sendall(
+                    b"".join(
+                        json.dumps(value, separators=(",", ":")).encode("utf-8")
+                        + b"\n"
+                        for value in (request, stale)
+                    )
+                )
             elif args.scenario == "numeric-id":
                 request["id"] = 1000000000000000
                 expected_ids = [1000000000000000]

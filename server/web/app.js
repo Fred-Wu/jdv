@@ -56,6 +56,8 @@ const treePrevious = $("#tree-previous");
 const treeNext = $("#tree-next");
 const treeReturn = $("#tree-return");
 const treeParentReturn = $("#tree-parent-return");
+const gridRefresh = $("#refresh-view");
+const treeRefresh = $("#tree-refresh");
 const viewBreadcrumb = $("#view-breadcrumb");
 const childOpenStatus = $("#child-open-status");
 const sequentialControls = $("#sequential-controls");
@@ -172,6 +174,8 @@ socket.addEventListener("message", (event) => {
         message.session,
         descriptor.view,
         descriptor.generation,
+        undefined,
+        { includeRefresh: true },
       );
       if (
         selected?.session === message.session &&
@@ -228,6 +232,16 @@ treeNext.addEventListener("click", () => {
     );
   }
 });
+gridRefresh.addEventListener("click", () => {
+  if (selected?.kind === "grid") {
+    refreshView(selected.session, selected.descriptor, gridRefresh);
+  }
+});
+treeRefresh.addEventListener("click", () => {
+  if (selected?.kind === "tree") {
+    refreshView(selected.session, selected.descriptor, treeRefresh);
+  }
+});
 treeReturn.addEventListener("click", returnToTree);
 treeParentReturn.addEventListener("click", returnToTree);
 globalThis.addEventListener("resize", updateColumnScrollExtent);
@@ -272,6 +286,14 @@ function addTable(session, message) {
   const replaceSelected = selected?.session === session &&
     selected.descriptor.view === descriptor.view &&
     selected.descriptor.generation < descriptor.generation;
+  // A refreshed child stays reachable from the same parent view.
+  const keptReturn = replaceSelected && typeof descriptor.parent === "string" &&
+      selected.returnTree?.session === session &&
+      selected.returnTree.descriptor.view === descriptor.parent &&
+      knownTables.get(`${session}\0${descriptor.parent}`)?.descriptor
+          .generation === selected.returnTree.descriptor.generation
+    ? selected.returnTree
+    : null;
   if (replaceSelected) closeSelectedTable();
   knownTables.set(key, {
     session,
@@ -290,7 +312,7 @@ function addTable(session, message) {
     tableWaiters.delete(key);
     for (const wake of waiters) wake();
   }
-  if (replaceSelected) openView(session, descriptor);
+  if (replaceSelected) openView(session, descriptor, keptReturn);
 }
 
 // A child view is registered from R's view/open notification, which precedes
@@ -430,6 +452,45 @@ function setTableMeta(state, total, totalUnfiltered) {
   } · ${state.descriptor.mode} · ${state.session}`;
 }
 
+function refreshAvailable(descriptor) {
+  return descriptor?.capabilities?.refresh === true;
+}
+
+// Ask R to rebuild a view. The reply only acknowledges the operation: the new
+// generation arrives as view/open and replaces the display, which starts from
+// a clean query state. The reply never changes what is shown, so a late
+// acknowledgement cannot move the display back.
+function refreshView(session, descriptor, control) {
+  const current = knownTables.get(`${session}\0${descriptor.view}`)
+    ?.descriptor ?? descriptor;
+  if (control) control.disabled = true;
+  const promise = transport.request(session, "view/refresh", {
+    view: current.view,
+    generation: current.generation,
+  });
+  promise.then(
+    () => {
+      if (control) control.disabled = false;
+    },
+    (error) => {
+      if (control) control.disabled = false;
+      if (error?.name === "AbortError") return;
+      setStatus(error?.message ?? "Could not refresh the view.", "error");
+    },
+  );
+  return promise;
+}
+
+function updateRefreshControls() {
+  const descriptor = selected?.descriptor;
+  const available = refreshAvailable(descriptor) &&
+    (selected.kind === "grid" || selected.kind === "tree");
+  gridRefresh.hidden = !(available && selected.kind === "grid");
+  gridRefresh.disabled = false;
+  treeRefresh.hidden = !(available && selected.kind === "tree");
+  treeRefresh.disabled = false;
+}
+
 function renderLists() {
   sessionsElement.replaceChildren();
   for (const [id, info] of knownSessions) {
@@ -471,6 +532,17 @@ function renderLists() {
       button.addEventListener("click", () => openView(session, descriptor));
     }
     item.append(heading, detail, button);
+    if (refreshAvailable(descriptor)) {
+      const refresh = document.createElement("button");
+      refresh.type = "button";
+      refresh.textContent = "Refresh";
+      refresh.dataset.action = "refresh-view";
+      refresh.addEventListener(
+        "click",
+        () => refreshView(session, descriptor, refresh),
+      );
+      item.append(refresh);
+    }
     if (typeof descriptor.parent === "string") {
       const close = document.createElement("button");
       close.type = "button";
@@ -526,6 +598,7 @@ function openView(session, descriptor, returnTree = null, restored = null) {
     window: { start: 0, end: 0, columns: [], offsetPx: 0, totalWidth: 0 },
   };
   selected.childOpening = false;
+  updateRefreshControls();
   renderViewBreadcrumbs();
   viewer.hidden = false;
   treeViewer.hidden = true;
@@ -606,6 +679,8 @@ function closeSelectedTable() {
   treeViewer.hidden = true;
   treeReturn.hidden = true;
   treeParentReturn.hidden = true;
+  gridRefresh.hidden = true;
+  treeRefresh.hidden = true;
   viewBreadcrumb.replaceChildren();
   childOpenStatus.hidden = true;
 }
@@ -626,6 +701,7 @@ function openTree(session, descriptor, returnTree = null) {
     children: [],
     returnTree,
   };
+  updateRefreshControls();
   renderViewBreadcrumbs();
   viewer.hidden = true;
   treeViewer.hidden = false;

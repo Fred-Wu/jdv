@@ -200,7 +200,8 @@ A view descriptor is sent as a notification:
       "filter": true,
       "known_total": true,
       "next": false,
-      "children": false
+      "children": false,
+      "refresh": true
     \},
     "collation": "C",
     "nrow": 100,
@@ -215,17 +216,18 @@ The example omits schema entries for brevity. \code{view/open} has no request id
 and is not passed to \code{jdv_rpc()}; \code{jdv_register()} queues it for the host to
 deliver (see the Notification delivery section). \code{kind} is \code{grid}; \code{access}
 is \code{snapshot} or \code{random} for Snapshot or Paged mode, respectively; and
-\code{encoding} is \code{r-json}. Every descriptor includes all six \code{capabilities}
-fields shown for a grid: \code{seek}, \code{sort}, \code{filter}, and \code{known_total} are
-\code{true}; \code{next} is \code{false}. Grid \code{children} is \code{true} if and only if at least
-one column has \code{drillable: true}. Tree descriptors use \code{kind: "tree"},
+\code{encoding} is \code{r-json}. Every descriptor includes all seven \code{capabilities}
+fields shown for a grid: \code{seek}, \code{sort}, \code{filter}, \code{known_total}, and
+\code{refresh} are \code{true}; \code{next} is \code{false}. Grid \code{children} is \code{true} if and
+only if at least one column has \code{drillable: true}. \code{refresh} tells the host
+that \code{view/refresh} is accepted. Tree descriptors use \code{kind: "tree"},
 \code{access: "random"}, \code{encoding: "r-json"}, and capabilities \code{seek: true},
-\code{sort: false}, \code{filter: false}, \code{known_total: true}, \code{next: false}, and
-\code{children: true}. Tree descriptors omit grid-only fields (\code{mode}, \code{nrow},
-\code{ncol}, \code{row_names}, \code{columns}, and \code{data}). A tree descriptor includes an
-empty \code{path} at its root. A child descriptor may include \code{parent}, the parent
-view id. \code{title} and \code{class} are optional; when present, \code{class} is an array
-of strings.\tabular{lll}{
+\code{sort: false}, \code{filter: false}, \code{known_total: true}, \code{next: false},
+\code{children: true}, and \code{refresh: true}. Tree descriptors omit grid-only fields
+(\code{mode}, \code{nrow}, \code{ncol}, \code{row_names}, \code{columns}, and \code{data}). A tree
+descriptor includes an empty \code{path} at its root. A child descriptor may
+include \code{parent}, the parent view id. \code{title} and \code{class} are optional; when
+present, \code{class} is an array of strings.\tabular{lll}{
    Descriptor field \tab Grid \tab Tree \cr
    \code{view}, \code{generation}, \code{kind}, \code{access}, \code{encoding}, \code{capabilities} \tab Required \tab Required \cr
    \code{title} \tab Optional \tab Optional \cr
@@ -415,13 +417,14 @@ implementation are specified separately.
 Sequential descriptors have \code{kind: "grid"}, \code{access: "sequential"},
 \code{encoding: "arrow-ipc"}, \code{mode: "sequential"}, \code{nrow: null}, and a known
 \code{ncol}. Only the \code{next} capability is true; \code{seek}, \code{sort}, \code{filter},
-\code{known_total}, and \code{children} are false. Registration calls the producer's
-\code{get_schema} but never \code{get_next}. It moves one exported Arrow stream into
-native ownership. Close, replacement, eviction, parent cascade, namespace
-unload, and R disconnection release the stream and any carried batch exactly
-once. A release callback may execute R code; registry identity and generation
-are rechecked before publishing its result. Releases requested inside an
-active producer callback are deferred until that callback has finished.
+\code{known_total}, \code{children}, and \code{refresh} are false. Registration calls the
+producer's \code{get_schema} but never \code{get_next}. It moves one exported Arrow
+stream into native ownership. Close, replacement, eviction, parent cascade,
+namespace unload, and R disconnection release the stream and any carried
+batch exactly once. A release callback may execute R code; registry identity
+and generation are rechecked before publishing its result. Releases requested
+inside an active producer callback are deferred until that callback has
+finished.
 
 \code{schema} contains the original logical Arrow schema recursively: \code{format},
 \code{name}, \code{flags}, \code{metadata}, \code{metadata_encoding}, \code{children}, and
@@ -662,6 +665,7 @@ any output path detach the browser. Repeated close/detach is harmless.
    \code{table/rows} \tab Host to R \tab Request \tab One selected page from a Paged view. \cr
    \code{object/children} \tab Host to R \tab Request \tab One page of children at a typed object path. \cr
    \code{object/open} \tab Host to R \tab Request \tab Registers the captured value at a typed path as a child view. \cr
+   \code{view/refresh} \tab Host to R \tab Request \tab Rebuilds a view from its captured value as the next generation of the same id. \cr
    \code{view/close} \tab Host to R \tab Request \tab Closes one view generation. \cr
    \code{view/closed} \tab R to host \tab Notification \tab Removes a closed, replaced, or evicted generation from the host cache. \cr
    \code{hello} \tab R to host \tab Notification \tab Announces protocol and runtime versions for a new connection. \cr
@@ -837,6 +841,65 @@ the fixed page schema or one row cannot fit, the request returns
 \code{limit_exceeded}. Final JSON encoding can still shorten the page to protect
 against unusually large values or custom formatters. Snapshot registrations
 reject row requests with \code{unsupported} because their payload is host-cached.
+}
+
+\section{\code{view/refresh}}{
+
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"id": "refresh-1", "method": "view/refresh",
+ "params": \{"view": "v-1", "generation": 3\}\}
+}\if{html}{\out{</div>}}
+
+Parameters are \code{view} and \code{generation}; other fields are rejected with
+\code{invalid_request}. The result is
+\verb{\{"view": "v-1", "previous_generation": 3, "generation": 4, "refreshed": true\}}.
+A view is refreshable when its descriptor says \code{capabilities.refresh: true}.
+
+The view is rebuilt from the value captured when it was registered, not from
+any variable that held that value, so the rebuild shows the same data unless
+the captured object is a reference object that changed in place. The rebuild
+happens even if nothing changed and always advances the generation by one.
+The registration \code{mode} and \code{collation} are reused as they were requested: an
+\code{"auto"} mode is decided again (a grid may move between Snapshot and Paged,
+and the effective mode is never frozen), an explicit mode is kept, and an
+omitted collation reads \code{jdv.collation} again. A refresh of a titled view
+keeps its title association, so a later registration with that title
+continues from the refreshed generation.
+
+The replacement is built first. Only if the view, its generation, and (for a
+child view) its parent are still current is it published, as one step, under
+the same view id with the new generation. Then every descendant view is
+closed, deepest first, with \code{view/closed} notifications carrying
+\code{reason: "parent_closed"}, and the new \code{view/open} is queued. The old
+generation of the refreshed view itself gets no \code{view/closed}; its
+\code{view/open} successor replaces it. As for any request, these notifications
+precede the response. A refresh that fails, is interrupted, or finds the view
+stale leaves the generation and all children unchanged. A \code{\link[=jdv_close]{jdv_close()}} or
+\code{\link[=jdv_disconnect]{jdv_disconnect()}} issued by user code while the replacement is being built
+keeps its effect: the closed view is not revived and the request fails with
+\code{view_not_found}. \code{\link[=jdv_register]{jdv_register()}}, \code{object/open}, or another refresh
+attempted by user code during the rebuild fails with \code{in_use}. If the
+notification queue overflows, the session ends as described under
+Notification delivery.
+
+Refreshing a child view keeps it a child of the same parent generation (the
+descriptor repeats \code{parent}); it is refused with \code{view_not_found} once the
+parent was refreshed, replaced, or closed. Sequential views are not
+refreshable (\code{unsupported}) because a consumed stream cannot be rewound.
+Errors are \code{invalid_request}, \code{view_not_found}, \code{stale_generation},
+\code{unsupported}, and the usual \code{limit_exceeded}, \code{r_error}, and \code{interrupted}.
+
+A hub that forwards requests treats a sent \code{view/refresh} specially. The
+successful refresh queues the new generation's \code{view/open} before its own
+response, and a hub normally discards pending requests of an older generation
+when it sees a newer \code{view/open}. The response of a sent \code{view/refresh} is
+not discarded for that reason, whether it reports success or failure, as long
+as the request was not timed out, cancelled, or lost to a disconnect. The hub
+checks that the response matches the request (same id, view, and requested
+generation as \code{previous_generation}, and a generation one higher on success).
+The \code{view/open} notifications alone update what is displayed; the response
+only confirms the operation and must never move the display back to an older
+generation.
 }
 
 \section{\code{view/close} and \code{view/closed}}{
@@ -1145,7 +1208,7 @@ Error codes are stable machine-readable values. The \code{error} object contains
    \code{stale_generation} \tab The request names a generation that is no longer active. \cr
    \code{view_not_found} \tab The view id is missing or closed. \cr
    \code{cache_changed} \tab A host-only sequential append cursor differs from the observed tail; refresh the host page catalog before advancing. \cr
-   \code{in_use} \tab Another browser owns the sequential lease, a next request is still pending, or a reentrant operation cannot proceed. \cr
+   \code{in_use} \tab Another browser owns the sequential lease, a next request is still pending, or a reentrant operation cannot proceed, such as registering during a refresh. \cr
    \code{stream_failed} \tab A sequential producer encountered a terminal failure; close or register a new stream to continue. \cr
    \code{method_not_found} \tab No implementation exists for the requested method. \cr
 }

@@ -984,3 +984,122 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name: "real R view/refresh replaces a view and delivers its own response",
+  ignore: !testLibrary,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const runtime = await startRuntime();
+    let primaryError: unknown;
+    try {
+      await bodyDeadline("Tree E2E refresh body", async () => {
+        const { browser, session, root } = runtime;
+        assertEquals(asRecord(root.capabilities).refresh, true);
+        const rootPage = responseResult(
+          await request(
+            browser,
+            session,
+            String(root.view),
+            Number(root.generation),
+            "object/children",
+            { path: [], offset: 0, limit: 500 },
+          ),
+        );
+        const captured = childByPath(
+          asArray(rootPage.children),
+          "index",
+          "index",
+          10,
+        );
+        const opened = responseResult(
+          await request(
+            browser,
+            session,
+            String(root.view),
+            Number(root.generation),
+            "object/open",
+            { path: captured.path },
+          ),
+        );
+        const childView = String(opened.view);
+        await nextMessage(
+          browser,
+          (message) =>
+            message.type === "view/open" &&
+            asRecord(asRecord(message.message).params).view === childView,
+          "child grid view/open event",
+        );
+
+        const id = "refresh-root";
+        browser.send({
+          type: "request",
+          id,
+          session,
+          method: "view/refresh",
+          params: { view: root.view, generation: root.generation },
+        });
+        // R queues the child closes and the new view/open before the
+        // response, and the hub must still deliver that response.
+        const seen: Record<string, unknown>[] = [];
+        for (;;) {
+          const message = await browser.read(10_000);
+          seen.push(message);
+          if (message.type === "response" || message.type === "error") break;
+        }
+        const response = seen[seen.length - 1];
+        assert(response.type === "response", JSON.stringify(response));
+        assertEquals(response.id, id);
+        const result = responseResult(response);
+        assertEquals(result.previous_generation, root.generation);
+        assertEquals(result.generation, Number(root.generation) + 1);
+        assertEquals(result.refreshed, true);
+        const kinds = seen.slice(0, -1).map((message) => {
+          const params = asRecord(asRecord(message.message).params);
+          return `${message.type}:${params.view}:${params.generation}:${
+            params.reason ?? ""
+          }`;
+        });
+        assertEquals(kinds, [
+          `view/closed:${childView}:${opened.generation}:parent_closed`,
+          `view/open:${root.view}:${Number(root.generation) + 1}:`,
+        ]);
+
+        const stale = await request(
+          browser,
+          session,
+          String(root.view),
+          Number(root.generation),
+          "view/refresh",
+        );
+        assertEquals(responseErrorCode(stale), "stale_generation");
+        const next = responseResult(
+          await request(
+            browser,
+            session,
+            String(root.view),
+            Number(root.generation) + 1,
+            "object/children",
+            { path: [], offset: 0, limit: 5 },
+          ),
+        );
+        assertEquals(next.generation, Number(root.generation) + 1);
+      }, 120_000);
+    } catch (error) {
+      primaryError = error;
+      throw error;
+    } finally {
+      await finishIntegrationCleanup([
+        () => runtime.browser.close(),
+        () => phase("Tree E2E arf cleanup", () => runtime.arf.close(), 50_000),
+        () =>
+          phase(
+            "Tree E2E server cleanup",
+            () => runtime.server.close(),
+            10_000,
+          ),
+      ], primaryError === undefined ? [] : [primaryError]);
+    }
+  },
+});

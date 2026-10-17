@@ -71,7 +71,8 @@
         filter = FALSE,
         known_total = FALSE,
         `next` = TRUE,
-        children = FALSE
+        children = FALSE,
+        refresh = FALSE
       ),
       nrow = NULL,
       max_page_rows = content$page_rows,

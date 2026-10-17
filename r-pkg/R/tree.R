@@ -465,8 +465,8 @@
 
 .jdv_tree_descriptor <- function(id, generation, title, parent = NULL) {
   capabilities <- stats::setNames(
-    as.list(c(TRUE, FALSE, FALSE, TRUE, FALSE, TRUE)),
-    c("seek", "sort", "filter", "known_total", "next", "children")
+    as.list(c(TRUE, FALSE, FALSE, TRUE, FALSE, TRUE, TRUE)),
+    c("seek", "sort", "filter", "known_total", "next", "children", "refresh")
   )
   params <- list(
     view = id,
@@ -482,6 +482,33 @@
     params$parent <- parent$id
   }
   list(method = "view/open", params = jdv_json_object(params))
+}
+
+.jdv_tree_new_entry <- function(x, id, generation, title, parent = NULL) {
+  entry <- new.env(parent = emptyenv())
+  entry$id <- id
+  entry$title <- title
+  entry$generation <- generation
+  entry$mode <- "tree"
+  entry$source <- x
+  entry$tree_value <- x
+  entry$captured <- x
+  entry$holder <- NULL
+  entry$fingerprint <- NULL
+  entry$nrow <- NULL
+  entry$ncol <- NULL
+  entry$schema <- NULL
+  entry$collation <- NULL
+  entry$parent <- if (is.null(parent)) NULL else parent$id
+  entry$parent_entry <- parent
+  entry$parent_generation <- if (is.null(parent)) NULL else parent$generation
+  entry$children <- character()
+  entry$inflight <- 0L
+  entry$close_pending <- FALSE
+  entry$closed <- FALSE
+  .jdv_state$sequence <- .jdv_state$sequence + 1
+  entry$sequence <- .jdv_state$sequence
+  entry
 }
 
 .jdv_tree_register <- function(x, title = NULL, parent = NULL) {
@@ -569,28 +596,7 @@
     )
   }
 
-  entry <- new.env(parent = emptyenv())
-  entry$id <- id
-  entry$title <- title
-  entry$generation <- generation
-  entry$mode <- "tree"
-  entry$source <- x
-  entry$tree_value <- x
-  entry$holder <- NULL
-  entry$fingerprint <- NULL
-  entry$nrow <- NULL
-  entry$ncol <- NULL
-  entry$schema <- NULL
-  entry$collation <- NULL
-  entry$parent <- if (is.null(parent)) NULL else parent$id
-  entry$parent_entry <- parent
-  entry$parent_generation <- if (is.null(parent)) NULL else parent$generation
-  entry$children <- character()
-  entry$inflight <- 0L
-  entry$close_pending <- FALSE
-  entry$closed <- FALSE
-  .jdv_state$sequence <- .jdv_state$sequence + 1
-  entry$sequence <- .jdv_state$sequence
+  entry <- .jdv_tree_new_entry(x, id, generation, title, parent)
   if (is.null(previous)) {
     .jdv_state$next_id <- .jdv_state$next_id + 1
   }
@@ -626,6 +632,7 @@
   mode = "auto",
   collation = NULL
 ) {
+  .jdv_assert_not_refreshing()
   if (!.jdv_tree_entry_is_current(parent)) {
     query_error("view_not_found", "Parent view is no longer active.")
   }

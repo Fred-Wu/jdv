@@ -13,6 +13,7 @@
   state$queue_max_bytes <- Inf
   state$embedded <- FALSE
   state$rpc_depth <- 0L
+  state$refreshing <- FALSE
   state$transport <- NULL
   state$transport_limits <- NULL
   state$transport_epoch <- 0L
@@ -502,7 +503,8 @@ jdv_json_object <- function(x = list()) {
       content$schema,
       function(column) isTRUE(column$drillable),
       logical(1L)
-    ))
+    )),
+    refresh = TRUE
   )
   capabilities <- append(capabilities, list(FALSE), after = 4L)
   names(capabilities)[[5L]] <- "next"
@@ -527,7 +529,14 @@ jdv_json_object <- function(x = list()) {
   list(method = "view/open", params = params)
 }
 
-.jdv_install <- function(content, title, id, generation) {
+.jdv_install <- function(
+  content,
+  title,
+  id,
+  generation,
+  captured = NULL,
+  intent = NULL
+) {
   entry <- new.env(parent = emptyenv())
   entry$id <- id
   entry$title <- title
@@ -540,6 +549,12 @@ jdv_json_object <- function(x = list()) {
   entry$ncol <- content$ncol
   entry$schema <- content$schema
   entry$collation <- content$collation
+  # The value and the mode/collation the caller asked for, so view/refresh can
+  # rebuild the view. The effective mode is deliberately not the intent: an
+  # automatic choice is made again on every rebuild.
+  entry$captured <- captured
+  entry$intent_mode <- intent$mode
+  entry$intent_collation <- intent$collation
   if (identical(content$mode, "sequential")) {
     entry$stream <- content$stream
     entry$stream_busy <- FALSE
@@ -567,6 +582,7 @@ jdv_json_object <- function(x = list()) {
     entry$holder <- NULL
     entry$source <- NULL
     entry$tree_value <- NULL
+    entry$captured <- NULL
     entry$fingerprint <- NULL
     entry$close_pending <- FALSE
     if (identical(entry$mode, "sequential")) .jdv_sequential_release(entry)
@@ -768,6 +784,8 @@ jdv_register <- function(
 # response). Returns the id, generation, open JSON, and descriptor if any.
 .jdv_register_internal <- function(x, title, mode, collation, emit = TRUE) {
   .jdv_assert_active()
+  .jdv_assert_not_refreshing()
+  collation_intent <- collation
   if (is.null(collation)) {
     collation <- getOption("jdv.collation", "C")
   }
@@ -782,7 +800,7 @@ jdv_register <- function(
   } else if (identical(source$access, "sequential")) {
     .jdv_sequential_register(x, title = title)
   } else {
-    .jdv_grid_register(x, title, mode, collation)
+    .jdv_grid_register(x, title, mode, collation, collation_intent)
   }
   if (emit) {
     .jdv_notify(registered$open)
@@ -791,14 +809,10 @@ jdv_register <- function(
   registered
 }
 
-.jdv_grid_register <- function(x, title, mode, collation) {
-  if (!is.null(title)) {
-    title <- query_string(title, 4096L)
-  }
+.jdv_grid_content <- function(x, mode, collation) {
   if (!is.data.frame(x) && !is.matrix(x)) {
     query_error("invalid_request", "Expected a data frame or matrix.")
   }
-  max_tables <- .jdv_option_limit("jdv.max_tables", 64)
   limits <- list(
     page_rows = .jdv_option_limit("jdv.max_page_rows", 2000),
     work_bytes = .jdv_max_work_bytes(),
@@ -868,6 +882,24 @@ jdv_register <- function(
       }
     }
   )
+  list(content = content, limits = limits, max_message = max_message)
+}
+
+.jdv_grid_register <- function(
+  x,
+  title,
+  mode,
+  collation,
+  collation_intent = collation
+) {
+  if (!is.null(title)) {
+    title <- query_string(title, 4096L)
+  }
+  max_tables <- .jdv_option_limit("jdv.max_tables", 64)
+  built <- .jdv_grid_content(x, mode, collation)
+  content <- built$content
+  limits <- built$limits
+  max_message <- built$max_message
   .jdv_assert_active()
   title_key <- if (is.null(title)) NULL else .jdv_title_key(title)
   previous <- if (
@@ -970,7 +1002,14 @@ jdv_register <- function(
     active <- length(ls(.jdv_state$entries, all.names = TRUE))
   }
   .jdv_assert_active()
-  entry <- .jdv_install(content, title, id, generation)
+  entry <- .jdv_install(
+    content,
+    title,
+    id,
+    generation,
+    captured = x,
+    intent = list(mode = mode, collation = collation_intent)
+  )
   committed <- FALSE
   on.exit(
     if (!committed && isTRUE(.jdv_state$unloading)) {
@@ -1276,6 +1315,18 @@ jdv_register <- function(
     attr(result, "jdv_child_open") <- registered$open
     committed <- TRUE
     return(result)
+  }
+  if (method == "view/refresh") {
+    .jdv_fields(params, c("view", "generation"))
+    if (any(!names(params) %in% c("view", "generation"))) {
+      query_error(
+        "invalid_request",
+        "view/refresh accepts only view and generation."
+      )
+    }
+    entry <- .jdv_rpc_entry(params$view, params$generation)
+    on.exit(.jdv_release_entry(entry), add = TRUE)
+    return(.jdv_refresh_view(entry))
   }
   if (method %in% c("table/rows", "view/schema", "view/close")) {
     .jdv_fields(
