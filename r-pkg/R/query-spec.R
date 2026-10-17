@@ -103,9 +103,17 @@
 #' | Index | 8 | Filtered/sorted row indices, keyed by the validated request. |
 #'
 #' Hits refresh recency, and insertion evicts the least recent entry beyond the
-#' configured count. These are entry limits, not byte or total-memory
-#' guarantees; one column or index can still be large. Every request is
-#' validated before an index-cache hit can be reused.
+#' configured count. Independently, each holder keeps its latest successfully
+#' computed filtered/sorted row index outside these caches and the
+#' `jdv.max_cache_bytes` budget. This lets consecutive pages for one query reuse
+#' the index even when the index-cache entry limit or byte budget would evict
+#' it. A different query or an unfiltered page releases the latest-index slot;
+#' an older result can remain in the LRU index cache if admitted there.
+#' `query_clear()`, generation replacement, and view close release both the slot
+#' and caches. The retained index can be large, so it adds at most one query
+#' result index per open view outside the caches. Cache entry limits are not
+#' byte or total-memory guarantees; one column or index can still be large.
+#' Every request is validated before an index can be reused.
 #'
 #' Failed channel and index computations are not cached. A successfully fetched
 #' source column can remain cached after its channel computation fails. A

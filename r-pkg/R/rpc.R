@@ -558,23 +558,30 @@ jdv_json_object <- function(x = list()) {
 #' `jdv.max_query_rows` are unlimited by default for full sort/filter work;
 #' `jdv.max_cache_bytes` defaults to 32 MiB and `jdv.snapshot_max_bytes` to 10
 #' MiB. Snapshot construction, registration probes, pages, and JSON encoding
-#' retain separate finite derived budgets. Auto mode also uses
-#' `jdv.snapshot_max_cells` (default 10,000) and caps the snapshot byte estimate
-#' by `jdv.max_message_bytes`; if Snapshot-only row-name metadata or snapshot
-#' construction exceeds its budget, Auto retries registration as Paged. Page,
-#' work, cache, and query-row settings are captured when a table is registered.
-#' Snapshot and page work allowances are each the smaller of `INT_MAX`, six
-#' times their output allowance plus 4 MiB, and a finite `jdv.max_work_bytes`
-#' setting. Snapshot uses the smaller of `jdv.snapshot_max_bytes` and
-#' `jdv.max_message_bytes`; page work uses `jdv.max_message_bytes`. When
-#' `jdv.max_work_bytes` is finite, query work, page extraction, and response
-#' encoding share that per-operation allowance. In the event-loop request path,
-#' Interrupt behavior depends on R's suspension state when a transport callback
-#' begins; if interrupts were already suspended, a long sort or filter may not
-#' stop promptly. The viewer UI should show that R is busy. These estimates do
-#' not bound total process memory, source storage, arbitrary user method
-#' allocations, R allocator and GC overhead, or transient R-internal string
-#' conversion and sorting scratch.
+#' retain separate finite derived budgets. Each Paged view also retains its
+#' latest filtered/sorted row index outside the cache byte budget, so pages for
+#' that query do not repeat its sort/filter work. A new query replaces it; an
+#' unfiltered page releases the latest-index slot. Older results may remain in
+#' the LRU index cache. Clearing, generation replacement, or closing the view
+#' releases both the slot and caches. The latest index adds one potentially
+#' large index per open Paged view, while the 32 MiB cache budget continues to
+#' govern the LRU source-column, channel, and result-index caches. Auto mode
+#' also uses `jdv.snapshot_max_cells` (default 10,000) and caps the snapshot
+#' byte estimate by `jdv.max_message_bytes`; if Snapshot-only row-name metadata
+#' or snapshot construction exceeds its budget, Auto retries registration as
+#' Paged. Page, work, cache, and query-row settings are captured when a table is
+#' registered. Snapshot and page work allowances are each the smaller of
+#' `INT_MAX`, six times their output allowance plus 4 MiB, and a finite
+#' `jdv.max_work_bytes` setting. Snapshot uses the smaller of
+#' `jdv.snapshot_max_bytes` and `jdv.max_message_bytes`; page work uses
+#' `jdv.max_message_bytes`. When `jdv.max_work_bytes` is finite, query work,
+#' page extraction, and response encoding share that per-operation allowance. In
+#' the event-loop request path, Interrupt behavior depends on R's suspension
+#' state when a transport callback begins; if interrupts were already suspended,
+#' a long sort or filter may not stop promptly. The viewer UI should show that R
+#' is busy. These estimates do not bound total process memory, source storage,
+#' arbitrary user method allocations, R allocator and GC overhead, or transient
+#' R-internal string conversion and sorting scratch.
 #' @return
 #' A list containing a view `id`, its `open` JSON message, and any pending
 #' transport notifications as JSON strings in `notifications` (for example, a

@@ -157,7 +157,14 @@ and \code{jdv.max_query_rows} (default \code{Inf}). The work and row limits appl
 full sort/filter operations; setting either option to a finite value restores
 the corresponding \code{limit_exceeded} guard. Page, work, cache, and query-row
 settings are captured when a Paged holder is registered; re-register the
-table to apply changed options.
+table to apply changed options. Each open Paged view separately retains its
+latest filtered/sorted row index outside \code{jdv.max_cache_bytes}, allowing
+consecutive pages for that query to reuse the index. A different query or
+unfiltered page releases the latest-index slot; an older result may remain in
+the LRU index cache. Clearing query caches, replacing the view generation, or
+closing the view releases both the slot and caches. This adds at most one
+potentially large result index per open Paged view; the 32 MiB default
+remains the budget for the LRU caches, including older result indices.
 
 \code{mode = "auto"} selects Snapshot only when both the cell estimate
 \code{nrow * max(1, ncol)} and a deterministic byte estimate fit their thresholds.

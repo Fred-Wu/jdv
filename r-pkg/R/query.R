@@ -214,6 +214,8 @@ query_clear <- function(holder) {
   holder$column_cache <- list()
   holder$channel_cache <- list()
   holder$index_cache <- list()
+  holder$recent_index_key <- NULL
+  holder$recent_indices <- NULL
   holder$cache_order <- character()
   holder$cache_sizes <- numeric()
   holder$cache_bytes <- 0
@@ -440,35 +442,43 @@ query_indices <- function(holder, sort = list(), filter = NULL, budget = NULL) {
   filter <- query_filter_validate(holder, filter)
   budget <- budget %||% .jdv_budget(holder$limits$work_bytes)
   if (!length(sort) && is.null(filter)) {
+    holder$recent_index_key <- NULL
+    holder$recent_indices <- NULL
     # seq_len() is ALTREP on supported R versions and does not materialize a
     # full row index for an unfiltered table.
     return(seq_len(holder$nrow))
   }
-  if (
-    holder$nrow > holder$limits$query_rows ||
-      as.double(holder$nrow) *
-        (16 + 24 * length(sort) + 6 * .jdv_filter_nodes(filter)) >
-        .jdv_budget_remaining(budget)
-  ) {
+  if (holder$nrow > holder$limits$query_rows) {
     query_error(
       "limit_exceeded",
       "Sort and filter work exceeds the configured row or byte limit."
     )
   }
-  .jdv_budget_charge(
-    budget,
-    as.double(holder$nrow) *
-      (16 + 24 * length(sort) + 6 * .jdv_filter_nodes(filter)),
-    "query_index"
-  )
   key <- paste(
     as.character(serialize(list(sort, filter), NULL, version = 2L)),
     collapse = ""
   )
+  if (!identical(holder$recent_index_key, key)) {
+    holder$recent_index_key <- NULL
+    holder$recent_indices <- NULL
+  } else if (!is.null(holder$recent_indices)) {
+    return(holder$recent_indices)
+  }
   cached <- query_cache_get(holder, "index_cache", key)
   if (!is.null(cached)) {
+    holder$recent_index_key <- key
+    holder$recent_indices <- cached
     return(cached)
   }
+  work <- as.double(holder$nrow) *
+    (16 + 24 * length(sort) + 6 * .jdv_filter_nodes(filter))
+  if (work > .jdv_budget_remaining(budget)) {
+    query_error(
+      "limit_exceeded",
+      "Sort and filter work exceeds the configured row or byte limit."
+    )
+  }
+  .jdv_budget_charge(budget, work, "query_index")
   rows <- if (is.null(filter)) {
     seq_len(holder$nrow)
   } else {
@@ -505,7 +515,10 @@ query_indices <- function(holder, sort = list(), filter = NULL, budget = NULL) {
       })
     ]
   }
-  query_cache_set(holder, "index_cache", key, rows)
+  rows <- query_cache_set(holder, "index_cache", key, rows)
+  holder$recent_index_key <- key
+  holder$recent_indices <- rows
+  rows
 }
 
 query_page <- function(
@@ -557,6 +570,8 @@ query_page <- function(
     count <- min(limit, max(0, total - offset))
     rows <- if (count) indices[offset + seq_len(count)] else integer()
   } else {
+    holder$recent_index_key <- NULL
+    holder$recent_indices <- NULL
     total <- holder$nrow
     count <- min(limit, max(0, total - offset))
     rows <- if (count) seq.int(offset + 1, length.out = count) else integer()
