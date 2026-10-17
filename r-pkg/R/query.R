@@ -124,6 +124,33 @@ query_slice <- function(x, rows) {
   out
 }
 
+# An attribute-free logical, integer, or double vector: its probe result is
+# determined by its type alone when it dispatches to the default methods.
+query_plain_candidate <- function(column) {
+  !is.object(column) &&
+    typeof(column) %in% c("logical", "integer", "double") &&
+    is.null(attributes(column))
+}
+
+# TRUE when the column generics resolve to jdv's own default methods for the
+# implicit class of this type, so user-defined methods are never bypassed.
+query_plain_dispatch <- function(type) {
+  classes <- c(type, if (type != "logical") "numeric")
+  own <- topenv(environment(query_plain_dispatch))
+  for (generic in c("col_display", "col_is_na", "col_values", "col_sort_key")) {
+    for (class in classes) {
+      if (!is.null(utils::getS3method(generic, class, optional = TRUE))) {
+        return(FALSE)
+      }
+    }
+    default <- utils::getS3method(generic, "default", optional = TRUE)
+    if (!identical(environment(default), own)) {
+      return(FALSE)
+    }
+  }
+  TRUE
+}
+
 query_probe <- function(holder, budget = NULL) {
   x <- holder$source
   budget <- budget %||% .jdv_budget(holder$limits$page_work_bytes)
@@ -142,15 +169,33 @@ query_probe <- function(holder, budget = NULL) {
     NULL
   }
   probe_peak <- budget$used
+  # Plain atomic columns of one type that dispatch to the default methods are
+  # probed once and the result is shared, like the columns of a matrix.
+  plain_probes <- list()
+  plain_dispatch <- list()
   probes <- lapply(seq_len(n), function(i) {
     budget$used <- 0
     result <- if (is.matrix(x)) {
       shared
     } else {
       column <- x[[i]]
+      plain_type <- NULL
+      if (query_plain_candidate(column)) {
+        type <- typeof(column)
+        if (is.null(plain_dispatch[[type]])) {
+          plain_dispatch[[type]] <<- query_plain_dispatch(type)
+        }
+        if (plain_dispatch[[type]]) plain_type <- type
+      }
+      if (!is.null(plain_type) && !is.null(plain_probes[[plain_type]])) {
+        reused <- plain_probes[[plain_type]]
+        reused$schema$name <- column_names[[i]]
+        reused$schema$position <- i - 1L
+        return(list(schema = reused$schema, errors = reused$errors))
+      }
       schema <- column_schema(column)
       packed <- is.matrix(column) || is.data.frame(column)
-      query_try(function() {
+      probed <- query_try(function() {
         column_extract(
           if (packed) column else query_slice(column, rows),
           channels,
@@ -160,6 +205,10 @@ query_probe <- function(holder, budget = NULL) {
           rows = if (packed) rows else NULL
         )
       })
+      if (!is.null(plain_type)) {
+        plain_probes[[plain_type]] <<- probed
+      }
+      probed
     }
     probe_peak <- max(probe_peak, budget$used)
     result$schema$name <- column_names[[i]]

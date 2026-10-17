@@ -77,9 +77,13 @@
 #' probes the first column once and reuses that homogeneous type/schema result
 #' for all column positions and names. It retains the original matrix rather
 #' than extracting every full column. For a data frame, it probes a finite row
-#' slice of each existing column reference. Probe extraction includes display,
-#' missingness, values, and sort keys; it does not compute full-column filter
-#' text.
+#' slice of each existing column reference, except that attribute-free logical,
+#' integer, and double columns whose implicit class dispatches only to the
+#' package's default column methods are probed once per type and the result is
+#' shared by every such column. Columns with a class, attributes, or any
+#' user-defined column method are always probed individually. Probe extraction
+#' includes display, missingness, values, and sort keys; it does not compute
+#' full-column filter text.
 #'
 #' Registration does not create automatic row names or a full `row_index`
 #' vector. Without a sort or filter, original row order is generated when
