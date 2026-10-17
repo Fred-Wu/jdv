@@ -191,11 +191,11 @@ Filter objects use these exact fields:\tabular{lll}{
    \code{and}, \code{or} \tab \code{op}, \code{args} (array of child objects) \tab Any valid children. \cr
    \code{not} \tab \code{op}, \code{arg} (one child object) \tab Any valid child. \cr
    \code{is_na} \tab \code{op}, \code{col} \tab Any column with a valid missingness channel. \cr
-   \code{contains}, \code{starts_with}, \code{ends_with}, \code{text_equals} \tab \code{op}, \code{col}, \code{value} \tab String, factor. \cr
-   \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge} \tab \code{op}, \code{col}, \code{value} \tab Integer, number, duration, date, datetime; integer64 supports only \code{eq}. \cr
-   \code{between} \tab \code{op}, \code{col}, \code{lower}, \code{upper} \tab Integer, number, duration, date, datetime, integer64. \cr
-   \code{is_true}, \code{is_false} \tab \code{op}, \code{col} \tab Boolean. \cr
-   \verb{in} \tab \code{op}, \code{col}, \code{values} (array of labels) \tab Factor. \cr
+   \code{contains}, \code{starts_with}, \code{ends_with}, \code{text_equals} \tab \code{op}, \code{col}, \code{value} \tab \code{string}, \code{factor}. \cr
+   \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge} \tab \code{op}, \code{col}, \code{value} \tab \code{integer}, \code{number}, \code{duration}, \code{date}, \code{datetime}; \code{int64} supports only \code{eq}. \cr
+   \code{between} \tab \code{op}, \code{col}, \code{lower}, \code{upper} \tab \code{integer}, \code{number}, \code{duration}, \code{date}, \code{datetime}, \code{int64}. \cr
+   \code{is_true}, \code{is_false} \tab \code{op}, \code{col} \tab \code{boolean}. \cr
+   \verb{in} \tab \code{op}, \code{col}, \code{values} (array of labels) \tab \code{factor}. \cr
 }
 
 
@@ -224,16 +224,13 @@ mask. Missing meaning never comes from display labels such as the literal
 string \code{"NA"}.
 
 Being displayable and being filterable are separate. Value-based filters are
-limited to an explicit list of column types: logical, integer, double, and
-character vectors without a class, factors, \code{Date}, \code{POSIXct} and \code{POSIXlt},
-\code{\link[base:difftime]{base::difftime()}} (including the hms package's \code{hms}), and \code{integer64}. A
-vector wrapped only by \code{\link[base:I]{base::I()}} is classified by its contents, so \code{I(1:3)}
-is an integer column. \code{I()} around a classed vector keeps the classification
-of that class, so an \code{I()} factor is a factor column and an \code{I()} \code{difftime}
-is a duration column. Any other S3 or S4 class has schema \code{type} \code{other} and
-\code{filterable} false. It is still displayed and sorted through \code{\link[base:format]{base::format()}}
-and \code{\link[base:xtfrm]{base::xtfrm()}}, and answers \code{is_na}, but every other operator fails with
-\code{unsupported} ("Column is not filterable.").
+limited to an explicit list of schema \code{type} values, those in the table
+above; the schema's \code{filterable} field is true exactly for them. A column of
+type \code{list} or \code{other} has \code{filterable} false. It is still displayed, sorted
+when \code{sortable} is true, and answers \code{is_na}, but every other operator fails
+with \code{unsupported} ("Column is not filterable."). Which R vectors receive
+each \code{type} is not part of the protocol; see R column mapping (informative)
+below.
 }
 
 \section{Text}{
@@ -307,13 +304,10 @@ infinities from \code{special}; null values alone do not distinguish all cases.
 \section{Duration}{
 
 
-A column that inherits from \code{\link[base:difftime]{base::difftime()}} has schema \code{type} \code{duration}
-and a \code{units} field that is one of \code{secs}, \code{mins}, \code{hours}, \code{days}, or
-\code{weeks}. A class that extends it, such as \code{hms} from the hms package (always
-in \code{secs}), is handled the same way. A \code{difftime} whose \code{units} attribute is
-missing or not one of these values has type \code{other}. The supported operators
-are \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between}, and \code{is_na}; text, \verb{in},
-and Boolean operators fail with \code{unsupported}.
+A column with schema \code{type} \code{duration} has a \code{units} field that is one of
+\code{secs}, \code{mins}, \code{hours}, \code{days}, or \code{weeks}. The supported operators are
+\code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between}, and \code{is_na}; text, \verb{in}, and
+Boolean operators fail with \code{unsupported}.
 
 A duration operand is either:
 \itemize{
@@ -330,13 +324,12 @@ ISO date, or a string with a sign other than \code{-} or with whitespace, is
 Units are converted by the factors of \code{\link[base:difftime]{base::difftime()}}: 1 for \code{secs}, 60
 for \code{mins}, 3600 for \code{hours}, 86400 for \code{days}, and 604800 for \code{weeks} (a
 week is 7 days). Comparisons are between doubles in the column's units,
-without any display rounding: the fractional seconds that a format method
-shows (for example, those of an hms vector) are not used, so a value
-displayed as \code{0:00:01} can be larger than a \code{0:00:01} operand. A clock-time
-operand that is not exactly representable in the column's units, such as one
-second in \code{mins}, is subject to ordinary floating-point rounding. As for
-numbers, \code{NA} and \code{NaN} never match a comparison, and infinities are restored
-from \code{special}.
+without any display rounding: the fractional seconds that the display text
+shows are not used, so a value displayed as \code{0:00:01} can be larger than a
+\code{0:00:01} operand. A clock-time operand that is not exactly representable in
+the column's units, such as one second in \code{mins}, is subject to ordinary
+floating-point rounding. As for numbers, \code{NA} and \code{NaN} never match a
+comparison, and infinities are restored from \code{special}.
 }
 
 \section{Date and datetime}{
@@ -371,8 +364,48 @@ and the reserved NA value \code{-9223372036854775808} are invalid.
 \code{eq} and inclusive \code{between} compare the original integer64 bits in C,
 retaining exact distinctions beyond \code{2^53}. Other numeric operators are
 unsupported for integer64. Reversed bounds are invalid, and missing rows
-compare false. A custom integer64 subclass may decorate display through its
-format method; values, ordering, and filters remain exact C operations.
+compare false.
+}
+
+\section{R column mapping (informative)}{
+
+
+This section is informative. It describes how the current R implementation
+(the jdv package) assigns a schema \code{type} to a column, and it is not part of
+the protocol. Which R classes and vectors map to which \code{type} can change from
+release to release without a protocol version change. Clients decide behavior
+from \code{type}, \code{filterable}, and \code{sortable}, never from the R class names in
+the schema's \code{class} field; see the Column types section of \link{jdv_spec}.\tabular{lll}{
+   R column \tab Schema \code{type} \tab Notes \cr
+   Logical vector without a class \tab \code{boolean} \tab  \cr
+   Integer vector without a class \tab \code{integer} \tab  \cr
+   Double vector without a class \tab \code{number} \tab  \cr
+   Character vector without a class \tab \code{string} \tab  \cr
+   Factor, including ordered factors \tab \code{factor} \tab \code{levels} and \code{ordered} come from the factor. \cr
+   \code{Date} \tab \code{date} \tab  \cr
+   \code{POSIXct} and \code{POSIXlt} \tab \code{datetime} \tab \code{tz} is the time-zone setting of the vector. \cr
+   \code{\link[base:difftime]{base::difftime()}}, including classes that extend it such as \code{hms} \tab \code{duration} \tab \code{units} is the \code{units} attribute (always \code{secs} for \code{hms}). \cr
+   \code{difftime} whose \code{units} attribute is missing or not one of the five known units \tab \code{other} \tab The units cannot be converted. \cr
+   \code{integer64} \tab \code{int64} \tab  \cr
+   List without a class \tab \code{list} \tab Not sortable and not filterable. \cr
+   Matrix or data-frame column \tab \code{other} \tab Not sortable and not filterable. \cr
+   Complex and raw vectors \tab \code{other} \tab Not sortable and not filterable. \cr
+   Any other S3 or S4 class \tab \code{other} \tab Displayed through \code{\link[base:format]{base::format()}} and sorted through \code{\link[base:xtfrm]{base::xtfrm()}} when sortable; answers \code{is_na}. \cr
+}
+
+
+An atomic vector wrapped only by \code{\link[base:I]{base::I()}} is classified by its contents,
+so \code{I(1:3)} is an \code{integer} column. An \code{I()} list is an \code{other} column that
+is sortable and drillable but not filterable. \code{I()} around a classed vector
+keeps the classification of that class, so an \code{I()} factor is a \code{factor}
+column and an \code{I()} \code{difftime} is a \code{duration} column.
+
+The \code{drillable} field of the schema is true for unclassed list, \code{AsIs} list,
+\code{vctrs_list_of}, data-frame, and matrix columns. It is false for record
+columns, \code{POSIXlt}, other classed lists, S4 objects, and atomic columns.
+
+A custom \code{integer64} subclass may decorate display through its format method;
+values, ordering, and filters remain exact C operations.
 }
 
 \section{Stable multi-column sort}{

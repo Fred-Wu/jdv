@@ -666,6 +666,13 @@ jdv_notifications <- function() {
 #' @param track Whether to follow the variable passed as `x`; see Details.
 #' @return The view id, invisibly.
 #' @details
+#' In a grid view, every column is displayed, but only some columns can be
+#' filtered by value (for example logical, numeric, character, factor, date,
+#' date-time, duration, and integer64 columns). Others, such as list columns and
+#' columns of unsupported classes, can only be tested for missing values. See
+#' the R column mapping section of [jdv_query_spec] for which columns are
+#' supported by the current release.
+#'
 #' The viewer connection is opened on the first call unless [jdv_connect()]
 #' already opened one; in that case the existing connection is used and `hello`
 #' is not sent again. An address can be set in `options(jdv.address = ...)` or

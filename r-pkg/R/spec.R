@@ -259,13 +259,12 @@
 #' Grid-level flags declare the operations available in protocol v1; each
 #' column's `sortable` field constrains sorting, and `filterable` constrains
 #' value-based filter operators. `filterable` is false for columns of type
-#' `other` (S3 and S4 classes that have no explicit filter support), and `is_na`
-#' remains valid when a valid missingness mask is available, even when
-#' `filterable` is false. Clients must accept `nrow: null` when a grid row count
-#' is unknown; the protocol does not define `total_rows`. The descriptor's
-#' `encoding` field does not change the envelope's `encoding: "json"` setting.
-#' Snapshot mode's `params.data` contains the full data payload as described
-#' under the Column payloads section below.
+#' `list` and `other`, and `is_na` remains valid when a valid missingness mask
+#' is available, even when `filterable` is false. Clients must accept
+#' `nrow: null` when a grid row count is unknown; the protocol does not define
+#' `total_rows`. The descriptor's `encoding` field does not change the
+#' envelope's `encoding: "json"` setting. Snapshot mode's `params.data` contains
+#' the full data payload as described under the Column payloads section below.
 #'
 #' A tree descriptor has no grid fields:
 #'
@@ -811,11 +810,12 @@
 #' requires `capabilities.children: true` and `columns[column].drillable: true`;
 #' malformed selectors or non-drillable columns return `invalid_request`.
 #'
-#' Each grid column schema includes the Boolean `drillable`. It is true only for
-#' unclassed list, `AsIs` list, `vctrs_list_of`, data-frame, and matrix columns.
-#' It is false for record columns, `POSIXlt`, other classed lists, and atomic
-#' columns. This metadata is independent of `sortable` and `filterable`; clients
-#' must not infer drillability from display text. Snapshot views retain the R
+#' Each grid column schema includes the Boolean `drillable`, which says whether
+#' the column's cells can be selected by `kind: "cell"`. This metadata is
+#' independent of `type`, `sortable`, and `filterable`; clients must not infer
+#' drillability from the type, the class, or display text. The R columns that
+#' are drillable are listed in the R column mapping (informative) section of
+#' \link[=jdv_query_spec]{query specification}. Snapshot views retain the R
 #' source only when a drillable column needs subsequent cell capture. Retained
 #' source references are released when the view closes.
 #'
@@ -1202,6 +1202,46 @@
 #' callback.
 #'
 #'
+#' @section Column types:
+#'
+#'
+#' The schema `type` of a column is one of the following values. This table and
+#' the rules below are the protocol contract; filter operators and operand forms
+#' are defined in the \link[=jdv_query_spec]{query specification}.
+#'
+#' | `type` | Additional schema fields | Value filter operators |
+#' | --- | --- | --- |
+#' | `boolean` | | `is_true`, `is_false` |
+#' | `integer`, `number` | | `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `between` |
+#' | `string` | | `contains`, `starts_with`, `ends_with`, `text_equals` |
+#' | `factor` | `levels`, `ordered` | The text operators, and `in` |
+#' | `date` | | `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `between` |
+#' | `datetime` | `tz` | `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `between` |
+#' | `int64` | | `eq`, `between` |
+#' | `duration` | `units` | `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `between` |
+#' | `list`, `other` | | None |
+#'
+#' Every column type also accepts `is_na` when a valid missingness mask is
+#' available. A client decides what it can do with a column from `type`,
+#' `filterable`, `sortable`, and the grid `capabilities` alone. The schema's
+#' `class` field is informational: a client may use it as a display hint, such
+#' as for an input placeholder, but must not use it to infer semantics. Which R
+#' classes produce which `type` is an implementation detail described, as
+#' informative text, in the R column mapping section of
+#' \link[=jdv_query_spec]{query specification}, and can change without a
+#' protocol version change.
+#'
+#' A client that receives a `type` it does not know must treat the column as
+#' display-only, exactly like `other`: it follows the column's `sortable` for
+#' sorting, offers no value-based filter, and uses only `is_na`. It must not
+#' fail, hide the column, or guess from `class`. Because of this rule, a new
+#' `type` can be added without changing the protocol major version. For the same
+#' reason, a later release may add operators or operand forms to a known type; a
+#' client offers only the operators it knows for that type and must be prepared
+#' for the server to answer a request with an `unsupported` error, which is an
+#' ordinary failure of that request and not a protocol violation.
+#'
+#'
 #' @section Column payloads:
 #'
 #'
@@ -1210,7 +1250,8 @@
 #' `position`, `name`, `type`, `class`, `sortable`, and `filterable`. Factor
 #' schemas also include `levels` and `ordered`; datetime schemas include `tz`;
 #' duration schemas include `units`. Unknown optional schema fields must be
-#' ignored by clients so future schema extensions remain compatible.
+#' ignored by clients so future schema extensions remain compatible; the Column
+#' types section defines how to treat an unknown `type` value.
 #'
 #' A Snapshot column payload is columnar. Channel arrays are omitted when
 #' absent:
@@ -1246,7 +1287,7 @@
 #' - `boolean`, `integer`, and finite `number` values use JSON booleans or numbers.
 #'   `duration` values are numbers in the schema's `units` (`secs`, `mins`,
 #'   `hours`, `days`, or `weeks`), with the same missing and non-finite rules as
-#'   `number`; `display` carries the class's own formatted text.
+#'   `number`; `display` carries the formatted text.
 #'   Missing values use JSON `null` and are identified by `na`.
 #' - Non-finite doubles use JSON `null` in `values`; the parallel `special` entry
 #'   distinguishes `na`, `nan`, `pos_inf`, and `neg_inf`. Numeric comparisons and

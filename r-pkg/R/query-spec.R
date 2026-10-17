@@ -191,11 +191,11 @@
 #' | `and`, `or` | `op`, `args` (array of child objects) | Any valid children. |
 #' | `not` | `op`, `arg` (one child object) | Any valid child. |
 #' | `is_na` | `op`, `col` | Any column with a valid missingness channel. |
-#' | `contains`, `starts_with`, `ends_with`, `text_equals` | `op`, `col`, `value` | String, factor. |
-#' | `eq`, `ne`, `lt`, `le`, `gt`, `ge` | `op`, `col`, `value` | Integer, number, duration, date, datetime; integer64 supports only `eq`. |
-#' | `between` | `op`, `col`, `lower`, `upper` | Integer, number, duration, date, datetime, integer64. |
-#' | `is_true`, `is_false` | `op`, `col` | Boolean. |
-#' | `in` | `op`, `col`, `values` (array of labels) | Factor. |
+#' | `contains`, `starts_with`, `ends_with`, `text_equals` | `op`, `col`, `value` | `string`, `factor`. |
+#' | `eq`, `ne`, `lt`, `le`, `gt`, `ge` | `op`, `col`, `value` | `integer`, `number`, `duration`, `date`, `datetime`; `int64` supports only `eq`. |
+#' | `between` | `op`, `col`, `lower`, `upper` | `integer`, `number`, `duration`, `date`, `datetime`, `int64`. |
+#' | `is_true`, `is_false` | `op`, `col` | `boolean`. |
+#' | `in` | `op`, `col`, `values` (array of labels) | `factor`. |
 #'
 #' Example:
 #'
@@ -223,16 +223,13 @@
 #' string `"NA"`.
 #'
 #' Being displayable and being filterable are separate. Value-based filters are
-#' limited to an explicit list of column types: logical, integer, double, and
-#' character vectors without a class, factors, `Date`, `POSIXct` and `POSIXlt`,
-#' [base::difftime()] (including the hms package's `hms`), and `integer64`. A
-#' vector wrapped only by [base::I()] is classified by its contents, so `I(1:3)`
-#' is an integer column. `I()` around a classed vector keeps the classification
-#' of that class, so an `I()` factor is a factor column and an `I()` `difftime`
-#' is a duration column. Any other S3 or S4 class has schema `type` `other` and
-#' `filterable` false. It is still displayed and sorted through [base::format()]
-#' and [base::xtfrm()], and answers `is_na`, but every other operator fails with
-#' `unsupported` ("Column is not filterable.").
+#' limited to an explicit list of schema `type` values, those in the table
+#' above; the schema's `filterable` field is true exactly for them. A column of
+#' type `list` or `other` has `filterable` false. It is still displayed, sorted
+#' when `sortable` is true, and answers `is_na`, but every other operator fails
+#' with `unsupported` ("Column is not filterable."). Which R vectors receive
+#' each `type` is not part of the protocol; see R column mapping (informative)
+#' below.
 #'
 #'
 #' @section Text:
@@ -308,13 +305,10 @@
 #' @section Duration:
 #'
 #'
-#' A column that inherits from [base::difftime()] has schema `type` `duration`
-#' and a `units` field that is one of `secs`, `mins`, `hours`, `days`, or
-#' `weeks`. A class that extends it, such as `hms` from the hms package (always
-#' in `secs`), is handled the same way. A `difftime` whose `units` attribute is
-#' missing or not one of these values has type `other`. The supported operators
-#' are `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `between`, and `is_na`; text, `in`,
-#' and Boolean operators fail with `unsupported`.
+#' A column with schema `type` `duration` has a `units` field that is one of
+#' `secs`, `mins`, `hours`, `days`, or `weeks`. The supported operators are
+#' `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `between`, and `is_na`; text, `in`, and
+#' Boolean operators fail with `unsupported`.
 #'
 #' A duration operand is either:
 #'
@@ -330,13 +324,12 @@
 #' Units are converted by the factors of [base::difftime()]: 1 for `secs`, 60
 #' for `mins`, 3600 for `hours`, 86400 for `days`, and 604800 for `weeks` (a
 #' week is 7 days). Comparisons are between doubles in the column's units,
-#' without any display rounding: the fractional seconds that a format method
-#' shows (for example, those of an hms vector) are not used, so a value
-#' displayed as `0:00:01` can be larger than a `0:00:01` operand. A clock-time
-#' operand that is not exactly representable in the column's units, such as one
-#' second in `mins`, is subject to ordinary floating-point rounding. As for
-#' numbers, `NA` and `NaN` never match a comparison, and infinities are restored
-#' from `special`.
+#' without any display rounding: the fractional seconds that the display text
+#' shows are not used, so a value displayed as `0:00:01` can be larger than a
+#' `0:00:01` operand. A clock-time operand that is not exactly representable in
+#' the column's units, such as one second in `mins`, is subject to ordinary
+#' floating-point rounding. As for numbers, `NA` and `NaN` never match a
+#' comparison, and infinities are restored from `special`.
 #'
 #'
 #' @section Date and datetime:
@@ -371,8 +364,48 @@
 #' `eq` and inclusive `between` compare the original integer64 bits in C,
 #' retaining exact distinctions beyond `2^53`. Other numeric operators are
 #' unsupported for integer64. Reversed bounds are invalid, and missing rows
-#' compare false. A custom integer64 subclass may decorate display through its
-#' format method; values, ordering, and filters remain exact C operations.
+#' compare false.
+#'
+#'
+#' @section R column mapping (informative):
+#'
+#'
+#' This section is informative. It describes how the current R implementation
+#' (the jdv package) assigns a schema `type` to a column, and it is not part of
+#' the protocol. Which R classes and vectors map to which `type` can change from
+#' release to release without a protocol version change. Clients decide behavior
+#' from `type`, `filterable`, and `sortable`, never from the R class names in
+#' the schema's `class` field; see the Column types section of [jdv_spec].
+#'
+#' | R column | Schema `type` | Notes |
+#' | --- | --- | --- |
+#' | Logical vector without a class | `boolean` | |
+#' | Integer vector without a class | `integer` | |
+#' | Double vector without a class | `number` | |
+#' | Character vector without a class | `string` | |
+#' | Factor, including ordered factors | `factor` | `levels` and `ordered` come from the factor. |
+#' | `Date` | `date` | |
+#' | `POSIXct` and `POSIXlt` | `datetime` | `tz` is the time-zone setting of the vector. |
+#' | [base::difftime()], including classes that extend it such as `hms` | `duration` | `units` is the `units` attribute (always `secs` for `hms`). |
+#' | `difftime` whose `units` attribute is missing or not one of the five known units | `other` | The units cannot be converted. |
+#' | `integer64` | `int64` | |
+#' | List without a class | `list` | Not sortable and not filterable. |
+#' | Matrix or data-frame column | `other` | Not sortable and not filterable. |
+#' | Complex and raw vectors | `other` | Not sortable and not filterable. |
+#' | Any other S3 or S4 class | `other` | Displayed through [base::format()] and sorted through [base::xtfrm()] when sortable; answers `is_na`. |
+#'
+#' An atomic vector wrapped only by [base::I()] is classified by its contents,
+#' so `I(1:3)` is an `integer` column. An `I()` list is an `other` column that
+#' is sortable and drillable but not filterable. `I()` around a classed vector
+#' keeps the classification of that class, so an `I()` factor is a `factor`
+#' column and an `I()` `difftime` is a `duration` column.
+#'
+#' The `drillable` field of the schema is true for unclassed list, `AsIs` list,
+#' `vctrs_list_of`, data-frame, and matrix columns. It is false for record
+#' columns, `POSIXlt`, other classed lists, S4 objects, and atomic columns.
+#'
+#' A custom `integer64` subclass may decorate display through its format method;
+#' values, ordering, and filters remain exact C operations.
 #'
 #'
 #' @section Stable multi-column sort:

@@ -262,13 +262,12 @@ update it quietly for \code{"tracked"} and \code{"refresh"}.
 Grid-level flags declare the operations available in protocol v1; each
 column's \code{sortable} field constrains sorting, and \code{filterable} constrains
 value-based filter operators. \code{filterable} is false for columns of type
-\code{other} (S3 and S4 classes that have no explicit filter support), and \code{is_na}
-remains valid when a valid missingness mask is available, even when
-\code{filterable} is false. Clients must accept \code{nrow: null} when a grid row count
-is unknown; the protocol does not define \code{total_rows}. The descriptor's
-\code{encoding} field does not change the envelope's \code{encoding: "json"} setting.
-Snapshot mode's \code{params.data} contains the full data payload as described
-under the Column payloads section below.
+\code{list} and \code{other}, and \code{is_na} remains valid when a valid missingness mask
+is available, even when \code{filterable} is false. Clients must accept
+\code{nrow: null} when a grid row count is unknown; the protocol does not define
+\code{total_rows}. The descriptor's \code{encoding} field does not change the
+envelope's \code{encoding: "json"} setting. Snapshot mode's \code{params.data} contains
+the full data payload as described under the Column payloads section below.
 
 A tree descriptor has no grid fields:
 
@@ -806,11 +805,12 @@ including its cell step, contains at most 32 steps. Grid \code{object/open}
 requires \code{capabilities.children: true} and \verb{columns[column].drillable: true};
 malformed selectors or non-drillable columns return \code{invalid_request}.
 
-Each grid column schema includes the Boolean \code{drillable}. It is true only for
-unclassed list, \code{AsIs} list, \code{vctrs_list_of}, data-frame, and matrix columns.
-It is false for record columns, \code{POSIXlt}, other classed lists, and atomic
-columns. This metadata is independent of \code{sortable} and \code{filterable}; clients
-must not infer drillability from display text. Snapshot views retain the R
+Each grid column schema includes the Boolean \code{drillable}, which says whether
+the column's cells can be selected by \code{kind: "cell"}. This metadata is
+independent of \code{type}, \code{sortable}, and \code{filterable}; clients must not infer
+drillability from the type, the class, or display text. The R columns that
+are drillable are listed in the R column mapping (informative) section of
+\link[=jdv_query_spec]{query specification}. Snapshot views retain the R
 source only when a drillable column needs subsequent cell capture. Retained
 source references are released when the view closes.
 
@@ -1194,6 +1194,46 @@ loop, so frames sent in response to an acknowledgement are read in a later
 callback.
 }
 
+\section{Column types}{
+
+
+The schema \code{type} of a column is one of the following values. This table and
+the rules below are the protocol contract; filter operators and operand forms
+are defined in the \link[=jdv_query_spec]{query specification}.\tabular{lll}{
+   \code{type} \tab Additional schema fields \tab Value filter operators \cr
+   \code{boolean} \tab  \tab \code{is_true}, \code{is_false} \cr
+   \code{integer}, \code{number} \tab  \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
+   \code{string} \tab  \tab \code{contains}, \code{starts_with}, \code{ends_with}, \code{text_equals} \cr
+   \code{factor} \tab \code{levels}, \code{ordered} \tab The text operators, and \verb{in} \cr
+   \code{date} \tab  \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
+   \code{datetime} \tab \code{tz} \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
+   \code{int64} \tab  \tab \code{eq}, \code{between} \cr
+   \code{duration} \tab \code{units} \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
+   \code{list}, \code{other} \tab  \tab None \cr
+}
+
+
+Every column type also accepts \code{is_na} when a valid missingness mask is
+available. A client decides what it can do with a column from \code{type},
+\code{filterable}, \code{sortable}, and the grid \code{capabilities} alone. The schema's
+\code{class} field is informational: a client may use it as a display hint, such
+as for an input placeholder, but must not use it to infer semantics. Which R
+classes produce which \code{type} is an implementation detail described, as
+informative text, in the R column mapping section of
+\link[=jdv_query_spec]{query specification}, and can change without a
+protocol version change.
+
+A client that receives a \code{type} it does not know must treat the column as
+display-only, exactly like \code{other}: it follows the column's \code{sortable} for
+sorting, offers no value-based filter, and uses only \code{is_na}. It must not
+fail, hide the column, or guess from \code{class}. Because of this rule, a new
+\code{type} can be added without changing the protocol major version. For the same
+reason, a later release may add operators or operand forms to a known type; a
+client offers only the operators it knows for that type and must be prepared
+for the server to answer a request with an \code{unsupported} error, which is an
+ordinary failure of that request and not a protocol violation.
+}
+
 \section{Column payloads}{
 
 
@@ -1202,7 +1242,8 @@ may be empty, duplicated, or otherwise unusual. A schema entry includes
 \code{position}, \code{name}, \code{type}, \code{class}, \code{sortable}, and \code{filterable}. Factor
 schemas also include \code{levels} and \code{ordered}; datetime schemas include \code{tz};
 duration schemas include \code{units}. Unknown optional schema fields must be
-ignored by clients so future schema extensions remain compatible.
+ignored by clients so future schema extensions remain compatible; the Column
+types section defines how to treat an unknown \code{type} value.
 
 A Snapshot column payload is columnar. Channel arrays are omitted when
 absent:
@@ -1236,7 +1277,7 @@ The following encoding rules apply:
 \item \code{boolean}, \code{integer}, and finite \code{number} values use JSON booleans or numbers.
 \code{duration} values are numbers in the schema's \code{units} (\code{secs}, \code{mins},
 \code{hours}, \code{days}, or \code{weeks}), with the same missing and non-finite rules as
-\code{number}; \code{display} carries the class's own formatted text.
+\code{number}; \code{display} carries the formatted text.
 Missing values use JSON \code{null} and are identified by \code{na}.
 \item Non-finite doubles use JSON \code{null} in \code{values}; the parallel \code{special} entry
 distinguishes \code{na}, \code{nan}, \code{pos_inf}, and \code{neg_inf}. Numeric comparisons and
