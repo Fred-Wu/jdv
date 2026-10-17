@@ -2049,56 +2049,56 @@ async function respondToR(
     }
     if (request.method === "object/open") {
       const path = params.path as Array<Record<string, unknown>>;
-      if (path[0]?.index === 3) {
+      const reply = async (result: Record<string, unknown>) => {
+        await writeFrame(connection, { method: "view/open", params: result });
         await writeFrame(connection, {
           id: request.id,
-          result: {
-            view: "nested-tree",
-            generation: 1,
-            kind: "tree",
-            access: "random",
-            encoding: "r-json",
-            title: "Nested object",
-            class: ["list"],
-            path: [],
-            parent: "tree-root",
-            capabilities: {
-              seek: true,
-              sort: false,
-              filter: false,
-              known_total: true,
-              next: false,
-              children: true,
-            },
-          },
+          result,
           warnings: [],
+        });
+      };
+      if (path[0]?.index === 3) {
+        await reply({
+          view: "nested-tree",
+          generation: 1,
+          kind: "tree",
+          access: "random",
+          encoding: "r-json",
+          title: "Nested object",
+          class: ["list"],
+          path: [],
+          parent: "tree-root",
+          capabilities: {
+            seek: true,
+            sort: false,
+            filter: false,
+            known_total: true,
+            next: false,
+            children: true,
+          },
         });
         continue;
       }
-      await writeFrame(connection, {
-        id: request.id,
-        result: {
-          view: "tree-child-grid",
-          generation: 1,
-          kind: "grid",
-          access: "snapshot",
-          encoding: "r-json",
-          mode: "snapshot",
-          title: "Child table",
-          parent: "tree-root",
-          nrow: 1,
-          ncol: 1,
-          columns: [{
-            position: 0,
-            name: "value",
-            type: "integer",
-            sortable: true,
-            filterable: true,
-          }],
-          capabilities: gridCapabilities(),
-          data: { columns: ["value"], rows: [[1]] },
-        },
-        warnings: [],
+      await reply({
+        view: "tree-child-grid",
+        generation: 1,
+        kind: "grid",
+        access: "snapshot",
+        encoding: "r-json",
+        mode: "snapshot",
+        title: "Child table",
+        parent: "tree-root",
+        nrow: 1,
+        ncol: 1,
+        columns: [{
+          position: 0,
+          name: "value",
+          type: "integer",
+          sortable: true,
+          filterable: true,
+        }],
+        capabilities: gridCapabilities(),
+        data: { columns: ["value"], rows: [[1]] },
       });
       continue;
     }
@@ -2502,26 +2502,31 @@ Deno.test({
           frames.filter((frame) => frame.method === "cancel").length,
           0,
         );
+        const childDescriptor = {
+          view: "cell-child",
+          generation: 1,
+          parent: "cell-parent",
+          kind: "tree",
+          access: "random",
+          encoding: "r-json",
+          title: "Captured row 1",
+          path: [],
+          capabilities: {
+            seek: true,
+            sort: false,
+            filter: false,
+            known_total: true,
+            next: false,
+            children: true,
+          },
+        };
+        await writeFrame(connection, {
+          method: "view/open",
+          params: childDescriptor,
+        });
         await writeFrame(connection, {
           id: open.id,
-          result: {
-            view: "cell-child",
-            generation: 1,
-            parent: "cell-parent",
-            kind: "tree",
-            access: "random",
-            encoding: "r-json",
-            title: "Captured row 1",
-            path: [],
-            capabilities: {
-              seek: true,
-              sort: false,
-              filter: false,
-              known_total: true,
-              next: false,
-              children: true,
-            },
-          },
+          result: childDescriptor,
         });
         await waitFor(
           page,

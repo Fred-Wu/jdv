@@ -784,7 +784,7 @@ Deno.test({
           "object/children",
           { path: [], offset: 0, limit: 10 },
         );
-        assertEquals(responseErrorCode(missing), "view_not_found");
+        assertEquals(responseErrorCode(missing), "session_not_found");
 
         {
           const ownedBrowser = await launchOwnedBrowser({
