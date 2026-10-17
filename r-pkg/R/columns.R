@@ -109,6 +109,9 @@ col_sort_key <- function(x, collation = "C", ...) UseMethod("col_sort_key")
 
 #' @export
 col_display.default <- function(x, ...) {
+  if (identical(class(x), "AsIs") && is.list(x)) {
+    return(col_display.list(x, ...))
+  }
   fun <- if (isS4(x)) column_s4_generic("format", format) else format
   fun(x, trim = TRUE, justify = "none")
 }
@@ -417,6 +420,7 @@ cell_preview <- function(x) {
         inherits(value, "integer64") ||
         (is.object(value) &&
           is.list(value) &&
+          !identical(class(value), "AsIs") &&
           !is.data.frame(value) &&
           !inherits(value, "POSIXlt"))
     ) {
