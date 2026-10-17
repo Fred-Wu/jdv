@@ -874,9 +874,11 @@
 #'
 #' The replacement is built first. Only if the view, its generation, and (for a
 #' child view) its parent are still current is it published, as one step, under
-#' the same view id with the new generation. Then every descendant view is
-#' closed, deepest first, with `view/closed` notifications carrying
-#' `reason: "parent_closed"`, and the new `view/open` is queued. The old
+#' the same view id with the new generation, and the new `view/open` is queued.
+#' Then every descendant view is closed, deepest first, with `view/closed`
+#' notifications carrying `reason: "parent_closed"`. If releasing the old
+#' generation closes the refreshed view, its `view/closed` follows the new
+#' `view/open`, so the host never keeps a generation R no longer has. The old
 #' generation of the refreshed view itself gets no `view/closed`; its
 #' `view/open` successor replaces it. As for any request, these notifications
 #' precede the response. A refresh that fails, is interrupted, or finds the view

@@ -127,16 +127,16 @@ test_that("refresh closes descendants deepest first without an old close", {
   messages <- jdv_notifications()
   expect_identical(
     notification_methods(messages),
-    c("view/closed", "view/closed", "view/open")
+    c("view/open", "view/closed", "view/closed")
   )
   expect_identical(
     notification_views(messages),
-    c(grandchild$view, child$view, root$id)
+    c(root$id, grandchild$view, child$view)
   )
-  closed <- lapply(messages[1:2], .jdv_json_parse)
+  closed <- lapply(messages[2:3], .jdv_json_parse)
   expect_identical(closed[[1L]]$params$reason, "parent_closed")
   expect_identical(closed[[2L]]$params$reason, "parent_closed")
-  expect_equal(.jdv_json_parse(messages[[3L]])$params$generation, 2)
+  expect_equal(.jdv_json_parse(messages[[1L]])$params$generation, 2)
   expect_identical(sort(ls(.jdv_state$entries)), root$id)
   expect_identical(refresh_entry(root$id)$children, character())
 })
@@ -155,8 +155,8 @@ test_that("refreshing a child keeps its relationship to the parent", {
   response <- refresh_json(child$view, child$generation)
   expect_equal(response$result$generation, 2)
   messages <- jdv_notifications()
-  expect_identical(notification_views(messages), c(grandchild$view, child$view))
-  opened <- .jdv_json_parse(messages[[2L]])$params
+  expect_identical(notification_views(messages), c(child$view, grandchild$view))
+  opened <- .jdv_json_parse(messages[[1L]])$params
   expect_identical(opened$parent, root$id)
   expect_identical(opened$kind, "tree")
   replacement <- refresh_entry(child$view)

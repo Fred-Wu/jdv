@@ -199,11 +199,15 @@
       )
     }
   }
-  # Children close deepest first; the old parent generation gets no view/closed
-  # because the new view/open supersedes it.
+  # Publish the replacement before releasing the old generation. Releasing
+  # children or the old entry can run stream callbacks, and a callback that
+  # closes the refreshed view must queue its view/closed after this view/open
+  # so the host never keeps a generation R no longer has. The old parent
+  # generation gets no view/closed because the new view/open supersedes it;
+  # its children then close deepest first with parent_closed.
+  .jdv_notify(open)
   .jdv_close_children(entry, notify = TRUE)
   .jdv_close_entry(entry)
-  .jdv_notify(open)
   result
 }
 
