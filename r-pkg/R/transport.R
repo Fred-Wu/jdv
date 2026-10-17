@@ -730,7 +730,8 @@ jdv_notifications <- function() {
 #' are not tracked. If an update fails (for example the new object exceeds a
 #' limit) the previous view stays and one `view/update_failed` notification is
 #' sent; the same object is not retried until the variable changes or the view
-#' is refreshed manually.
+#' is refreshed manually. The viewer host can stop and resume following a view
+#' with the `view/track` request (see [jdv_spec]).
 #'
 #' Tracking needs R 4.6.0 or later. Where it is not possible, including when the
 #' variable cannot be read safely, the view is still shown and a warning says it
@@ -804,8 +805,24 @@ jdv_view <- function(
   if (!isTRUE(.jdv_state$transport_hello)) {
     .jdv_notify(.jdv_json_encode(.jdv_hello()))
   }
+  prepared <- NULL
+  if (!is.null(owner) && !identical(source$access, "sequential")) {
+    prepared <- .jdv_track_prepare(owner, as.character(expr), original)
+    if (is.character(prepared)) {
+      untracked <- prepared
+      prepared <- NULL
+    }
+  }
   registered <- tryCatch(
-    .jdv_register_internal(x, title, mode, collation),
+    .jdv_register_internal(
+      x,
+      title,
+      mode,
+      collation,
+      tracking = if (!is.null(prepared)) {
+        .jdv_tracking_json(prepared$name, "active")
+      }
+    ),
     error = function(error) {
       if (!isTRUE(.jdv_state$unloading) && !was_connected && !had_entries) {
         try(.jdv_transport_close("register_failed"), silent = TRUE)
@@ -822,13 +839,10 @@ jdv_view <- function(
     inherits = FALSE
   )
   .jdv_assert_active()
-  if (!is.null(owner) && !identical(registered_entry$mode, "sequential")) {
-    untracked <- .jdv_track_bind(
-      registered_entry,
-      owner,
-      as.character(expr),
-      original
-    )
+  if (!is.null(prepared)) {
+    # The baseline is the object the view was built from, so a binding that
+    # changed meanwhile is picked up by the next poll.
+    .jdv_track_attach(registered_entry, prepared$ref, prepared$name, original)
   }
   tryCatch(
     .jdv_transport_send(messages),

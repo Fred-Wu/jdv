@@ -58,6 +58,10 @@ const treeReturn = $("#tree-return");
 const treeParentReturn = $("#tree-parent-return");
 const gridRefresh = $("#refresh-view");
 const treeRefresh = $("#tree-refresh");
+const gridTrack = $("#track-view");
+const gridTrackState = $("#track-state");
+const treeTrack = $("#tree-track");
+const treeTrackState = $("#tree-track-state");
 const treeAttributes = $("#tree-attributes");
 const treeAttributesLabel = $("#tree-attributes-label");
 const viewBreadcrumb = $("#view-breadcrumb");
@@ -212,6 +216,8 @@ socket.addEventListener("message", (event) => {
           "error",
         );
       }
+    } else if (method === "view/tracking") {
+      applyTracking(message.session, message.message.params);
     } else if (method) setStatus(`R notification: ${method}`, "info");
   }
 });
@@ -253,6 +259,16 @@ gridRefresh.addEventListener("click", () => {
 treeRefresh.addEventListener("click", () => {
   if (selected?.kind === "tree") {
     refreshView(selected.session, selected.descriptor, treeRefresh);
+  }
+});
+gridTrack.addEventListener("click", () => {
+  if (selected?.kind === "grid") {
+    trackView(selected.session, selected.descriptor, gridTrack);
+  }
+});
+treeTrack.addEventListener("click", () => {
+  if (selected?.kind === "tree") {
+    trackView(selected.session, selected.descriptor, treeTrack);
   }
 });
 treeAttributes.addEventListener("change", () => {
@@ -497,7 +513,107 @@ function refreshView(session, descriptor, control) {
   return promise;
 }
 
+const TRACK_STATES = ["active", "paused", "lost"];
+
+function trackingOf(descriptor) {
+  const tracking = descriptor?.tracking;
+  return typeof tracking?.name === "string" &&
+      TRACK_STATES.includes(tracking.state)
+    ? tracking
+    : null;
+}
+
+function trackLabel(tracking) {
+  if (tracking.state === "active") return `Following ${tracking.name}`;
+  if (tracking.state === "paused") return `Paused ${tracking.name}`;
+  const detail = typeof tracking.message === "string"
+    ? tracking.message
+    : tracking.reason;
+  return `Lost ${tracking.name}${
+    typeof detail === "string" ? `: ${detail}` : ""
+  }`;
+}
+
+function trackButtonLabel(tracking) {
+  return tracking.state === "active" ? "Pause following" : "Resume following";
+}
+
+// Whether the host may stop or resume following; a lost view cannot.
+function trackAvailable(descriptor) {
+  return descriptor?.capabilities?.track === true &&
+    trackingOf(descriptor) !== null &&
+    trackingOf(descriptor).state !== "lost";
+}
+
+// Ask R to stop or resume following the variable of a view. The state change
+// arrives as view/tracking, or as a new view/open when resuming rebuilds the
+// view; the reply only acknowledges it.
+function trackView(session, descriptor, control) {
+  const current = knownTables.get(`${session}\0${descriptor.view}`)
+    ?.descriptor ?? descriptor;
+  const tracking = trackingOf(current);
+  if (!tracking) return Promise.resolve();
+  if (control) control.disabled = true;
+  const promise = transport.request(session, "view/track", {
+    view: current.view,
+    generation: current.generation,
+    enabled: tracking.state !== "active",
+  });
+  promise.then(
+    () => {
+      if (control) control.disabled = false;
+    },
+    (error) => {
+      if (control) control.disabled = false;
+      if (error?.name === "AbortError") return;
+      setStatus(error?.message ?? "Could not change following.", "error");
+    },
+  );
+  return promise;
+}
+
+// R announced a tracking change without a new view/open. Only the generation
+// still shown is updated; the descriptor is changed in place so the open view
+// and the list agree.
+function applyTracking(session, params) {
+  const record = knownTables.get(`${session}\0${params?.view}`);
+  const tracking = params?.tracking;
+  if (
+    !record || record.descriptor.generation !== params.generation ||
+    typeof tracking?.name !== "string" ||
+    !TRACK_STATES.includes(tracking.state)
+  ) return;
+  const descriptor = record.descriptor;
+  descriptor.tracking = tracking;
+  descriptor.capabilities = {
+    ...descriptor.capabilities,
+    track: tracking.state !== "lost",
+  };
+  updateRefreshControls();
+  renderLists();
+}
+
+function updateTrackControls() {
+  const descriptor = selected?.descriptor;
+  const supported = selected?.kind === "grid" || selected?.kind === "tree";
+  const tracking = supported ? trackingOf(descriptor) : null;
+  for (
+    const [kind, button, label] of [
+      ["grid", gridTrack, gridTrackState],
+      ["tree", treeTrack, treeTrackState],
+    ]
+  ) {
+    const shown = tracking !== null && selected.kind === kind;
+    label.hidden = !shown;
+    label.textContent = shown ? trackLabel(tracking) : "";
+    button.hidden = !(shown && trackAvailable(descriptor));
+    button.disabled = false;
+    button.textContent = shown ? trackButtonLabel(tracking) : "";
+  }
+}
+
 function updateRefreshControls() {
+  updateTrackControls();
   const descriptor = selected?.descriptor;
   const available = refreshAvailable(descriptor) &&
     (selected.kind === "grid" || selected.kind === "tree");
@@ -556,6 +672,25 @@ function renderLists() {
         () => refreshView(session, descriptor, refresh),
       );
       item.append(refresh);
+    }
+    const tracking = trackingOf(descriptor);
+    if (tracking) {
+      const state = document.createElement("span");
+      state.className = "track-state muted";
+      state.dataset.role = "track-state";
+      state.textContent = trackLabel(tracking);
+      item.append(state);
+      if (trackAvailable(descriptor)) {
+        const track = document.createElement("button");
+        track.type = "button";
+        track.textContent = trackButtonLabel(tracking);
+        track.dataset.action = "track-view";
+        track.addEventListener(
+          "click",
+          () => trackView(session, descriptor, track),
+        );
+        item.append(track);
+      }
     }
     if (typeof descriptor.parent === "string") {
       const close = document.createElement("button");

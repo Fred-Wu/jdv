@@ -3143,3 +3143,277 @@ Deno.test({
     }
   },
 });
+
+async function respondToTrack(
+  connection: Deno.Conn,
+  requests: Array<Record<string, unknown>>,
+  shutdown: { requested: boolean },
+  columns: Array<Record<string, unknown>>,
+): Promise<void> {
+  const tracking = (state: string) => ({ name: "df", state });
+  for await (const line of fixtureFrames(connection, shutdown)) {
+    const request = JSON.parse(line) as Record<string, unknown>;
+    if (typeof request.id !== "string") continue;
+    const params = request.params as Record<string, unknown>;
+    requests.push({ method: request.method, ...params });
+    if (request.method !== "view/track") {
+      await writeFrame(connection, {
+        id: request.id,
+        error: { code: "unsupported", message: "Unexpected request." },
+        warnings: [],
+      });
+      continue;
+    }
+    let generation = Number(params.generation);
+    const state = params.enabled === true ? "active" : "paused";
+    if (params.enabled === true && generation === 2) {
+      // Resuming found a changed variable: R rebuilds before the reply.
+      generation += 1;
+      await writeFrame(connection, {
+        method: "view/open",
+        params: {
+          view: "track-grid",
+          generation,
+          reason: "tracked",
+          kind: "grid",
+          access: "random",
+          encoding: "r-json",
+          mode: "paged",
+          title: `Tracked ${generation}`,
+          nrow: 3,
+          ncol: columns.length,
+          columns,
+          capabilities: { ...refreshCapabilities(), track: true },
+          tracking: tracking("active"),
+        },
+      });
+    } else {
+      await writeFrame(connection, {
+        method: "view/tracking",
+        params: {
+          view: params.view,
+          generation,
+          tracking: tracking(state),
+        },
+      });
+    }
+    await writeFrame(connection, {
+      id: request.id,
+      result: { view: params.view, generation, tracking: tracking(state) },
+      warnings: [],
+    });
+  }
+}
+
+Deno.test({
+  name: "tracking controls pause, resume, and report a lost variable",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const cacheDir = await Deno.makeTempDir({ prefix: "jdv-track-browser-" });
+    const server = await phase(
+      "HTTP server startup",
+      () => startServer({ mode: "tcp", httpPort: 0, cacheDir }),
+    );
+    const connection = await phase(
+      "track mock R connect",
+      () => connectR(server.socketPath),
+    );
+    const columns = [{
+      position: 0,
+      name: "key",
+      type: "integer",
+      sortable: true,
+      filterable: true,
+    }];
+    await writeFrame(connection, {
+      method: "hello",
+      params: {
+        protocol: 1,
+        session: `r-${Deno.pid}-91`,
+        pid: Deno.pid,
+        r_version: "4.6.0",
+        jdv_version: "0.0.0",
+        limits: {
+          max_receive_frames: 4096,
+          max_receive_bytes: 64 * 1024 * 1024,
+          queue_messages: 256,
+          queue_bytes: 16 * 1024 * 1024,
+          max_request_bytes: 1024 * 1024,
+          max_message_bytes: 10 * 1024 * 1024,
+        },
+      },
+    });
+    await writeFrame(connection, {
+      method: "view/open",
+      params: {
+        view: "track-grid",
+        generation: 2,
+        kind: "grid",
+        access: "random",
+        encoding: "r-json",
+        mode: "paged",
+        title: "Track grid",
+        nrow: 3,
+        ncol: 1,
+        columns,
+        capabilities: { ...refreshCapabilities(), track: true },
+        tracking: { name: "df", state: "active" },
+      },
+    });
+    await writeFrame(connection, {
+      method: "view/open",
+      params: {
+        view: "plain-grid",
+        generation: 1,
+        kind: "grid",
+        access: "random",
+        encoding: "r-json",
+        mode: "paged",
+        title: "Plain grid",
+        nrow: 3,
+        ncol: 1,
+        columns,
+        capabilities: { ...refreshCapabilities(), track: false },
+      },
+    });
+    const requests: Array<Record<string, unknown>> = [];
+    const shutdown = { requested: false };
+    const responder = respondToTrack(connection, requests, shutdown, columns);
+    void responder.catch((error) => console.error("[mock R responder]", error));
+    let owned: Awaited<ReturnType<typeof launchOwnedBrowser>> | undefined;
+    const originalFailure: unknown[] = [];
+    const tracks = () =>
+      requests.filter((request) => request.method === "view/track");
+
+    try {
+      owned = await launchOwnedBrowser({
+        path: browserExecutable,
+        args: ["--no-sandbox"],
+        ...(browserLibraryPath
+          ? {
+            env: {
+              ...Deno.env.toObject(),
+              LD_LIBRARY_PATH: browserLibraryPath,
+            },
+          }
+          : {}),
+      });
+      const browser = owned.browser;
+      await phase("browser test body", async () => {
+        const page = await browser.newPage("about:blank", {
+          waitUntil: "none",
+        });
+        await page.setViewportSize({ width: 1280, height: 1000 });
+        const pageErrors: string[] = [];
+        collectPageErrors(page, pageErrors);
+        await page.goto(server.url, { waitUntil: "load" });
+        await waitForSelector(page, '#status[data-state="connected"]');
+
+        // Only the tracked view has a state label and a toggle.
+        assertEquals(await count(page, '#tables [data-role="track-state"]'), 1);
+        assertEquals(
+          await count(page, '#tables [data-action="track-view"]'),
+          1,
+        );
+        await clickButton(
+          page,
+          "Open view",
+          "#tables article",
+          0,
+          "Track grid",
+        );
+        await waitForSelector(page, "#viewer:not([hidden])");
+        assertEquals(await text(page, "#track-state"), "Following df");
+        assertEquals(await text(page, "#track-view"), "Pause following");
+
+        // Pausing: the label follows R's view/tracking notification.
+        await click(page, "#track-view");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#track-state")?.textContent ===
+            "Paused df";
+        });
+        assertEquals(await text(page, "#track-view"), "Resume following");
+        assertEquals(tracks()[0].enabled, false);
+        assertEquals(tracks()[0].generation, 2);
+
+        // Resuming rebuilt the view: the new generation is shown and active.
+        await click(page, "#track-view");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-title")?.textContent ===
+              "Tracked 3" &&
+            document.querySelector("#track-state")?.textContent ===
+              "Following df";
+        });
+        assertEquals(tracks()[1].enabled, true);
+        assertEquals(await text(page, "#track-view"), "Pause following");
+        assertEquals(
+          ((await text(page, "#status")) ?? "").includes("error"),
+          false,
+        );
+
+        // A lost variable leaves the label and removes the toggle.
+        await writeFrame(connection, {
+          method: "view/tracking",
+          params: {
+            view: "track-grid",
+            generation: 3,
+            tracking: {
+              name: "df",
+              state: "lost",
+              reason: "removed",
+              message: "the binding was removed",
+            },
+          },
+        });
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return (document.querySelector("#track-state")?.textContent ?? "")
+            .startsWith("Lost df");
+        });
+        assertEquals(await count(page, "#track-view:not([hidden])"), 0);
+        assertEquals(
+          await count(page, '#tables [data-action="track-view"]'),
+          0,
+        );
+        // A report for another generation is ignored.
+        await writeFrame(connection, {
+          method: "view/tracking",
+          params: {
+            view: "track-grid",
+            generation: 2,
+            tracking: { name: "df", state: "paused" },
+          },
+        });
+        await page.waitForTimeout(200);
+        assertEquals(
+          ((await text(page, "#track-state")) ?? "").startsWith("Lost df"),
+          true,
+        );
+        assertEquals(pageErrors, []);
+      }, 90_000);
+    } catch (error) {
+      originalFailure.push(error);
+      throw error;
+    } finally {
+      shutdown.requested = true;
+      await finishIntegrationCleanup([
+        () => owned?.close(),
+        () => connection.close(),
+        () =>
+          cleanupDeadline(responder, 5_000, "Mock R responder did not stop."),
+        () => phase("HTTP server shutdown", () => server.close(), 5_000),
+        () => assertServerReleased(server),
+        () => removeCacheDirectory(cacheDir),
+      ], originalFailure);
+    }
+  },
+});

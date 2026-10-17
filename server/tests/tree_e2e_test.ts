@@ -337,6 +337,10 @@ function responseResult(
   return asRecord(message.result);
 }
 
+function notificationMethod(message: Record<string, unknown>): unknown {
+  return (message.message as Record<string, unknown> | undefined)?.method;
+}
+
 function responseErrorCode(message: Record<string, unknown>): unknown {
   return asRecord(message.error ?? message).code;
 }
@@ -384,7 +388,10 @@ function treeFixtureCode(): string {
   ].join("; ");
 }
 
-async function startRuntime(): Promise<Runtime> {
+async function startRuntime(
+  fixtureCode = treeFixtureCode(),
+  fixtureTitle = "Tree E2E fixture",
+): Promise<Runtime> {
   assert(testLibrary, "JDV_TEST_R_LIB must select the scratch library.");
   const server = new TestServer();
   const arf = new ArfSession();
@@ -420,8 +427,8 @@ async function startRuntime(): Promise<Runtime> {
       12_000,
     );
     assertEquals(welcome.type, "welcome");
-    await rEval(arf, treeFixtureCode());
-    const root = await openedView(browser, "Tree E2E fixture");
+    await rEval(arf, fixtureCode);
+    const root = await openedView(browser, fixtureTitle);
     return {
       server,
       arf,
@@ -1239,6 +1246,120 @@ Deno.test({
         () =>
           phase("Tracking E2E server cleanup", () => server.close(), 10_000),
         ...(directory ? [() => removeCacheDirectory(directory!)] : []),
+      ], primaryError === undefined ? [] : [primaryError]);
+    }
+  },
+});
+
+Deno.test({
+  name: "real R view/track pauses and resumes a tracked view",
+  ignore: !testLibrary,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const runtime = await startRuntime(
+      'tracked_df <- mtcars[1:3, ]; jdv_view(tracked_df, mode = "snapshot")',
+      "tracked_df",
+    );
+    let primaryError: unknown;
+    try {
+      await bodyDeadline("Track E2E body", async () => {
+        const { arf, browser, session, root } = runtime;
+        const view = String(root.view);
+        assertEquals(root.generation, 1);
+        assertEquals(asRecord(root.tracking), {
+          name: "tracked_df",
+          state: "active",
+        });
+        assertEquals(asRecord(root.capabilities).track, true);
+
+        const paused = responseResult(
+          await request(browser, session, view, 1, "view/track", {
+            enabled: false,
+          }),
+        );
+        assertEquals(paused.generation, 1);
+        assertEquals(asRecord(paused.tracking).state, "paused");
+        // R queued the notification before the response.
+        const notice = await nextMessage(
+          browser,
+          (message) => notificationMethod(message) === "view/tracking",
+          "view/tracking for the pause",
+        );
+        assertEquals(
+          asRecord(asRecord(notice.message).params).tracking,
+          { name: "tracked_df", state: "paused" },
+        );
+
+        // A change while paused is not followed.
+        // The embedded REPL does not run task callbacks, so the check that
+        // the callback would make is requested explicitly.
+        await rEval(arf, "tracked_df <- mtcars[1:5, ]");
+        await rEval(arf, "jdv_rpc(NULL)");
+        assertEquals(
+          (pendingMessages.get(browser) ?? []).filter((message) =>
+            message.type === "view/open"
+          ).length,
+          0,
+        );
+
+        // Resuming sees the change and rebuilds the view.
+        const resumed = responseResult(
+          await request(browser, session, view, 1, "view/track", {
+            enabled: true,
+          }),
+        );
+        assertEquals(resumed.generation, 2);
+        assertEquals(asRecord(resumed.tracking).state, "active");
+        const reopened = await nextMessage(
+          browser,
+          (message) => message.type === "view/open",
+          "view/open for the resumed view",
+        );
+        const params = asRecord(asRecord(reopened.message).params);
+        assertEquals(params.generation, 2);
+        assertEquals(params.reason, "tracked");
+        assertEquals(params.nrow, 5);
+        assertEquals(asRecord(params.tracking).state, "active");
+
+        // Removing the variable ends following and says why.
+        await rEval(arf, "rm(tracked_df)");
+        await rEval(arf, "jdv_rpc(NULL)");
+        const lost = await nextMessage(
+          browser,
+          (message) =>
+            notificationMethod(message) === "view/tracking" &&
+            asRecord(asRecord(asRecord(message.message).params).tracking)
+                .state ===
+              "lost",
+          "view/tracking for the removed variable",
+        );
+        const lostParams = asRecord(asRecord(lost.message).params);
+        assertEquals(lostParams.generation, 2);
+        assertEquals(asRecord(lostParams.tracking).reason, "removed");
+        assertEquals(typeof asRecord(lostParams.tracking).message, "string");
+        assertEquals(
+          responseErrorCode(
+            await request(browser, session, view, 2, "view/track", {
+              enabled: false,
+            }),
+          ),
+          "unsupported",
+        );
+      }, 120_000);
+    } catch (error) {
+      primaryError = error;
+      throw error;
+    } finally {
+      await finishIntegrationCleanup([
+        () => runtime.browser.close(),
+        () => phase("Track E2E arf cleanup", () => runtime.arf.close(), 50_000),
+        () =>
+          phase(
+            "Track E2E server cleanup",
+            () => runtime.server.close(),
+            10_000,
+          ),
       ], primaryError === undefined ? [] : [primaryError]);
     }
   },

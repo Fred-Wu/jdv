@@ -341,3 +341,7 @@ legend {
 #child-open-status[data-state="error"] {
   color: #c43b3b;
 }
+
+.track-state {
+  font-size: 0.85em;
+}

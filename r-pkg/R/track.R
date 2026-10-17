@@ -88,6 +88,70 @@
   list(ref = ref, name = spec$name)
 }
 
+# The `tracking` object of a descriptor, notification, or response. `state` is
+# active, paused, or lost. A lost state carries a fixed `reason` token and an
+# optional human-readable `message`.
+.jdv_tracking_json <- function(name, state, reason = NULL, message = NULL) {
+  tracking <- list(name = name, state = state)
+  if (!is.null(reason)) {
+    tracking$reason <- reason
+  }
+  if (!is.null(message)) {
+    tracking$message <- message
+  }
+  jdv_json_object(tracking)
+}
+
+# Whether the host can still stop or resume tracking: the view has a tracking
+# object whose state is not lost.
+.jdv_track_capability <- function(tracking) {
+  !is.null(tracking) && !identical(tracking$state, "lost")
+}
+
+# The tracking state of an entry: NULL when it never tracked a binding.
+.jdv_track_state <- function(entry) {
+  if (is.null(entry$track_ref)) {
+    NULL
+  } else if (!is.null(entry$track_lost)) {
+    "lost"
+  } else if (isTRUE(entry$track_paused)) {
+    "paused"
+  } else {
+    "active"
+  }
+}
+
+.jdv_track_entry_json <- function(entry) {
+  state <- .jdv_track_state(entry)
+  if (is.null(state)) {
+    return(NULL)
+  }
+  .jdv_tracking_json(
+    entry$track_name,
+    state,
+    if (identical(state, "lost")) entry$track_lost_token,
+    if (identical(state, "lost")) entry$track_lost
+  )
+}
+
+# Announce the current tracking state of a live entry.
+.jdv_track_notify <- function(entry) {
+  if (isTRUE(entry$closed)) {
+    return(invisible(NULL))
+  }
+  .jdv_notify(.jdv_json_encode(
+    list(
+      method = "view/tracking",
+      params = list(
+        view = entry$id,
+        generation = entry$generation,
+        tracking = .jdv_track_entry_json(entry)
+      )
+    ),
+    work_limit = 64 * 1024
+  ))
+}
+
 # Start tracking on a registered entry. `value` is the object currently held
 # by the binding, which is the baseline for change detection.
 .jdv_track_attach <- function(entry, ref, name, value) {
@@ -96,13 +160,17 @@
   entry$track_value <- value
   entry$track_failed <- NULL
   entry$track_lost <- NULL
+  entry$track_lost_token <- NULL
+  entry$track_paused <- NULL
   .jdv_track_install_callback()
   invisible(NULL)
 }
 
-# Track the symbol `name` of `env` for a view that displays `value`. Returns
-# NULL on success, or the reason tracking is not possible.
-.jdv_track_bind <- function(entry, env, name, value) {
+# Check that the symbol `name` of `env` is a binding that holds `value`, which
+# is the object a view displays. Returns the weak environment reference
+# (list(ref, name)) on success, or the reason tracking is not possible as a
+# string.
+.jdv_track_prepare <- function(env, name, value) {
   ref <- .Call(C_jdv_weakref_make, env)
   read <- .jdv_binding_read(ref, name)
   if (!read$status %in% c("value", "forced")) {
@@ -115,8 +183,7 @@
   if (!.jdv_track_same(read$value, value)) {
     return("its binding does not hold the displayed object")
   }
-  .jdv_track_attach(entry, ref, name, value)
-  NULL
+  list(ref = ref, name = name)
 }
 
 # Carry tracking state into the replacement of an entry. `baseline` is the new
@@ -128,6 +195,8 @@
   replacement$track_ref <- entry$track_ref
   replacement$track_name <- entry$track_name
   replacement$track_lost <- entry$track_lost
+  replacement$track_lost_token <- entry$track_lost_token
+  replacement$track_paused <- entry$track_paused
   replacement$track_failed <- NULL
   replacement$track_value <- if (is.null(baseline)) {
     entry$track_value
@@ -137,19 +206,27 @@
   invisible(NULL)
 }
 
-.jdv_track_lose <- function(entry, reason) {
-  entry$track_lost <- reason
+# `token` is the fixed reason: "removed" or "collected".
+.jdv_track_lose <- function(entry, token) {
+  entry$track_lost_token <- token
+  entry$track_lost <- .jdv_track_lost_message(token)
+  entry$track_paused <- NULL
   entry$track_value <- NULL
   entry$track_failed <- NULL
+  .jdv_track_notify(entry)
   invisible(NULL)
 }
 
-.jdv_track_lost_reason <- function(read) {
-  if (identical(read$status, "gone")) {
+.jdv_track_lost_message <- function(token) {
+  if (identical(token, "collected")) {
     "the environment of the binding was garbage collected"
   } else {
     "the binding was removed"
   }
+}
+
+.jdv_track_lost_reason <- function(read) {
+  if (identical(read$status, "gone")) "collected" else "removed"
 }
 
 # The current object of a tracked entry for a manual refresh. Tracking that
@@ -163,11 +240,10 @@
   }
   read <- .jdv_binding_read(entry$track_ref, entry$track_name)
   if (read$status %in% c("gone", "unbound")) {
-    reason <- .jdv_track_lost_reason(read)
-    .jdv_track_lose(entry, reason)
+    .jdv_track_lose(entry, .jdv_track_lost_reason(read))
     query_error(
       "unavailable",
-      paste0("The view is no longer tracked: ", reason, ".")
+      paste0("The view is no longer tracked: ", entry$track_lost, ".")
     )
   }
   if (!read$status %in% c("value", "forced")) {
@@ -193,6 +269,7 @@
     function(entry) {
       !is.null(entry$track_ref) &&
         is.null(entry$track_lost) &&
+        !isTRUE(entry$track_paused) &&
         !isTRUE(entry$closed)
     },
     entries
@@ -386,4 +463,54 @@
     .jdv_transport_flush()
   }
   invisible(TRUE)
+}
+
+# view/track: stop or resume following the binding of a view. Stopping keeps
+# the binding and the baseline object. Resuming reads the binding once and
+# rebuilds the view through the update transaction when the object differs
+# from the baseline; a binding that cannot be read without evaluation is
+# looked at again by the next poll. Returns the response result.
+.jdv_track_set <- function(entry, enabled) {
+  result <- function(current) {
+    list(
+      view = current$id,
+      generation = current$generation,
+      tracking = .jdv_track_entry_json(current)
+    )
+  }
+  if (is.null(entry$track_ref)) {
+    query_error("unsupported", "The view does not track a variable.")
+  }
+  if (!is.null(entry$track_lost)) {
+    query_error(
+      "unsupported",
+      paste0("The view is no longer tracked: ", entry$track_lost, ".")
+    )
+  }
+  if (identical(enabled, !isTRUE(entry$track_paused))) {
+    return(result(entry))
+  }
+  if (!enabled) {
+    entry$track_paused <- TRUE
+    .jdv_track_notify(entry)
+    return(result(entry))
+  }
+  entry$track_paused <- NULL
+  # A candidate that failed before is tried again on an explicit resume.
+  entry$track_failed <- NULL
+  .jdv_track_install_callback()
+  .jdv_track_check(entry)
+  current <- if (
+    exists(entry$id, envir = .jdv_state$entries, inherits = FALSE)
+  ) {
+    get(entry$id, envir = .jdv_state$entries, inherits = FALSE)
+  }
+  if (!is.null(current) && !identical(current, entry)) {
+    # Rebuilt: the new view/open carries the active state.
+    return(result(current))
+  }
+  if (is.null(entry$track_lost)) {
+    .jdv_track_notify(entry)
+  }
+  result(entry)
 }

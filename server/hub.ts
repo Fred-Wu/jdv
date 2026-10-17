@@ -246,6 +246,7 @@ export class Hub {
         "view/schema",
         "view/close",
         "view/refresh",
+        "view/track",
         "object/children",
         "object/open",
         "stream/next",
@@ -304,6 +305,23 @@ export class Hub {
         session: session.id,
         code: "invalid_request",
         message: "view/refresh accepts only view and generation.",
+      });
+      return;
+    }
+    if (
+      method === "view/track" &&
+      (typeof params.enabled !== "boolean" ||
+        Object.keys(params).some((name) =>
+          name !== "view" && name !== "generation" && name !== "enabled"
+        ))
+    ) {
+      client.send({
+        type: "error",
+        id: browserId,
+        session: session.id,
+        code: "invalid_request",
+        message:
+          "view/track accepts only view, generation, and a boolean enabled.",
       });
       return;
     }
@@ -757,18 +775,25 @@ export class Hub {
     // view/open before the response, so the response is expected to arrive
     // after its own generation was superseded. Cancel, timeout, close, and
     // disconnect still end it (localEnded); it never touches display state.
-    const refreshAck = pending.method === "view/refresh";
+    // A sent view/track that resumes following may rebuild the view, so it
+    // is treated the same way.
+    const refreshAck = pending.method === "view/refresh" ||
+      pending.method === "view/track";
     const deliver = !pending.localEnded && pending.state === "live" &&
       (currentGeneration || refreshAck) && Date.now() < pending.deadline;
-    if (refreshAck && !isRefreshResponse(pending, message)) {
+    if (
+      refreshAck &&
+      !(pending.method === "view/track"
+        ? isTrackResponse(pending, message)
+        : isRefreshResponse(pending, message))
+    ) {
       if (deliver) {
         pending.client?.send({
           type: "error",
           id: pending.browserId,
           session: session.id,
           code: "invalid_request",
-          message:
-            "R returned a refresh response that does not match the request.",
+          message: "R returned a response that does not match the request.",
         });
       }
       this.#finishPending(session, pending);
@@ -1035,7 +1060,48 @@ export class Hub {
       });
       return;
     }
+    if (message.method === "view/tracking") {
+      this.#trackingChanged(session, params);
+      return;
+    }
     this.#broadcast({ type: "notification", session: session.id, message });
+  }
+
+  // R announces a tracking state change that comes without a new view/open.
+  // The cached descriptor follows it so a browser that connects later sees the
+  // current state; only a report for the held generation is passed on.
+  #trackingChanged(session: RSession, params: unknown): void {
+    if (
+      !isObject(params) || typeof params.view !== "string" ||
+      !Number.isSafeInteger(params.generation)
+    ) return;
+    const tracking = sanitizeTracking(params.tracking);
+    const view = session.views.get(params.view);
+    if (!tracking || !view || view.generation !== Number(params.generation)) {
+      return;
+    }
+    const descriptor = view.descriptor.params;
+    if (isObject(descriptor)) {
+      const capabilities = isObject(descriptor.capabilities)
+        ? { ...descriptor.capabilities, track: tracking.state !== "lost" }
+        : descriptor.capabilities;
+      view.descriptor = {
+        ...view.descriptor,
+        params: { ...descriptor, tracking, capabilities },
+      };
+    }
+    this.#broadcast({
+      type: "notification",
+      session: session.id,
+      message: {
+        method: "view/tracking",
+        params: {
+          view: params.view,
+          generation: Number(params.generation),
+          tracking,
+        },
+      },
+    });
   }
 
   #cancelFromBrowser(client: BrowserClient, value: JsonObject): void {
@@ -1061,7 +1127,9 @@ export class Hub {
         // Moving to a newer generation must not cancel the refresh that
         // caused it; its response is checked when it arrives.
         if (
-          keepSentRefresh && pending.method === "view/refresh" &&
+          keepSentRefresh &&
+          (pending.method === "view/refresh" ||
+            pending.method === "view/track") &&
           pending.state === "live" && !pending.localEnded
         ) continue;
         pending.client?.send({
@@ -1737,6 +1805,38 @@ function isRefreshResponse(
     result.previous_generation === pending.generation &&
     result.generation === pending.generation + 1 &&
     result.refreshed === true;
+}
+
+function isTrackResponse(
+  pending: PendingRequest,
+  message: JsonObject,
+): boolean {
+  if (Object.hasOwn(message, "error")) return true;
+  const result = message.result;
+  return isObject(result) && result.view === pending.view &&
+    (result.generation === pending.generation ||
+      result.generation === pending.generation + 1) &&
+    sanitizeTracking(result.tracking) !== null;
+}
+
+// The tracking object of R's view/tracking and view/track result, reduced to
+// the fields the protocol defines; null when it is not valid.
+function sanitizeTracking(value: unknown): JsonObject | null {
+  if (!isObject(value) || typeof value.name !== "string") return null;
+  const state = value.state;
+  if (state !== "active" && state !== "paused" && state !== "lost") return null;
+  const tracking: JsonObject = { name: value.name.slice(0, 4096), state };
+  // The reason is a token; unknown values pass so the protocol can grow.
+  if (
+    typeof value.reason === "string" &&
+    /^[a-z][a-z0-9_]{0,63}$/.test(value.reason)
+  ) {
+    tracking.reason = value.reason;
+  }
+  if (typeof value.message === "string") {
+    tracking.message = value.message.slice(0, 1024);
+  }
+  return tracking;
 }
 
 function validStreamProgress(

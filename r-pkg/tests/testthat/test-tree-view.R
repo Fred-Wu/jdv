@@ -35,7 +35,8 @@ local({
           "known_total",
           "next",
           "children",
-          "refresh"
+          "refresh",
+          "track"
         )
       )
 

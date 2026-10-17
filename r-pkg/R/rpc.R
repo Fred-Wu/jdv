@@ -495,7 +495,14 @@ jdv_json_object <- function(x = list()) {
   }
 }
 
-.jdv_descriptor <- function(content, id, generation, title, reason) {
+.jdv_descriptor <- function(
+  content,
+  id,
+  generation,
+  title,
+  reason,
+  tracking = NULL
+) {
   capabilities <- list(
     seek = TRUE,
     sort = TRUE,
@@ -510,6 +517,7 @@ jdv_json_object <- function(x = list()) {
   )
   capabilities <- append(capabilities, list(FALSE), after = 4L)
   names(capabilities)[[5L]] <- "next"
+  capabilities$track <- .jdv_track_capability(tracking)
   params <- list(
     view = id,
     kind = "grid",
@@ -526,6 +534,9 @@ jdv_json_object <- function(x = list()) {
     row_names = content$row_names,
     columns = .jdv_schema(content$schema)
   )
+  if (!is.null(tracking)) {
+    params$tracking <- tracking
+  }
   if (content$mode == "snapshot") {
     params$data <- content$data
   }
@@ -786,7 +797,15 @@ jdv_register <- function(
   mode <- match.arg(mode)
   collation <- if (missing(collation)) NULL else match.arg(collation)
   tracking <- if (!is.null(binding)) .jdv_binding_verify(x, binding)
-  registered <- .jdv_register_internal(x, title, mode, collation)
+  registered <- .jdv_register_internal(
+    x,
+    title,
+    mode,
+    collation,
+    tracking = if (!is.null(tracking)) {
+      .jdv_tracking_json(tracking$name, "active")
+    }
+  )
   if (!is.null(tracking)) {
     entry <- get(registered$id, envir = .jdv_state$entries, inherits = FALSE)
     .jdv_track_attach(entry, tracking$ref, tracking$name, x)
@@ -810,7 +829,8 @@ jdv_register <- function(
   mode,
   collation,
   emit = TRUE,
-  reason = "register"
+  reason = "register",
+  tracking = NULL
 ) {
   .jdv_assert_active()
   .jdv_assert_not_refreshing()
@@ -825,11 +845,19 @@ jdv_register <- function(
   source <- jdv_source(x)
   x <- source$data
   registered <- if (identical(source$kind, "tree")) {
-    .jdv_tree_register(x, title = title, reason = reason)
+    .jdv_tree_register(x, title = title, reason = reason, tracking = tracking)
   } else if (identical(source$access, "sequential")) {
     .jdv_sequential_register(x, title = title, reason = reason)
   } else {
-    .jdv_grid_register(x, title, mode, collation, collation_intent, reason)
+    .jdv_grid_register(
+      x,
+      title,
+      mode,
+      collation,
+      collation_intent,
+      reason,
+      tracking
+    )
   }
   if (emit) {
     .jdv_notify(registered$open)
@@ -920,7 +948,8 @@ jdv_register <- function(
   mode,
   collation,
   collation_intent = collation,
-  reason = "register"
+  reason = "register",
+  tracking = NULL
 ) {
   if (!is.null(title)) {
     title <- query_string(title, 4096L)
@@ -954,7 +983,14 @@ jdv_register <- function(
     )
   }
   generation <- if (is.null(previous)) 1 else previous$generation + 1
-  descriptor <- .jdv_descriptor(content, id, generation, title, reason)
+  descriptor <- .jdv_descriptor(
+    content,
+    id,
+    generation,
+    title,
+    reason,
+    tracking
+  )
   open <- tryCatch(
     .jdv_json_encode(
       descriptor,
@@ -991,7 +1027,14 @@ jdv_register <- function(
           )
         }
         generation <<- if (is.null(previous)) 1 else previous$generation + 1
-        descriptor <<- .jdv_descriptor(content, id, generation, title, reason)
+        descriptor <<- .jdv_descriptor(
+          content,
+          id,
+          generation,
+          title,
+          reason,
+          tracking
+        )
         .jdv_json_encode(
           descriptor,
           max_message,
@@ -1379,6 +1422,22 @@ jdv_register <- function(
     entry <- .jdv_rpc_entry(params$view, params$generation)
     on.exit(.jdv_release_entry(entry), add = TRUE)
     return(.jdv_refresh_view(entry))
+  }
+  if (method == "view/track") {
+    .jdv_fields(params, c("view", "generation", "enabled"))
+    if (any(!names(params) %in% c("view", "generation", "enabled"))) {
+      query_error(
+        "invalid_request",
+        "view/track accepts only view, generation, and enabled."
+      )
+    }
+    enabled <- params$enabled
+    if (!is.logical(enabled) || length(enabled) != 1L || is.na(enabled)) {
+      query_error("invalid_request", "enabled must be true or false.")
+    }
+    entry <- .jdv_rpc_entry(params$view, params$generation)
+    on.exit(.jdv_release_entry(entry), add = TRUE)
+    return(.jdv_track_set(entry, enabled))
   }
   if (method %in% c("table/rows", "view/schema", "view/close")) {
     .jdv_fields(

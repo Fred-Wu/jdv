@@ -202,7 +202,8 @@ A view descriptor is sent as a notification:
       "known_total": true,
       "next": false,
       "children": false,
-      "refresh": true
+      "refresh": true,
+      "track": false
     \},
     "collation": "C",
     "nrow": 100,
@@ -217,15 +218,17 @@ The example omits schema entries for brevity. \code{view/open} has no request id
 and is not passed to \code{\link[=jdv_rpc]{jdv_rpc()}}; \code{\link[=jdv_register]{jdv_register()}} queues it for the host to
 deliver (see the Notification delivery section). \code{kind} is \code{grid}; \code{access}
 is \code{snapshot} or \code{random} for Snapshot or Paged mode, respectively; and
-\code{encoding} is \code{r-json}. Every descriptor includes all seven \code{capabilities}
+\code{encoding} is \code{r-json}. Every descriptor includes all eight \code{capabilities}
 fields shown for a grid: \code{seek}, \code{sort}, \code{filter}, \code{known_total}, and
-\code{refresh} are \code{true}; \code{next} is \code{false}. Grid \code{children} is \code{true} if and
-only if at least one column has \code{drillable: true}. \code{refresh} tells the host
-that \code{view/refresh} is accepted. Tree descriptors use \code{kind: "tree"},
-\code{access: "random"}, \code{encoding: "r-json"}, and capabilities \code{seek: true},
-\code{sort: false}, \code{filter: false}, \code{known_total: true}, \code{next: false},
-\code{children: true}, and \code{refresh: true}. Tree descriptors omit grid-only fields
-(\code{mode}, \code{nrow}, \code{ncol}, \code{row_names}, \code{columns}, and \code{data}). A tree
+\code{refresh} are \code{true}; \code{next} is \code{false}; \code{track} is \code{true} only for a view
+that has a \code{tracking} field whose state is not \code{"lost"} (see Binding
+tracking). Grid \code{children} is \code{true} if and only if at least one column has
+\code{drillable: true}. \code{refresh} tells the host that \code{view/refresh} is accepted.
+Tree descriptors use \code{kind: "tree"}, \code{access: "random"},
+\code{encoding: "r-json"}, and capabilities \code{seek: true}, \code{sort: false},
+\code{filter: false}, \code{known_total: true}, \code{next: false}, \code{children: true},
+\code{refresh: true}, and \code{track} as for a grid. Tree descriptors omit grid-only
+fields (\code{mode}, \code{nrow}, \code{ncol}, \code{row_names}, \code{columns}, and \code{data}). A tree
 descriptor includes an empty \code{path} at its root. A child descriptor may
 include \code{parent}, the parent view id. \code{title} is optional. \code{reason} says why
 the descriptor was sent (see below). A tree descriptor also has \code{class}, a
@@ -241,8 +244,29 @@ string array that follows \code{\link[base:class]{base::class()}} semantics for 
    \code{path} \tab Omitted \tab Required; empty for the root \cr
    \code{class}, \code{type} \tab Omitted \tab Required \cr
    \code{parent} \tab Optional on child views \tab Optional on child views \cr
+   \code{tracking} \tab Optional; see below \tab Optional; see below \cr
 }
 
+
+\code{tracking} is present only on a view that follows a variable. It is an object
+\verb{\{"name": "df", "state": "active"\}}: \code{name} is the variable name and \code{state}
+is \code{"active"} (the view follows the variable), \code{"paused"} (the host stopped
+following with \code{view/track}; the binding is kept), or \code{"lost"} (following
+ended; the object also has a \code{reason} token and an optional \code{message}). A \code{view/open} from a
+registration carries \code{"active"}. A view that does not follow a variable
+(created from an expression, a child view, a sequential view, or registered
+without tracking) has no \code{tracking} field and \code{capabilities.track: false}.
+The state changes afterwards are announced by \code{view/tracking}, and the host
+changes them with \code{view/track}.\tabular{ll}{
+   \code{tracking.reason} \tab Meaning \cr
+   \code{"removed"} \tab The variable was removed. \cr
+   \code{"collected"} \tab The environment of the variable was garbage collected. \cr
+}
+
+
+\code{reason} is a fixed token, like \code{view/open.reason}. More values may be added,
+so a host treats an unknown value as a general loss of following. \code{message}
+is an optional English sentence for display; a host does not parse it.
 
 \code{reason} is a fixed token that tells the host why a \code{view/open} was sent, so
 it can tell an explicit request from an automatic update when a view id
@@ -251,7 +275,7 @@ missing or unknown value as \code{"register"}.\tabular{ll}{
    \code{reason} \tab Sent when \cr
    \code{"register"} \tab A view is registered with \code{\link[=jdv_register]{jdv_register()}} or \code{\link[=jdv_view]{jdv_view()}}, including a registration that replaces the view with the same title and Arrow sequential views. \cr
    \code{"child"} \tab A child view is opened by \code{object/open}. \cr
-   \code{"tracked"} \tab A tracked view is rebuilt automatically because its variable changed (see \code{\link[=jdv_view]{jdv_view()}}). \cr
+   \code{"tracked"} \tab A tracked view is rebuilt automatically because its variable changed (see \code{\link[=jdv_view]{jdv_view()}}), including when \code{view/track} resumes following. \cr
    \code{"refresh"} \tab A view is rebuilt by \code{view/refresh}. \cr
 }
 
@@ -440,14 +464,14 @@ implementation are specified separately.
 Sequential descriptors have \code{kind: "grid"}, \code{access: "sequential"},
 \code{encoding: "arrow-ipc"}, \code{mode: "sequential"}, \code{nrow: null}, and a known
 \code{ncol}. Only the \code{next} capability is true; \code{seek}, \code{sort}, \code{filter},
-\code{known_total}, \code{children}, and \code{refresh} are false. Registration calls the
-producer's \code{get_schema} but never \code{get_next}. It moves one exported Arrow
-stream into native ownership. Close, replacement, eviction, parent cascade,
-namespace unload, and R disconnection release the stream and any carried
-batch exactly once. A release callback may execute R code; registry identity
-and generation are rechecked before publishing its result. Releases requested
-inside an active producer callback are deferred until that callback has
-finished.
+\code{known_total}, \code{children}, \code{refresh}, and \code{track} are false. Registration
+calls the producer's \code{get_schema} but never \code{get_next}. It moves one exported
+Arrow stream into native ownership. Close, replacement, eviction, parent
+cascade, namespace unload, and R disconnection release the stream and any
+carried batch exactly once. A release callback may execute R code; registry
+identity and generation are rechecked before publishing its result. Releases
+requested inside an active producer callback are deferred until that callback
+has finished.
 
 \code{schema} contains the original logical Arrow schema recursively: \code{format},
 \code{name}, \code{flags}, \code{metadata}, \code{metadata_encoding}, \code{children}, and
@@ -689,9 +713,11 @@ any output path detach the browser. Repeated close/detach is harmless.
    \code{object/children} \tab Host to R \tab Request \tab One page of children at a typed object path. \cr
    \code{object/open} \tab Host to R \tab Request \tab Registers the captured value at a typed path as a child view. \cr
    \code{view/refresh} \tab Host to R \tab Request \tab Rebuilds a view from its captured value as the next generation of the same id. \cr
+   \code{view/track} \tab Host to R \tab Request \tab Stops or resumes following the variable of a tracked view. \cr
    \code{view/close} \tab Host to R \tab Request \tab Closes one view generation. \cr
    \code{view/closed} \tab R to host \tab Notification \tab Removes a closed, replaced, or evicted generation from the host cache. \cr
    \code{view/update_failed} \tab R to host \tab Notification \tab A tracked view could not be rebuilt; the previous generation stays. \cr
+   \code{view/tracking} \tab R to host \tab Notification \tab The tracking state of a view changed without a new \code{view/open}. \cr
    \code{hello} \tab R to host \tab Notification \tab Announces protocol and runtime versions for a new connection. \cr
    \code{wake} \tab Host to R \tab Notification \tab No result; asks the event loop to check its execution gate again. \cr
    \code{cancel} \tab Host to R \tab Notification \tab Names pending work for the local queue to cancel. \cr
@@ -925,14 +951,16 @@ rebuild shows the same data unless the captured object is a reference object
 that changed in place. A tracked view (see Binding tracking) is instead
 rebuilt from the current value of its variable, read without evaluation; it
 fails with \code{unavailable} when tracking has ended (the reason is in the
-message) or the variable is a promise or active binding. The rebuild happens
-even if nothing changed and always advances the generation by one. The
-registration \code{mode} and \code{collation} are reused as they were requested: an
-\code{"auto"} mode is decided again (a grid may move between Snapshot and Paged,
-and the effective mode is never frozen), an explicit mode is kept, and an
-omitted collation reads \code{jdv.collation} again. A refresh of a titled view
-keeps its title association, so a later registration with that title
-continues from the refreshed generation.
+message) or the variable is a promise or active binding. A view whose
+tracking is \code{"paused"} can be refreshed too: it is rebuilt from the current
+value of its variable, the new object becomes the baseline, and the state
+stays \code{"paused"}. The rebuild happens even if nothing changed and always
+advances the generation by one. The registration \code{mode} and \code{collation} are
+reused as they were requested: an \code{"auto"} mode is decided again (a grid may
+move between Snapshot and Paged, and the effective mode is never frozen), an
+explicit mode is kept, and an omitted collation reads \code{jdv.collation} again.
+A refresh of a titled view keeps its title association, so a later
+registration with that title continues from the refreshed generation.
 
 The replacement is built first. Only if the view, its generation, and (for a
 child view) its parent are still current is it published, as one step, under
@@ -975,18 +1003,29 @@ generation.
 \section{Binding tracking and \code{view/update_failed}}{
 
 
-A view can follow the variable it was created from. \code{\link[=jdv_view]{jdv_view()}} does so by
-default when its argument is a single name, and \code{\link[=jdv_register]{jdv_register()}} accepts an
-explicit \code{binding = list(name = "x", env = env)} for embedding hosts. After
-each top-level R task, the R task callback reads every tracked variable
-without evaluating it, compares the object it holds by identity with the one
-the view was built from, and rebuilds every changed view through the same
-update as \code{view/refresh}: a new \code{view/open} with the next generation (and
-\code{parent_closed} closes of its children) is queued, and the baseline moves to
-the new object. Nothing is scheduled beyond the task callback; a check is
-skipped while a request or a refresh is running and made at the next
-opportunity. When the built-in connection owns the session the queue is sent
-right after the check.
+\strong{Protocol contract.} A view that follows a variable carries a \code{tracking}
+object in its \code{view/open} (see Message envelopes). While the state is
+\code{"active"}, the view is rebuilt with \code{reason: "tracked"} and the next
+generation whenever the variable holds a different object than the view was
+built from, and that object becomes the new baseline. While the state is
+\code{"paused"}, the variable is not examined, so changes do not rebuild the view.
+When following ends, the state becomes \code{"lost"} with a \code{reason}, the last
+view stays, and \code{view/tracking} announces it; a later \code{view/refresh} fails
+with \code{unavailable}. The following sections describe how the R package
+implements this.
+
+\strong{R implementation.} A view can follow the variable it was created from.
+\code{\link[=jdv_view]{jdv_view()}} does so by default when its argument is a single name, and
+\code{\link[=jdv_register]{jdv_register()}} accepts an explicit \code{binding = list(name = "x", env = env)}
+for embedding hosts. After each top-level R task, the R task callback reads
+every tracked variable without evaluating it, compares the object it holds by
+identity with the one the view was built from, and rebuilds every changed
+view through the same update as \code{view/refresh}: a new \code{view/open} with the
+next generation (and \code{parent_closed} closes of its children) is queued, and
+the baseline moves to the new object. Nothing is scheduled beyond the task
+callback; a check is skipped while a request or a refresh is running and made
+at the next opportunity. When the built-in connection owns the session the
+queue is sent right after the check.
 
 Only plain and already forced bindings are read (R 4.6.0 or later). Promise,
 active, and missing bindings are skipped and looked at again later. If the
@@ -997,7 +1036,8 @@ reference objects, \code{data.table} updates by reference) keep their identity a
 are not detected; a manual \code{view/refresh} covers them. The environment is
 held weakly, but a displayed object that refers to it, such as a closure,
 keeps it alive. Views opened from another view and sequential views are not
-tracked.
+tracked. A paused view is skipped by the task callback, which exists only
+while at least one view is active.
 
 \strong{Embedding hosts.} R runs task callbacks in registration order. A host
 whose own callback takes notifications before the callback of jdv would see
@@ -1019,6 +1059,68 @@ until the variable holds a different object or \code{view/refresh} is requested.
 host that forwards the notification ignores one for a generation it no longer
 shows. A notification queue overflow ends the session as described under
 Notification delivery.
+}
+
+\section{\code{view/track} and \code{view/tracking}}{
+
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"id": "track-1", "method": "view/track",
+ "params": \{"view": "v-1", "generation": 3, "enabled": false\}\}
+}\if{html}{\out{</div>}}\tabular{lll}{
+   Field \tab Request \tab Result \cr
+   \code{view} \tab Required; the view id \tab The view id \cr
+   \code{generation} \tab Required; must be the current generation \tab The generation after the request; one higher when rebuilt \cr
+   \code{enabled} \tab Required boolean; \code{false} stops, \code{true} resumes \tab Omitted \cr
+   \code{tracking} \tab Omitted \tab The \code{tracking} object after the request \cr
+}
+
+
+Other fields are rejected with \code{invalid_request}, as is a non-boolean
+\code{enabled}.
+
+\code{enabled: false} changes the state from \code{"active"} to \code{"paused"}. The binding
+and the baseline object are kept, and the variable is not examined while the
+view is paused. \code{enabled: true} changes \code{"paused"} back to \code{"active"}. At
+that moment the current value of the variable is read and compared with the
+baseline. If it differs, the view is rebuilt in the same way as an automatic
+update: a new \code{view/open} with \code{reason: "tracked"}, \code{tracking.state: "active"}, and the next generation is queued, and the result carries the new
+generation. If it is the same object, the generation does not change. A value
+that cannot be read without evaluation (a promise or an active binding) is
+looked at again later, as for any check. If the rebuild fails, a
+\code{view/update_failed} is queued as for an automatic update and the view stays
+active at the same generation. A request for the state the view already has
+succeeds and changes nothing. If the variable turns out to be gone, the state
+becomes \code{"lost"} (announced as below) and the result reports it.
+
+A view that has no \code{tracking} field, or whose state is \code{"lost"}, fails with
+\code{unsupported}, and the message names the reason. A generation that is not
+current fails with \code{stale_generation}, and an unknown view with
+\code{view_not_found}. The other errors are \code{invalid_request}, \code{r_error}, and
+\code{interrupted}.
+
+\code{view/tracking} is a notification:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"method": "view/tracking",
+ "params": \{"view": "v-1", "generation": 3,
+            "tracking": \{"name": "df", "state": "lost",
+                         "reason": "removed",
+                         "message": "the binding was removed"\}\}\}
+}\if{html}{\out{</div>}}
+
+R queues it when the state changes without a new \code{view/open}: when following
+is lost, and when \code{view/track} pauses, or resumes without rebuilding. When
+\code{view/track} resumes and rebuilds, the new \code{view/open} carries the state and
+no \code{view/tracking} is sent. \code{generation} is the generation the state belongs
+to; a host ignores a notification for a generation it no longer shows, and it
+updates its record of the view's \code{tracking} and \code{capabilities.track} (false
+for \code{"lost"}). The notification precedes the response of the request that
+caused it, like every notification. Following is lost when the variable is
+removed or its environment is garbage collected, which R finds in the task
+callback, in a \code{view/refresh}, or when \code{view/track} resumes.
+
+A hub that forwards requests may treat a sent \code{view/track} like a sent
+\code{view/refresh}: a successful rebuild raises the generation by one, and the
+\code{view/open} alone updates the display.
 }
 
 \section{\code{view/close} and \code{view/closed}}{
@@ -1051,9 +1153,9 @@ Replacing or evicting a parent has the same descendant-close effect.
 
 Every notification R produces for a session (\code{hello}, \code{view/open},
 \code{view/closed}, including evictions, cascaded child closes, the \code{view/open} of
-a child created by \code{object/open}, and \code{view/update_failed}) goes through one
-first-in, first-out queue. A session has exactly one owner of that queue,
-reported by the \code{owner} field of \code{\link[=jdv_connection]{jdv_connection()}}:
+a child created by \code{object/open}, \code{view/update_failed}, and \code{view/tracking})
+goes through one first-in, first-out queue. A session has exactly one owner
+of that queue, reported by the \code{owner} field of \code{\link[=jdv_connection]{jdv_connection()}}:
 \itemize{
 \item \code{"transport"}: the built-in connection, whenever one is open. The
 transport sends the queue itself, before the response of the request being

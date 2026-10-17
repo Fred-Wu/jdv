@@ -73,7 +73,8 @@
         known_total = FALSE,
         `next` = TRUE,
         children = FALSE,
-        refresh = FALSE
+        refresh = FALSE,
+        track = FALSE
       ),
       nrow = NULL,
       max_page_rows = content$page_rows,

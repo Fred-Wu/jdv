@@ -199,7 +199,8 @@
 #'       "known_total": true,
 #'       "next": false,
 #'       "children": false,
-#'       "refresh": true
+#'       "refresh": true,
+#'       "track": false
 #'     },
 #'     "collation": "C",
 #'     "nrow": 100,
@@ -214,15 +215,17 @@
 #' and is not passed to [jdv_rpc()]; [jdv_register()] queues it for the host to
 #' deliver (see the Notification delivery section). `kind` is `grid`; `access`
 #' is `snapshot` or `random` for Snapshot or Paged mode, respectively; and
-#' `encoding` is `r-json`. Every descriptor includes all seven `capabilities`
+#' `encoding` is `r-json`. Every descriptor includes all eight `capabilities`
 #' fields shown for a grid: `seek`, `sort`, `filter`, `known_total`, and
-#' `refresh` are `true`; `next` is `false`. Grid `children` is `true` if and
-#' only if at least one column has `drillable: true`. `refresh` tells the host
-#' that `view/refresh` is accepted. Tree descriptors use `kind: "tree"`,
-#' `access: "random"`, `encoding: "r-json"`, and capabilities `seek: true`,
-#' `sort: false`, `filter: false`, `known_total: true`, `next: false`,
-#' `children: true`, and `refresh: true`. Tree descriptors omit grid-only fields
-#' (`mode`, `nrow`, `ncol`, `row_names`, `columns`, and `data`). A tree
+#' `refresh` are `true`; `next` is `false`; `track` is `true` only for a view
+#' that has a `tracking` field whose state is not `"lost"` (see Binding
+#' tracking). Grid `children` is `true` if and only if at least one column has
+#' `drillable: true`. `refresh` tells the host that `view/refresh` is accepted.
+#' Tree descriptors use `kind: "tree"`, `access: "random"`,
+#' `encoding: "r-json"`, and capabilities `seek: true`, `sort: false`,
+#' `filter: false`, `known_total: true`, `next: false`, `children: true`,
+#' `refresh: true`, and `track` as for a grid. Tree descriptors omit grid-only
+#' fields (`mode`, `nrow`, `ncol`, `row_names`, `columns`, and `data`). A tree
 #' descriptor includes an empty `path` at its root. A child descriptor may
 #' include `parent`, the parent view id. `title` is optional. `reason` says why
 #' the descriptor was sent (see below). A tree descriptor also has `class`, a
@@ -240,6 +243,27 @@
 #' | `path`                                                             | Omitted                                  | Required; empty for the root |
 #' | `class`, `type`                                                    | Omitted                                  | Required                     |
 #' | `parent`                                                           | Optional on child views                  | Optional on child views      |
+#' | `tracking`                                                         | Optional; see below                      | Optional; see below          |
+#'
+#' `tracking` is present only on a view that follows a variable. It is an object
+#' `{"name": "df", "state": "active"}`: `name` is the variable name and `state`
+#' is `"active"` (the view follows the variable), `"paused"` (the host stopped
+#' following with `view/track`; the binding is kept), or `"lost"` (following
+#' ended; the object also has a `reason` token and an optional `message`). A
+#' `view/open` from a registration carries `"active"`. A view that does not
+#' follow a variable (created from an expression, a child view, a sequential
+#' view, or registered without tracking) has no `tracking` field and
+#' `capabilities.track: false`. The state changes afterwards are announced by
+#' `view/tracking`, and the host changes them with `view/track`.
+#'
+#' | `tracking.reason` | Meaning                                         |
+#' | ----------------- | ----------------------------------------------- |
+#' | `"removed"`       | The variable was removed.                       |
+#' | `"collected"`     | The environment of the variable was garbage collected. |
+#'
+#' `reason` is a fixed token, like `view/open.reason`. More values may be added,
+#' so a host treats an unknown value as a general loss of following. `message`
+#' is an optional English sentence for display; a host does not parse it.
 #'
 #' `reason` is a fixed token that tells the host why a `view/open` was sent, so
 #' it can tell an explicit request from an automatic update when a view id
@@ -250,7 +274,7 @@
 #' | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
 #' | `"register"` | A view is registered with [jdv_register()] or [jdv_view()], including a registration that replaces the view with the same title and Arrow sequential views. |
 #' | `"child"`    | A child view is opened by `object/open`.                                                                                                      |
-#' | `"tracked"`  | A tracked view is rebuilt automatically because its variable changed (see [jdv_view()]).                                                      |
+#' | `"tracked"`  | A tracked view is rebuilt automatically because its variable changed (see [jdv_view()]), including when `view/track` resumes following.        |
 #' | `"refresh"`  | A view is rebuilt by `view/refresh`.                                                                                                          |
 #'
 #' A host can bring a view to the front for `"register"` and `"child"`, and
@@ -442,14 +466,14 @@
 #' Sequential descriptors have `kind: "grid"`, `access: "sequential"`,
 #' `encoding: "arrow-ipc"`, `mode: "sequential"`, `nrow: null`, and a known
 #' `ncol`. Only the `next` capability is true; `seek`, `sort`, `filter`,
-#' `known_total`, `children`, and `refresh` are false. Registration calls the
-#' producer's `get_schema` but never `get_next`. It moves one exported Arrow
-#' stream into native ownership. Close, replacement, eviction, parent cascade,
-#' namespace unload, and R disconnection release the stream and any carried
-#' batch exactly once. A release callback may execute R code; registry identity
-#' and generation are rechecked before publishing its result. Releases requested
-#' inside an active producer callback are deferred until that callback has
-#' finished.
+#' `known_total`, `children`, `refresh`, and `track` are false. Registration
+#' calls the producer's `get_schema` but never `get_next`. It moves one exported
+#' Arrow stream into native ownership. Close, replacement, eviction, parent
+#' cascade, namespace unload, and R disconnection release the stream and any
+#' carried batch exactly once. A release callback may execute R code; registry
+#' identity and generation are rechecked before publishing its result. Releases
+#' requested inside an active producer callback are deferred until that callback
+#' has finished.
 #'
 #' `schema` contains the original logical Arrow schema recursively: `format`,
 #' `name`, `flags`, `metadata`, `metadata_encoding`, `children`, and
@@ -694,9 +718,11 @@
 #' | `object/children` | Host to R        | Request      | One page of children at a typed object path.                                       |
 #' | `object/open`     | Host to R        | Request      | Registers the captured value at a typed path as a child view.                      |
 #' | `view/refresh`    | Host to R        | Request      | Rebuilds a view from its captured value as the next generation of the same id.     |
+#' | `view/track`      | Host to R        | Request      | Stops or resumes following the variable of a tracked view.                         |
 #' | `view/close`      | Host to R        | Request      | Closes one view generation.                                                        |
 #' | `view/closed`     | R to host        | Notification | Removes a closed, replaced, or evicted generation from the host cache.             |
 #' | `view/update_failed` | R to host     | Notification | A tracked view could not be rebuilt; the previous generation stays.                |
+#' | `view/tracking`   | R to host        | Notification | The tracking state of a view changed without a new `view/open`.                    |
 #' | `hello`           | R to host        | Notification | Announces protocol and runtime versions for a new connection.                      |
 #' | `wake`            | Host to R        | Notification | No result; asks the event loop to check its execution gate again.                  |
 #' | `cancel`          | Host to R        | Notification | Names pending work for the local queue to cancel.                                  |
@@ -931,14 +957,16 @@
 #' that changed in place. A tracked view (see Binding tracking) is instead
 #' rebuilt from the current value of its variable, read without evaluation; it
 #' fails with `unavailable` when tracking has ended (the reason is in the
-#' message) or the variable is a promise or active binding. The rebuild happens
-#' even if nothing changed and always advances the generation by one. The
-#' registration `mode` and `collation` are reused as they were requested: an
-#' `"auto"` mode is decided again (a grid may move between Snapshot and Paged,
-#' and the effective mode is never frozen), an explicit mode is kept, and an
-#' omitted collation reads `jdv.collation` again. A refresh of a titled view
-#' keeps its title association, so a later registration with that title
-#' continues from the refreshed generation.
+#' message) or the variable is a promise or active binding. A view whose
+#' tracking is `"paused"` can be refreshed too: it is rebuilt from the current
+#' value of its variable, the new object becomes the baseline, and the state
+#' stays `"paused"`. The rebuild happens even if nothing changed and always
+#' advances the generation by one. The registration `mode` and `collation` are
+#' reused as they were requested: an `"auto"` mode is decided again (a grid may
+#' move between Snapshot and Paged, and the effective mode is never frozen), an
+#' explicit mode is kept, and an omitted collation reads `jdv.collation` again.
+#' A refresh of a titled view keeps its title association, so a later
+#' registration with that title continues from the refreshed generation.
 #'
 #' The replacement is built first. Only if the view, its generation, and (for a
 #' child view) its parent are still current is it published, as one step, under
@@ -981,18 +1009,29 @@
 #' @section Binding tracking and `view/update_failed`:
 #'
 #'
-#' A view can follow the variable it was created from. [jdv_view()] does so by
-#' default when its argument is a single name, and [jdv_register()] accepts an
-#' explicit `binding = list(name = "x", env = env)` for embedding hosts. After
-#' each top-level R task, the R task callback reads every tracked variable
-#' without evaluating it, compares the object it holds by identity with the one
-#' the view was built from, and rebuilds every changed view through the same
-#' update as `view/refresh`: a new `view/open` with the next generation (and
-#' `parent_closed` closes of its children) is queued, and the baseline moves to
-#' the new object. Nothing is scheduled beyond the task callback; a check is
-#' skipped while a request or a refresh is running and made at the next
-#' opportunity. When the built-in connection owns the session the queue is sent
-#' right after the check.
+#' **Protocol contract.** A view that follows a variable carries a `tracking`
+#' object in its `view/open` (see Message envelopes). While the state is
+#' `"active"`, the view is rebuilt with `reason: "tracked"` and the next
+#' generation whenever the variable holds a different object than the view was
+#' built from, and that object becomes the new baseline. While the state is
+#' `"paused"`, the variable is not examined, so changes do not rebuild the view.
+#' When following ends, the state becomes `"lost"` with a `reason`, the last
+#' view stays, and `view/tracking` announces it; a later `view/refresh` fails
+#' with `unavailable`. The following sections describe how the R package
+#' implements this.
+#'
+#' **R implementation.** A view can follow the variable it was created from.
+#' [jdv_view()] does so by default when its argument is a single name, and
+#' [jdv_register()] accepts an explicit `binding = list(name = "x", env = env)`
+#' for embedding hosts. After each top-level R task, the R task callback reads
+#' every tracked variable without evaluating it, compares the object it holds by
+#' identity with the one the view was built from, and rebuilds every changed
+#' view through the same update as `view/refresh`: a new `view/open` with the
+#' next generation (and `parent_closed` closes of its children) is queued, and
+#' the baseline moves to the new object. Nothing is scheduled beyond the task
+#' callback; a check is skipped while a request or a refresh is running and made
+#' at the next opportunity. When the built-in connection owns the session the
+#' queue is sent right after the check.
 #'
 #' Only plain and already forced bindings are read (R 4.6.0 or later). Promise,
 #' active, and missing bindings are skipped and looked at again later. If the
@@ -1003,7 +1042,8 @@
 #' are not detected; a manual `view/refresh` covers them. The environment is
 #' held weakly, but a displayed object that refers to it, such as a closure,
 #' keeps it alive. Views opened from another view and sequential views are not
-#' tracked.
+#' tracked. A paused view is skipped by the task callback, which exists only
+#' while at least one view is active.
 #'
 #' **Embedding hosts.** R runs task callbacks in registration order. A host
 #' whose own callback takes notifications before the callback of jdv would see
@@ -1026,6 +1066,71 @@
 #' host that forwards the notification ignores one for a generation it no longer
 #' shows. A notification queue overflow ends the session as described under
 #' Notification delivery.
+#'
+#'
+#' @section `view/track` and `view/tracking`:
+#'
+#'
+#' ```json
+#' {"id": "track-1", "method": "view/track",
+#'  "params": {"view": "v-1", "generation": 3, "enabled": false}}
+#' ```
+#'
+#' | Field        | Request                                          | Result                                                |
+#' | ------------ | ------------------------------------------------ | ----------------------------------------------------- |
+#' | `view`       | Required; the view id                            | The view id                                           |
+#' | `generation` | Required; must be the current generation         | The generation after the request; one higher when rebuilt |
+#' | `enabled`    | Required boolean; `false` stops, `true` resumes  | Omitted                                               |
+#' | `tracking`   | Omitted                                          | The `tracking` object after the request               |
+#'
+#' Other fields are rejected with `invalid_request`, as is a non-boolean
+#' `enabled`.
+#'
+#' `enabled: false` changes the state from `"active"` to `"paused"`. The binding
+#' and the baseline object are kept, and the variable is not examined while the
+#' view is paused. `enabled: true` changes `"paused"` back to `"active"`. At
+#' that moment the current value of the variable is read and compared with the
+#' baseline. If it differs, the view is rebuilt in the same way as an automatic
+#' update: a new `view/open` with `reason: "tracked"`, `tracking.state:
+#' "active"`, and the next generation is queued, and the result carries the new
+#' generation. If it is the same object, the generation does not change. A value
+#' that cannot be read without evaluation (a promise or an active binding) is
+#' looked at again later, as for any check. If the rebuild fails, a
+#' `view/update_failed` is queued as for an automatic update and the view stays
+#' active at the same generation. A request for the state the view already has
+#' succeeds and changes nothing. If the variable turns out to be gone, the state
+#' becomes `"lost"` (announced as below) and the result reports it.
+#'
+#' A view that has no `tracking` field, or whose state is `"lost"`, fails with
+#' `unsupported`, and the message names the reason. A generation that is not
+#' current fails with `stale_generation`, and an unknown view with
+#' `view_not_found`. The other errors are `invalid_request`, `r_error`, and
+#' `interrupted`.
+#'
+#' `view/tracking` is a notification:
+#'
+#' ```json
+#' {"method": "view/tracking",
+#'  "params": {"view": "v-1", "generation": 3,
+#'             "tracking": {"name": "df", "state": "lost",
+#'                          "reason": "removed",
+#'                          "message": "the binding was removed"}}}
+#' ```
+#'
+#' R queues it when the state changes without a new `view/open`: when following
+#' is lost, and when `view/track` pauses, or resumes without rebuilding. When
+#' `view/track` resumes and rebuilds, the new `view/open` carries the state and
+#' no `view/tracking` is sent. `generation` is the generation the state belongs
+#' to; a host ignores a notification for a generation it no longer shows, and it
+#' updates its record of the view's `tracking` and `capabilities.track` (false
+#' for `"lost"`). The notification precedes the response of the request that
+#' caused it, like every notification. Following is lost when the variable is
+#' removed or its environment is garbage collected, which R finds in the task
+#' callback, in a `view/refresh`, or when `view/track` resumes.
+#'
+#' A hub that forwards requests may treat a sent `view/track` like a sent
+#' `view/refresh`: a successful rebuild raises the generation by one, and the
+#' `view/open` alone updates the display.
 #'
 #'
 #' @section `view/close` and `view/closed`:
@@ -1058,9 +1163,9 @@
 #'
 #' Every notification R produces for a session (`hello`, `view/open`,
 #' `view/closed`, including evictions, cascaded child closes, the `view/open` of
-#' a child created by `object/open`, and `view/update_failed`) goes through one
-#' first-in, first-out queue. A session has exactly one owner of that queue,
-#' reported by the `owner` field of [jdv_connection()]:
+#' a child created by `object/open`, `view/update_failed`, and `view/tracking`)
+#' goes through one first-in, first-out queue. A session has exactly one owner
+#' of that queue, reported by the `owner` field of [jdv_connection()]:
 #'
 #' - `"transport"`: the built-in connection, whenever one is open. The
 #'   transport sends the queue itself, before the response of the request being

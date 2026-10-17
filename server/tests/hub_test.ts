@@ -3290,3 +3290,228 @@ Deno.test("view/update_failed reaches browsers only for the current generation",
     f.hub.close();
   }
 });
+
+function trackedOpen(
+  connection: MemoryConnection,
+  generation: number,
+  state = "active",
+): void {
+  connection.inject(notification("view/open", {
+    view: "table-1",
+    generation,
+    kind: "grid",
+    access: "snapshot",
+    encoding: "r-json",
+    title: "Snapshot",
+    mode: "snapshot",
+    reason: generation === 1 ? "register" : "tracked",
+    nrow: 1,
+    ncol: 1,
+    columns: [{
+      position: 0,
+      name: "x",
+      type: "integer",
+      sortable: true,
+      filterable: true,
+    }],
+    capabilities: {
+      seek: true,
+      sort: true,
+      filter: true,
+      known_total: true,
+      next: false,
+      children: false,
+      refresh: true,
+      track: true,
+    },
+    tracking: { name: "df", state },
+    data: { columns: ["x"], rows: [[1]] },
+  }));
+}
+
+function trackFixture(session: string) {
+  const f = refreshFixture(session);
+  const track = (
+    id: string,
+    enabled: unknown,
+    generation = 1,
+    extra: JsonRecord = {},
+  ) =>
+    f.hub.handleBrowser(f.browser, {
+      type: "request",
+      id,
+      session,
+      method: "view/track",
+      params: { view: "table-1", generation, enabled, ...extra },
+    });
+  return { ...f, track };
+}
+
+Deno.test("view/track is forwarded and validated", async () => {
+  const f = trackFixture("r-9300-1");
+  try {
+    await f.browser.nextMessage((message) => message.type === "view/open");
+    for (
+      const [id, enabled, extra] of [
+        ["not-boolean", "yes", {}],
+        ["missing", undefined, {}],
+        ["extra", true, { mode: "paged" }],
+      ] as Array<[string, unknown, JsonRecord]>
+    ) {
+      f.track(id, enabled, 1, extra);
+      const error = await f.browser.nextMessage((message) => message.id === id);
+      assertEquals(error.code, "invalid_request");
+    }
+    f.track("stale", false, 9);
+    const stale = await f.browser.nextMessage((message) =>
+      message.id === "stale"
+    );
+    assertEquals(stale.code, "stale_generation");
+    assertEquals(f.connection.writes.length, 0);
+
+    f.track("pause", false);
+    const sent = await f.connection.nextWrite(0);
+    assertEquals(sent.method, "view/track");
+    assertEquals(sent.params, {
+      view: "table-1",
+      generation: 1,
+      enabled: false,
+    });
+    f.connection.inject({
+      id: sent.id,
+      result: {
+        view: "table-1",
+        generation: 1,
+        tracking: { name: "df", state: "paused" },
+      },
+      warnings: [],
+    });
+    const response = await f.browser.nextMessage((message) =>
+      message.type === "response" && message.id === "pause"
+    );
+    assertEquals(
+      ((response.result as JsonRecord).tracking as JsonRecord).state,
+      "paused",
+    );
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("a resuming view/track survives the view/open it caused", async () => {
+  const f = trackFixture("r-9301-1");
+  try {
+    await f.browser.nextMessage((message) => message.type === "view/open");
+    f.track("resume", true);
+    const sent = await f.connection.nextWrite(0);
+    trackedOpen(f.connection, 2);
+    f.connection.inject({
+      id: sent.id,
+      result: {
+        view: "table-1",
+        generation: 2,
+        tracking: { name: "df", state: "active" },
+      },
+      warnings: [],
+    });
+    const response = await f.browser.nextMessage((message) =>
+      message.type === "response" && message.id === "resume"
+    );
+    assertEquals((response.result as JsonRecord).generation, 2);
+
+    // A response that does not match the request is refused.
+    f.track("bad", false, 2);
+    const bad = await f.connection.nextWrite(1);
+    f.connection.inject({
+      id: bad.id,
+      result: { view: "table-1", generation: 5, tracking: "paused" },
+      warnings: [],
+    });
+    const error = await f.browser.nextMessage((message) =>
+      message.id === "bad" && message.type === "error"
+    );
+    assertEquals(error.code, "invalid_request");
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("view/tracking updates the cached descriptor and reaches browsers for the current generation", async () => {
+  const f = trackFixture("r-9302-1");
+  try {
+    await f.browser.nextMessage((message) => message.type === "view/open");
+    const barrier = async (nonce: string) => {
+      f.connection.inject(notification("fixture/barrier", { nonce }));
+      await f.browser.nextMessage((message) =>
+        message.type === "notification" &&
+        ((message.message as JsonRecord)?.params as JsonRecord)?.nonce ===
+          nonce
+      );
+    };
+    const tracking = () =>
+      f.browser.messages.filter((message) =>
+        (message.message as JsonRecord | undefined)?.method ===
+          "view/tracking"
+      );
+
+    f.connection.inject(notification("view/tracking", {
+      view: "table-1",
+      generation: 1,
+      tracking: {
+        name: "df",
+        state: "lost",
+        reason: "removed",
+        message: "m".repeat(2000),
+        extra: "dropped",
+      },
+      extra: "dropped",
+    }));
+    await barrier("one");
+    assertEquals(tracking().length, 1);
+    assertEquals((tracking()[0].message as JsonRecord).params, {
+      view: "table-1",
+      generation: 1,
+      tracking: {
+        name: "df",
+        state: "lost",
+        reason: "removed",
+        message: "m".repeat(1024),
+      },
+    });
+
+    // Other generations, unknown views, and malformed reports are dropped.
+    for (
+      const params of [
+        {
+          view: "table-1",
+          generation: 2,
+          tracking: { name: "df", state: "paused" },
+        },
+        {
+          view: "nope",
+          generation: 1,
+          tracking: { name: "df", state: "paused" },
+        },
+        {
+          view: "table-1",
+          generation: 1,
+          tracking: { name: "df", state: "x" },
+        },
+        { view: "table-1", generation: 1 },
+      ]
+    ) f.connection.inject(notification("view/tracking", params));
+    await barrier("two");
+    assertEquals(tracking().length, 1);
+
+    // A browser that connects later sees the current state.
+    const late = new MemoryBrowser();
+    f.hub.attach(late);
+    const welcome = late.messages[0];
+    const views = (welcome.sessions as JsonRecord[])[0].views as JsonRecord[];
+    const params = views[0].params as JsonRecord;
+    assertEquals((params.tracking as JsonRecord).state, "lost");
+    assertEquals((params.capabilities as JsonRecord).track, false);
+  } finally {
+    f.hub.close();
+  }
+});

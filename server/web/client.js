@@ -180,9 +180,9 @@ export function createBrowserTransport(socket, handlers = {}) {
     return true;
   }
 
-  // A sent view/refresh moves the view to a newer generation by itself, so
-  // retiring the generation it was sent for must not abort it; its response is
-  // only an acknowledgement. Pass includeRefresh when the view is really gone.
+  // A sent view/refresh (or a view/track that resumes following) moves the view
+  // to a newer generation by itself, so retiring the generation it was sent
+  // for must not abort it; its response is only an acknowledgement. Pass includeRefresh when the view is really gone.
   function cancelTable(
     session,
     table,
@@ -194,7 +194,8 @@ export function createBrowserTransport(socket, handlers = {}) {
       if (
         item.session === session && item.params?.view === table &&
         item.params?.generation === generation &&
-        (includeRefresh || item.method !== "view/refresh")
+        (includeRefresh ||
+          (item.method !== "view/refresh" && item.method !== "view/track"))
       ) cancel(item.id, reason ?? "The table is no longer available.");
     }
   }

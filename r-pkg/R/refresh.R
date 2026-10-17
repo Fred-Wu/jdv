@@ -23,10 +23,18 @@
   generation,
   title,
   parent,
-  reason
+  reason,
+  tracking = NULL
 ) {
   describe <- function(content) {
-    descriptor <- .jdv_descriptor(content, id, generation, title, reason)
+    descriptor <- .jdv_descriptor(
+      content,
+      id,
+      generation,
+      title,
+      reason,
+      tracking
+    )
     if (!is.null(parent)) {
       descriptor$params$parent <- parent$id
       descriptor$params$path <- jdv_json_array()
@@ -148,7 +156,8 @@
       title,
       parent,
       value,
-      reason
+      reason,
+      .jdv_track_entry_json(entry)
     )
     open <- .jdv_json_encode(descriptor, .jdv_max_message_bytes())
     replacement <- .jdv_tree_new_entry(value, id, generation, title, parent)
@@ -171,7 +180,8 @@
       generation,
       title,
       parent,
-      reason
+      reason,
+      .jdv_track_entry_json(entry)
     )
     open <- prepared$open
     replacement <- .jdv_install(

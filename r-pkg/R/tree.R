@@ -676,11 +676,30 @@
   title,
   parent = NULL,
   value = NULL,
-  reason = "register"
+  reason = "register",
+  tracking = NULL
 ) {
   capabilities <- stats::setNames(
-    as.list(c(TRUE, FALSE, FALSE, TRUE, FALSE, TRUE, TRUE)),
-    c("seek", "sort", "filter", "known_total", "next", "children", "refresh")
+    as.list(c(
+      TRUE,
+      FALSE,
+      FALSE,
+      TRUE,
+      FALSE,
+      TRUE,
+      TRUE,
+      .jdv_track_capability(tracking)
+    )),
+    c(
+      "seek",
+      "sort",
+      "filter",
+      "known_total",
+      "next",
+      "children",
+      "refresh",
+      "track"
+    )
   )
   params <- list(
     view = id,
@@ -698,6 +717,9 @@
   params$type <- .jdv_tree_typeof(info)
   if (!is.null(parent)) {
     params$parent <- parent$id
+  }
+  if (!is.null(tracking)) {
+    params$tracking <- tracking
   }
   list(method = "view/open", params = jdv_json_object(params))
 }
@@ -733,7 +755,8 @@
   x,
   title = NULL,
   parent = NULL,
-  reason = "register"
+  reason = "register",
+  tracking = NULL
 ) {
   .jdv_assert_active()
   if (!is.null(title)) {
@@ -776,7 +799,15 @@
       )
     }
   }
-  descriptor <- .jdv_tree_descriptor(id, generation, title, parent, x, reason)
+  descriptor <- .jdv_tree_descriptor(
+    id,
+    generation,
+    title,
+    parent,
+    x,
+    reason,
+    tracking
+  )
   open <- .jdv_json_encode(descriptor, .jdv_max_message_bytes())
   .jdv_assert_active()
 

@@ -97,7 +97,8 @@ a closure, keeps it alive. Views opened from a view, and sequential sources,
 are not tracked. If an update fails (for example the new object exceeds a
 limit) the previous view stays and one \code{view/update_failed} notification is
 sent; the same object is not retried until the variable changes or the view
-is refreshed manually.
+is refreshed manually. The viewer host can stop and resume following a view
+with the \code{view/track} request (see \link{jdv_spec}).
 
 Tracking needs R 4.6.0 or later. Where it is not possible, including when the
 variable cannot be read safely, the view is still shown and a warning says it
