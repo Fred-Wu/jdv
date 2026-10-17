@@ -67,12 +67,14 @@ unwind or explicitly call \code{jdv_rpc(NULL)} before queued work can progress. 
 script that waits in a loop never returns to top level, so it must poll with
 \code{jdv_rpc(NULL)}; see \code{\link[=jdv_rpc]{jdv_rpc()}}. Windows GUI and Esc behavior have not been
 validated. Windows named pipes must use byte-type mode; message-type pipes
-are unsupported, and Windows transport behavior has not yet been exercised on
-a Windows host. Named-pipe ACLs are not hardened, and an explicitly selected
-TCP endpoint has no authentication. Registry entries created with
-\code{\link[=jdv_register]{jdv_register()}} share this process-wide registry and are also released if
-the viewer disconnects. Package unload stops the event source and pending
-work before releasing table references.
+are unsupported. The named-pipe transport, including binary Arrow pages and
+requests serviced while an interactive session is idle, is tested on Windows
+through Rscript and the arf console; Rgui and Rterm are not tested.
+Named-pipe ACLs are not hardened, and an explicitly selected TCP endpoint has
+no authentication. Registry entries created with \code{\link[=jdv_register]{jdv_register()}} share this
+process-wide registry and are also released if the viewer disconnects.
+Package unload stops the event source and pending work before releasing table
+references.
 
 \strong{Tracking.} With \code{track = TRUE} (the default), a call whose argument is a
 single variable name, such as \code{jdv_view(df)}, follows that variable. After
