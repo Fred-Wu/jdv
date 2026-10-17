@@ -38,7 +38,6 @@ query_integer <- function(x, name, minimum = 0) {
 query_limits <- function(limits = list()) {
   defaults <- list(
     probe_rows = 32L,
-    max_columns = 4096L,
     page_rows = 2000L,
     page_columns = 256L,
     sort_columns = 16L,
@@ -187,9 +186,6 @@ paged_table <- function(x, collation = "C", limits = list(), budget = NULL) {
     query_error("invalid_request", "Invalid collation.")
   }
   limits <- query_limits(limits)
-  if (ncol(x) > limits$max_columns) {
-    query_error("limit_exceeded", "Too many columns.")
-  }
   holder <- new.env(parent = emptyenv())
   class(holder) <- "jdv_paged_table"
   holder$source <- x

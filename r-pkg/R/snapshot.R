@@ -5,9 +5,6 @@ snapshot_table <- function(x, collation = "C", limits = list(), budget = NULL) {
   if (!is.data.frame(x) && !is.matrix(x)) {
     query_error("invalid_request", "Expected a data frame or matrix.")
   }
-  if (ncol(x) > limits$max_columns) {
-    query_error("limit_exceeded", "Too many columns.")
-  }
   if (!identical(collation, "C") && !identical(collation, "locale")) {
     query_error("invalid_request", "Invalid collation.")
   }

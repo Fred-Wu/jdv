@@ -138,7 +138,6 @@
 #' | Limit key | Default | Meaning |
 #' | --- | ---: | --- |
 #' | `probe_rows` | 32 | Maximum registration probe rows. |
-#' | `max_columns` | 4096 | Maximum registered table columns. |
 #' | `page_rows` | 2000 | Maximum returned rows per page; larger requested limits are clamped. |
 #' | `page_columns` | 256 | Maximum selected page columns; excess is an error. |
 #' | `sort_columns` | 16 | Maximum sort terms. |
@@ -169,7 +168,8 @@
 #' smaller selection or an appropriate internal limit override. Excess columns
 #' are never silently omitted. An empty explicit selection returns no data
 #' columns while still returning row indices and totals. Selected columns follow
-#' selector order.
+#' selector order. Table width is otherwise bounded by descriptor and response
+#' message budgets rather than a fixed registration column count.
 #'
 #'
 #' @section Filter AST:

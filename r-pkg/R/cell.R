@@ -76,9 +76,6 @@ column_drillable <- function(x) {
         query_error("unavailable", "The source cell is no longer available.")
       }
       if (is.data.frame(column) || is.matrix(column)) {
-        if (ncol(column) > query_limits()$max_columns) {
-          query_error("limit_exceeded", "The cell grid exceeds the column cap.")
-        }
         tryCatch(
           query_slice(column, step$row_index),
           error = function(error) {

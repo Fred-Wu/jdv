@@ -138,7 +138,6 @@ means no filtering. JSON objects and arrays correspond to ordinary named and
 unnamed R lists respectively; no request string is evaluated as R code.\tabular{lrl}{
    Limit key \tab Default \tab Meaning \cr
    \code{probe_rows} \tab 32 \tab Maximum registration probe rows. \cr
-   \code{max_columns} \tab 4096 \tab Maximum registered table columns. \cr
    \code{page_rows} \tab 2000 \tab Maximum returned rows per page; larger requested limits are clamped. \cr
    \code{page_columns} \tab 256 \tab Maximum selected page columns; excess is an error. \cr
    \code{sort_columns} \tab 16 \tab Maximum sort terms. \cr
@@ -171,7 +170,8 @@ bypass \code{page_columns}: a table with more than 256 columns needs an explicit
 smaller selection or an appropriate internal limit override. Excess columns
 are never silently omitted. An empty explicit selection returns no data
 columns while still returning row indices and totals. Selected columns follow
-selector order.
+selector order. Table width is otherwise bounded by descriptor and response
+message budgets rather than a fixed registration column count.
 }
 
 \section{Filter AST}{

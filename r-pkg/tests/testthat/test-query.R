@@ -209,7 +209,7 @@ test_that(
         expect_setequal(names(holder$column_cache), "3")
         expect_query_code(
           snapshot_table(x, limits = list(max_columns = 2L)),
-          "limit_exceeded"
+          "invalid_request"
         )
         expect_length(calls, 4L)
       }
@@ -416,7 +416,7 @@ test_that("invalid queries carry stable error codes before cache access", {
   )
   expect_query_code(
     paged_table(matrix(1, 1L, 3L), limits = list(max_columns = 2L)),
-    "limit_exceeded"
+    "invalid_request"
   )
 })
 
