@@ -30,13 +30,16 @@ The view id, invisibly.
 Open an object in the local jdv viewer
 }
 \details{
-The viewer connection is opened on the first call. An address can be set in
-\code{options(jdv.address = ...)} or \code{JDV_ADDRESS}; otherwise jdv reads
-\code{discovery.json} from the user cache directory. The discovery file is limited
-to 64 KiB and contains a \code{socketPath} string. Local Unix-domain sockets and
-Windows named pipes are used by default; TCP is available only when an
-explicit address selects it. The connection is closed after the last table is
-closed.
+The viewer connection is opened on the first call unless \code{\link[=jdv_connect]{jdv_connect()}}
+already opened one; in that case the existing connection is used and \code{hello}
+is not sent again. An address can be set in \code{options(jdv.address = ...)} or
+\code{JDV_ADDRESS}; otherwise jdv reads \code{discovery.json} from the user cache
+directory. The discovery file is limited to 64 KiB and contains a
+\code{socketPath} string. Local Unix-domain sockets and Windows named pipes are
+used by default; TCP is available only when an explicit address selects it. A
+connection opened implicitly by this function is closed after the last table
+is closed; a persistent connection from \code{\link[=jdv_connect]{jdv_connect()}} stays open until
+\code{\link[=jdv_disconnect]{jdv_disconnect()}}.
 
 The event gate dispatches only when \code{sys.nframe() == 0}. This practical
 function-frame check is not a guarantee that R is idle: on Windows, a timer

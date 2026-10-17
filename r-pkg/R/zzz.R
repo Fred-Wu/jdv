@@ -13,13 +13,17 @@
 .onUnload <- function(libpath) {
   .jdv_state$unloading <- TRUE
   .jdv_transport_housekeeping()
-  .Call(C_jdv_transport_close)
+  .jdv_transport_close("unloaded")
   .Call(C_jdv_arrow_cleanup)
   .jdv_transport_remove_task_callback()
   .jdv_close_internal(notify = FALSE)
   .jdv_state$outbox <- list()
   .jdv_state$transport <- NULL
   .jdv_state$transport_hello <- FALSE
+  .jdv_state$transport_persistent <- FALSE
+  .jdv_state$transport_address <- NULL
+  .jdv_state$last_disconnect_reason <- "unloaded"
+  .jdv_state$transport_close_reason <- NULL
   if (
     !isTRUE(.Call(C_jdv_transport_can_unload)) ||
       .Call(C_jdv_arrow_status)[["busy"]] != 0L

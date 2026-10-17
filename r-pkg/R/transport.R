@@ -165,11 +165,53 @@
   .jdv_state$transport <- NULL
   .jdv_state$transport_limits <- NULL
   .jdv_state$transport_hello <- FALSE
+  .jdv_state$transport_persistent <- FALSE
+  .jdv_state$transport_address <- NULL
+  # A close nobody requested here is the peer ending the session.
+  .jdv_state$last_disconnect_reason <- .jdv_state$transport_close_reason %||%
+    "peer_closed"
+  .jdv_state$transport_close_reason <- NULL
   .jdv_transport_remove_task_callback()
   invisible(NULL)
 }
 
+# Close the native connection and remember why. The first reason wins so the
+# disconnect callback reports the original cause. With `after_response`, a
+# running request callback still sends its response before the close.
+.jdv_transport_close <- function(reason, after_response = FALSE) {
+  if (is.null(.jdv_state$transport_close_reason)) {
+    .jdv_state$transport_close_reason <- reason
+  }
+  if (after_response) {
+    .Call(C_jdv_transport_close_after_response)
+  } else {
+    .Call(C_jdv_transport_close)
+  }
+}
+
+.jdv_connection_state <- function() {
+  status <- .jdv_transport_status()
+  state <- if (is.null(status)) {
+    "disconnected"
+  } else if (isTRUE(status$connected) && !isTRUE(status$pending_cleanup)) {
+    "connected"
+  } else {
+    "closing"
+  }
+  live <- !identical(state, "disconnected")
+  list(
+    state = state,
+    connected = identical(state, "connected"),
+    persistent = live && isTRUE(.jdv_state$transport_persistent),
+    address = if (identical(state, "connected")) {
+      .jdv_state$transport_address
+    },
+    last_disconnect_reason = .jdv_state$last_disconnect_reason
+  )
+}
+
 .jdv_transport_request <- function(message, epoch) {
+  had_entries <- length(ls(.jdv_state$entries, all.names = TRUE)) > 0L
   response <- .jdv_transport_request_body(message, epoch)
   if (
     identical(.jdv_state$transport_epoch, epoch) &&
@@ -182,7 +224,7 @@
     # The native callback accepts one response; send lifecycle JSONL first.
     failed <- function(error) {
       if (identical(.jdv_state$transport_epoch, epoch)) {
-        try(.Call(C_jdv_transport_close), silent = TRUE)
+        try(.jdv_transport_close("send_failed"), silent = TRUE)
       }
       stop(error)
     }
@@ -191,6 +233,17 @@
       error = failed,
       interrupt = failed
     )
+  }
+  if (
+    had_entries &&
+      identical(.jdv_state$transport_epoch, epoch) &&
+      !isTRUE(.jdv_state$unloading) &&
+      !is.null(.jdv_state$transport) &&
+      !isTRUE(.jdv_state$transport_persistent) &&
+      !length(ls(.jdv_state$entries, all.names = TRUE))
+  ) {
+    # Only schedule the close here; the native layer sends this response first.
+    .jdv_transport_close("last_view_closed", after_response = TRUE)
   }
   response
 }
@@ -346,6 +399,9 @@
   )
   .jdv_state$transport <- TRUE
   .jdv_state$transport_hello <- FALSE
+  .jdv_state$transport_persistent <- FALSE
+  .jdv_state$transport_address <- address
+  .jdv_state$transport_close_reason <- NULL
   .jdv_transport_install_task_callback(epoch)
   invisible(NULL)
 }
@@ -390,6 +446,121 @@
   invisible(NULL)
 }
 
+#' Manage the local jdv viewer connection
+#'
+#' [jdv_connect()] opens the local viewer connection and sends `hello`
+#' immediately, even when no view is open. Such an explicit connection is
+#' persistent: it stays open, and keeps handling viewer requests, after the last
+#' view is closed. [jdv_disconnect()] closes the connection and every view.
+#' [jdv_connection()] reports the current state.
+#'
+#' @param address Optional viewer address. When omitted, the address is selected
+#'   from `options(jdv.address = ...)`, then `JDV_ADDRESS`, then
+#'   `discovery.json` under the user cache directory (see [jdv_view()]).
+#' @return
+#' A list describing the connection after the call. [jdv_connect()] and
+#' [jdv_disconnect()] return it invisibly. The members are:
+#'   * `state`: `"disconnected"`, `"connected"`, or `"closing"` (the connection
+#'     is closed and its cleanup is still pending).
+#'   * `connected`: `TRUE` only in the `"connected"` state.
+#'   * `persistent`: `TRUE` for an explicit connection made or promoted by
+#'     [jdv_connect()].
+#'   * `address`: the connected address, or `NULL`.
+#'   * `last_disconnect_reason`: a short string for the most recent disconnect,
+#'     or `NULL` if there has been none. Values include `"disconnect"`
+#'     ([jdv_disconnect()]), `"last_view_closed"`, `"peer_closed"`,
+#'     `"send_failed"`, `"register_failed"`, and `"unloaded"`.
+#' @details
+#' A connection opened implicitly by [jdv_view()] is closed after its last view
+#' is closed. Calling [jdv_connect()] while such a connection is open promotes
+#' it to a persistent connection without sending `hello` again. Calling
+#' [jdv_connect()] again for the same address, or without an address while
+#' connected, changes nothing. Asking for a different address while connected is
+#' an error: call [jdv_disconnect()] first. A later [jdv_view()] uses the
+#' existing connection and does not repeat `hello`.
+#'
+#' A peer disconnect, a failed send, or package unload ends the session. jdv
+#' does not reconnect automatically, and views are not resent to a later
+#' session. [jdv_disconnect()] is idempotent and also releases views registered
+#' with [jdv_register()]. [jdv_connection()] has no side effects: it neither
+#' connects nor polls.
+#' @export
+jdv_connect <- function(address = NULL) {
+  .jdv_assert_active()
+  if (
+    !is.null(address) &&
+      (!is.character(address) ||
+        length(address) != 1L ||
+        is.na(address) ||
+        !nzchar(address))
+  ) {
+    stop("'address' must be NULL or one non-empty address.", call. = FALSE)
+  }
+  .jdv_transport_housekeeping()
+  .jdv_assert_active()
+  status <- .jdv_transport_status()
+  if (!is.null(status) && isTRUE(status$pending_cleanup)) {
+    stop(
+      "The previous viewer connection is still being cleaned up.",
+      call. = FALSE
+    )
+  }
+  if (!is.null(status) && isTRUE(status$connected)) {
+    current <- .jdv_state$transport_address
+    if (!is.null(address) && !identical(address, current)) {
+      stop(
+        "Already connected to a different address; ",
+        "call jdv_disconnect() before connecting to another one.",
+        call. = FALSE
+      )
+    }
+    .jdv_state$transport_persistent <- TRUE
+    return(invisible(.jdv_connection_state()))
+  }
+  if (is.null(address)) {
+    address <- .jdv_resolve_address()
+  }
+  .jdv_transport_connect(address)
+  .jdv_assert_active()
+  .jdv_state$transport_persistent <- TRUE
+  tryCatch(
+    .jdv_transport_send(.jdv_json_encode(.jdv_hello())),
+    error = function(error) {
+      if (!isTRUE(.jdv_state$unloading)) {
+        try(.jdv_transport_close("send_failed"), silent = TRUE)
+        .jdv_transport_housekeeping()
+      }
+      stop(error)
+    }
+  )
+  .jdv_state$transport_hello <- TRUE
+  invisible(.jdv_connection_state())
+}
+
+#' @rdname jdv_connect
+#' @export
+jdv_disconnect <- function() {
+  .jdv_assert_active()
+  .jdv_transport_housekeeping()
+  .jdv_assert_active()
+  status <- .jdv_transport_status()
+  if (!is.null(status) && isTRUE(status$connected)) {
+    .jdv_transport_close("disconnect")
+  }
+  .jdv_assert_active()
+  # Release the registry now even if the native cleanup callback is deferred.
+  .jdv_close_internal(notify = FALSE)
+  .jdv_state$outbox <- list()
+  invisible(.jdv_connection_state())
+}
+
+#' @rdname jdv_connect
+#' @export
+jdv_connection <- function() {
+  .jdv_assert_active()
+  .jdv_connection_state()
+}
+
 #' Open an object in the local jdv viewer
 #'
 #' @param x A data frame or matrix for grid views; an Arrow Table or
@@ -401,13 +572,16 @@
 #' @param collation Grid string ordering policy, `"C"` or `"locale"`.
 #' @return The view id, invisibly.
 #' @details
-#' The viewer connection is opened on the first call. An address can be set in
-#' `options(jdv.address = ...)` or `JDV_ADDRESS`; otherwise jdv reads
-#' `discovery.json` from the user cache directory. The discovery file is limited
-#' to 64 KiB and contains a `socketPath` string. Local Unix-domain sockets and
-#' Windows named pipes are used by default; TCP is available only when an
-#' explicit address selects it. The connection is closed after the last table is
-#' closed.
+#' The viewer connection is opened on the first call unless [jdv_connect()]
+#' already opened one; in that case the existing connection is used and `hello`
+#' is not sent again. An address can be set in `options(jdv.address = ...)` or
+#' `JDV_ADDRESS`; otherwise jdv reads `discovery.json` from the user cache
+#' directory. The discovery file is limited to 64 KiB and contains a
+#' `socketPath` string. Local Unix-domain sockets and Windows named pipes are
+#' used by default; TCP is available only when an explicit address selects it. A
+#' connection opened implicitly by this function is closed after the last table
+#' is closed; a persistent connection from [jdv_connect()] stays open until
+#' [jdv_disconnect()].
 #'
 #' The event gate dispatches only when `sys.nframe() == 0`. This practical
 #' function-frame check is not a guarantee that R is idle: on Windows, a timer
@@ -469,7 +643,7 @@ jdv_view <- function(
     },
     error = function(error) {
       if (!isTRUE(.jdv_state$unloading) && !was_connected && !had_entries) {
-        try(.Call(C_jdv_transport_close), silent = TRUE)
+        try(.jdv_transport_close("register_failed"), silent = TRUE)
         .jdv_transport_housekeeping()
       }
       stop(error)
@@ -496,7 +670,7 @@ jdv_view <- function(
         expected = registered_entry
       )
       if (!isTRUE(.jdv_state$unloading)) {
-        try(.Call(C_jdv_transport_close), silent = TRUE)
+        try(.jdv_transport_close("send_failed"), silent = TRUE)
         .jdv_transport_housekeeping()
       }
       stop(error)
@@ -512,9 +686,12 @@ jdv_view <- function(
 #'   views are closed.
 #' @return The ids that were closed, invisibly.
 #' @details
-#' Closing the last table stops the transport event source and closes the local
-#' connection. A close requested from inside a viewer callback is safe; native
-#' source cleanup is deferred until the callback returns.
+#' Closing the last table of a connection opened implicitly by [jdv_view()]
+#' stops the transport event source and closes the local connection, after the
+#' `view/closed` notification (and, for a viewer request, its response) has been
+#' sent. A persistent connection from [jdv_connect()] stays open. A close
+#' requested from inside a viewer callback is safe; native source cleanup is
+#' deferred until the callback returns.
 #' @export
 jdv_close <- function(id = NULL) {
   .jdv_assert_active()
@@ -534,9 +711,9 @@ jdv_close <- function(id = NULL) {
     character()
   }
   if (!length(ids)) {
-    if (is.null(id)) {
+    if (is.null(id) && !isTRUE(.jdv_state$transport_persistent)) {
       .jdv_assert_active()
-      .Call(C_jdv_transport_close)
+      .jdv_transport_close("last_view_closed")
       .jdv_assert_active()
       .jdv_transport_housekeeping()
     }
@@ -564,11 +741,15 @@ jdv_close <- function(id = NULL) {
       },
       error = identity
     )
-    if (
-      !is.null(send_error) || !length(ls(.jdv_state$entries, all.names = TRUE))
+    if (!is.null(send_error)) {
+      .jdv_assert_active()
+      .jdv_transport_close("send_failed")
+    } else if (
+      !isTRUE(.jdv_state$transport_persistent) &&
+        !length(ls(.jdv_state$entries, all.names = TRUE))
     ) {
       .jdv_assert_active()
-      .Call(C_jdv_transport_close)
+      .jdv_transport_close("last_view_closed")
     }
   } else if (!length(ls(.jdv_state$entries, all.names = TRUE))) {
     .jdv_state$transport <- NULL

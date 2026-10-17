@@ -13,6 +13,10 @@
   state$transport_limits <- NULL
   state$transport_epoch <- 0L
   state$transport_hello <- FALSE
+  state$transport_persistent <- FALSE
+  state$transport_address <- NULL
+  state$transport_close_reason <- NULL
+  state$last_disconnect_reason <- NULL
   state$session_counter <- 0L
   state$transport_task_callback <- NULL
   state$unloading <- FALSE

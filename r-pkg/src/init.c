@@ -112,6 +112,7 @@ SEXP C_jdv_transport_connect(SEXP address, SEXP request_callback,
 SEXP C_jdv_transport_send(SEXP messages);
 SEXP C_jdv_transport_poll(void);
 SEXP C_jdv_transport_close(void);
+SEXP C_jdv_transport_close_after_response(void);
 SEXP C_jdv_transport_status(void);
 SEXP C_jdv_transport_can_unload(void);
 SEXP C_jdv_transport_housekeeping(void);
@@ -136,6 +137,8 @@ JDV_WRAP_4(jdv_entry_transport_connect, C_jdv_transport_connect)
 JDV_WRAP_1(jdv_entry_transport_send, C_jdv_transport_send)
 JDV_WRAP_0(jdv_entry_transport_poll, C_jdv_transport_poll)
 JDV_WRAP_0(jdv_entry_transport_close, C_jdv_transport_close)
+JDV_WRAP_0(jdv_entry_transport_close_after_response,
+           C_jdv_transport_close_after_response)
 JDV_WRAP_0(jdv_entry_transport_status, C_jdv_transport_status)
 JDV_WRAP_0(jdv_entry_transport_can_unload, C_jdv_transport_can_unload)
 JDV_WRAP_0(jdv_entry_transport_housekeeping,
@@ -180,6 +183,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_jdv_transport_send", (DL_FUNC)&jdv_entry_transport_send, 1},
     {"C_jdv_transport_poll", (DL_FUNC)&jdv_entry_transport_poll, 0},
     {"C_jdv_transport_close", (DL_FUNC)&jdv_entry_transport_close, 0},
+    {"C_jdv_transport_close_after_response",
+     (DL_FUNC)&jdv_entry_transport_close_after_response, 0},
     {"C_jdv_transport_status", (DL_FUNC)&jdv_entry_transport_status, 0},
     {"C_jdv_transport_can_unload", (DL_FUNC)&jdv_entry_transport_can_unload, 0},
     {"C_jdv_transport_housekeeping", (DL_FUNC)&jdv_entry_transport_housekeeping, 0},

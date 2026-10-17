@@ -17,7 +17,10 @@ The ids that were closed, invisibly.
 Close one or all views in the local jdv viewer
 }
 \details{
-Closing the last table stops the transport event source and closes the local
-connection. A close requested from inside a viewer callback is safe; native
-source cleanup is deferred until the callback returns.
+Closing the last table of a connection opened implicitly by \code{\link[=jdv_view]{jdv_view()}}
+stops the transport event source and closes the local connection, after the
+\code{view/closed} notification (and, for a viewer request, its response) has been
+sent. A persistent connection from \code{\link[=jdv_connect]{jdv_connect()}} stays open. A close
+requested from inside a viewer callback is safe; native source cleanup is
+deferred until the callback returns.
 }

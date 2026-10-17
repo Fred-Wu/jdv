@@ -91,17 +91,21 @@ or \code{character()} when there are none. The embedding host must deliver each
 notification in vector order before delivering \code{open}. Registration does not
 open a socket.
 
-\code{jdv_view()} registers the view, opens the local connection on first use,
-sends \code{hello}, pending \code{view/closed} notifications, then \code{view/open}, and
-returns the view id invisibly. The R API keeps the return-list key \code{id} and
-generates opaque view id strings such as \code{v-1}; consumers must not interpret
-the id format. Its default title is the deparsed expression passed as \code{x}; an
-explicit \code{title = NULL} creates a new slot. \code{jdv_close(id)} closes one view,
-and \code{jdv_close()} closes every view. Closing the last view stops the
-connection. \code{jdv_rpc()} with no argument or \code{NULL} explicitly polls the
-active connection and drains at most eight requests. This recovery path
-bypasses the normal event gate and is non-reentrant. Passing a JSON string to
-\code{jdv_rpc()} remains a synchronous, transport-independent embedding call.
+\code{jdv_view()} registers the view, opens the local connection on first use
+(unless \code{\link[=jdv_connect]{jdv_connect()}} already did), sends \code{hello} on a new connection,
+pending \code{view/closed} notifications, then \code{view/open}, and returns the view
+id invisibly. The R API keeps the return-list key \code{id} and generates opaque
+view id strings such as \code{v-1}; consumers must not interpret the id format.
+Its default title is the deparsed expression passed as \code{x}; an explicit
+\code{title = NULL} creates a new slot. \code{jdv_close(id)} closes one view, and
+\code{jdv_close()} closes every view. Closing the last view stops a connection
+that \code{\link[=jdv_view]{jdv_view()}} opened implicitly, after the close notification and any
+pending response are sent; a persistent connection from \code{\link[=jdv_connect]{jdv_connect()}} stays
+open until \code{\link[=jdv_disconnect]{jdv_disconnect()}}. \code{\link[=jdv_rpc]{jdv_rpc()}} with no argument or \code{NULL}
+explicitly polls the active connection and drains at most eight requests.
+This recovery path bypasses the normal event gate and is non-reentrant.
+Passing a JSON string to \code{jdv_rpc()} remains a synchronous,
+transport-independent embedding call.
 
 The address is selected from \code{options(jdv.address = ...)}, then \code{JDV_ADDRESS},
 then \code{discovery.json} under the user cache directory. On Linux and other Unix
@@ -861,7 +865,10 @@ Replacing or evicting a parent has the same descendant-close effect.
 
 
 At the start of each R-to-host connection, the transport sends a \code{hello}
-notification with no request id:
+notification with no request id. \code{\link[=jdv_connect]{jdv_connect()}} sends it immediately, even
+with no open view; a connection opened implicitly by \code{\link[=jdv_view]{jdv_view()}} sends it
+with the first \code{view/open}. Promoting an implicit connection with
+\code{\link[=jdv_connect]{jdv_connect()}} does not send it again:
 
 \if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
   "method": "hello",
@@ -894,10 +901,10 @@ message semantics.
 The transport emits \code{hello} as part of connection setup. It is not a method
 handled by \code{jdv_rpc()} and is not returned by \code{jdv_register()}. The R process
 does not retry a failed request or automatically reconnect after disconnect;
-the next \code{jdv_view()} call starts a new session. A disconnect closes every
-active registry entry and releases its retained table data. Entries created
-with \code{jdv_register()} share this process-wide registry and are cleared by a
-viewer disconnect as well.
+the next \code{\link[=jdv_view]{jdv_view()}} or \code{\link[=jdv_connect]{jdv_connect()}} call starts a new session. A
+disconnect closes every active registry entry and releases its retained table
+data. Entries created with \code{jdv_register()} share this process-wide registry
+and are cleared by a viewer disconnect as well.
 
 \code{params.limits} reports the effective limits captured for this connection:
 the maximum complete frames and bytes read in one receive callback, pending

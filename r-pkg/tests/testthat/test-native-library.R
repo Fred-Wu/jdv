@@ -36,6 +36,7 @@ test_that("the native library registers only its private routines", {
           "send",
           "poll",
           "close",
+          "close_after_response",
           "status",
           "can_unload",
           "housekeeping",

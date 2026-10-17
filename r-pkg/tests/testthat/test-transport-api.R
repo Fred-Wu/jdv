@@ -1451,4 +1451,311 @@ local({
       }
     }
   )
+
+  # Connection lifecycle: explicit (persistent) and implicit connections.
+  lifecycle_host <- function() {
+    skip_on_cran()
+    skip_on_os("windows")
+    skip_if_not_installed("callr")
+    skip_if_not_installed("jsonlite")
+    python <- Sys.which("python3")
+    skip_if(!nzchar(python), "python3 is required for the local mock host")
+    jdv_disconnect()
+    host <- list(
+      socket = tempfile("jdv-life-", tmpdir = socket_directory),
+      ready = tempfile("jdv-life-ready-"),
+      result = tempfile("jdv-life-result-"),
+      control = tempfile("jdv-life-control-")
+    )
+    process <- callr::r_bg(
+      function(python, script, socket, ready, result, control) {
+        system2(
+          python,
+          c(
+            shQuote(script),
+            "--socket",
+            shQuote(socket),
+            "--ready",
+            shQuote(ready),
+            "--result",
+            shQuote(result),
+            "--control",
+            shQuote(control)
+          ),
+          stdout = TRUE,
+          stderr = TRUE
+        )
+      },
+      args = list(
+        python = python,
+        script = test_path("fixtures", "transport-lifecycle-host.py"),
+        socket = host$socket,
+        ready = host$ready,
+        result = host$result,
+        control = host$control
+      ),
+      supervise = TRUE
+    )
+    old_address <- options(jdv.address = host$socket)
+    host$cleanup <- function() {
+      try(jdv_disconnect(), silent = TRUE)
+      options(old_address)
+      if (process$is_alive()) {
+        process$kill()
+      }
+      try(process$wait(), silent = TRUE)
+      unlink(c(
+        host$socket,
+        host$ready,
+        host$result,
+        host$control,
+        paste0(host$result, c(".eof", ".tmp"))
+      ))
+    }
+    host$wait_ready <- function() wait_for_file(host$ready)
+    host
+  }
+
+  lifecycle_messages <- function(host, count = 0L, timeout = 10) {
+    deadline <- Sys.time() + timeout
+    repeat {
+      messages <- if (file.exists(host$result)) {
+        jsonlite::fromJSON(host$result, simplifyVector = FALSE)$messages
+      } else {
+        list()
+      }
+      if (length(messages) >= count || Sys.time() > deadline) {
+        break
+      }
+      Sys.sleep(0.01)
+    }
+    vapply(messages, function(message) message$method %||% "response", "")
+  }
+
+  test_that(
+    "jdv_connect sends hello with no view and survives the last close",
+    {
+      host <- lifecycle_host()
+      on.exit(host$cleanup(), add = TRUE)
+      expect_true(host$wait_ready())
+      expect_identical(jdv_connection()$state, "disconnected")
+      expect_null(jdv_connection()$address)
+
+      status <- withVisible(jdv_connect())
+      expect_false(status$visible)
+      expect_identical(status$value$state, "connected")
+      expect_true(status$value$connected)
+      expect_true(status$value$persistent)
+      expect_identical(status$value$address, host$socket)
+      expect_identical(lifecycle_messages(host, 1L), "hello")
+
+      first <- jdv_view(mtcars, title = "life-first")
+      expect_identical(lifecycle_messages(host, 2L), c("hello", "view/open"))
+      expect_identical(jdv_close(), first)
+      expect_identical(
+        lifecycle_messages(host, 3L),
+        c("hello", "view/open", "view/closed")
+      )
+      expect_identical(jdv_connection()$state, "connected")
+      expect_true(jdv_connection()$persistent)
+
+      second <- jdv_view(mtcars, title = "life-second")
+      expect_identical(
+        lifecycle_messages(host, 4L),
+        c("hello", "view/open", "view/closed", "view/open")
+      )
+      expect_identical(jdv_close(second), second)
+      expect_true(jdv_connection()$connected)
+      # Closing with no views left also keeps a persistent connection.
+      expect_identical(jdv_close(), character())
+      expect_true(jdv_connection()$connected)
+      expect_false(file.exists(paste0(host$result, ".eof")))
+    }
+  )
+
+  test_that("an implicit connection closes after the last view/closed", {
+    host <- lifecycle_host()
+    on.exit(host$cleanup(), add = TRUE)
+    expect_true(host$wait_ready())
+    id <- jdv_view(mtcars, title = "life-implicit")
+    state <- jdv_connection()
+    expect_identical(state$state, "connected")
+    expect_false(state$persistent)
+    expect_identical(state$address, host$socket)
+    expect_identical(lifecycle_messages(host, 2L), c("hello", "view/open"))
+
+    jdv_close(id)
+    expect_true(wait_for_file(paste0(host$result, ".eof")))
+    expect_identical(
+      lifecycle_messages(host),
+      c("hello", "view/open", "view/closed")
+    )
+    state <- jdv_connection()
+    expect_identical(state$state, "disconnected")
+    expect_false(state$connected)
+    expect_false(state$persistent)
+    expect_null(state$address)
+    expect_identical(state$last_disconnect_reason, "last_view_closed")
+  })
+
+  test_that(
+    "a host view/close ends an implicit connection after its response",
+    {
+      host <- lifecycle_host()
+      on.exit(host$cleanup(), add = TRUE)
+      expect_true(host$wait_ready())
+      jdv_view(mtcars, title = "life-host-close")
+      expect_identical(lifecycle_messages(host, 2L), c("hello", "view/open"))
+      file.create(host$control)
+      # Requests run at an event gate or an explicit poll; tests are not idle.
+      deadline <- Sys.time() + 5
+      while (
+        !file.exists(paste0(host$result, ".eof")) && Sys.time() < deadline
+      ) {
+        jdv_rpc(NULL)
+        Sys.sleep(0.01)
+      }
+      expect_true(file.exists(paste0(host$result, ".eof")))
+      # The response reaches the host before the peer sees EOF.
+      expect_identical(
+        lifecycle_messages(host, 3L),
+        c("hello", "view/open", "response")
+      )
+      messages <- jsonlite::fromJSON(
+        host$result,
+        simplifyVector = FALSE
+      )$messages
+      expect_identical(messages[[3L]]$id, "host-close-1")
+      expect_true(messages[[3L]]$result$closed)
+      # Native cleanup runs at the next safe point; poll it explicitly.
+      deadline <- Sys.time() + 5
+      while (
+        !identical(jdv_connection()$state, "disconnected") &&
+          Sys.time() < deadline
+      ) {
+        jdv_rpc(NULL)
+        Sys.sleep(0.01)
+      }
+      expect_identical(jdv_connection()$state, "disconnected")
+      expect_identical(
+        jdv_connection()$last_disconnect_reason,
+        "last_view_closed"
+      )
+    }
+  )
+
+  test_that("a host view/close keeps a persistent connection open", {
+    host <- lifecycle_host()
+    on.exit(host$cleanup(), add = TRUE)
+    expect_true(host$wait_ready())
+    jdv_connect()
+    jdv_view(mtcars, title = "life-host-close-persistent")
+    expect_identical(lifecycle_messages(host, 2L), c("hello", "view/open"))
+    file.create(host$control)
+    messages <- NULL
+    deadline <- Sys.time() + 5
+    while (length(messages) < 3L && Sys.time() < deadline) {
+      jdv_rpc(NULL)
+      Sys.sleep(0.01)
+      messages <- jsonlite::fromJSON(
+        host$result,
+        simplifyVector = FALSE
+      )$messages
+    }
+    expect_identical(messages[[3L]]$id, "host-close-1")
+    expect_true(jdv_connection()$connected)
+    expect_false(file.exists(paste0(host$result, ".eof")))
+  })
+
+  test_that("jdv_connect promotes an implicit connection without a new hello", {
+    host <- lifecycle_host()
+    on.exit(host$cleanup(), add = TRUE)
+    expect_true(host$wait_ready())
+    id <- jdv_view(mtcars, title = "life-promote")
+    expect_false(jdv_connection()$persistent)
+    state <- jdv_connect()
+    expect_true(state$persistent)
+    expect_identical(state$address, host$socket)
+    expect_identical(lifecycle_messages(host, 2L), c("hello", "view/open"))
+    jdv_close(id)
+    expect_identical(
+      lifecycle_messages(host, 3L),
+      c("hello", "view/open", "view/closed")
+    )
+    expect_true(jdv_connection()$connected)
+    expect_false(file.exists(paste0(host$result, ".eof")))
+  })
+
+  test_that("jdv_connect is idempotent and rejects another address", {
+    host <- lifecycle_host()
+    on.exit(host$cleanup(), add = TRUE)
+    expect_true(host$wait_ready())
+    expect_error(jdv_connect(c("a", "b")), "one non-empty address")
+    jdv_connect()
+    expect_identical(jdv_connect()$address, host$socket)
+    expect_identical(jdv_connect(host$socket)$address, host$socket)
+    expect_error(
+      jdv_connect(paste0(host$socket, "-other")),
+      "jdv_disconnect\\(\\)"
+    )
+    # The failed request leaves the connection and its hello untouched.
+    expect_true(jdv_connection()$connected)
+    expect_identical(lifecycle_messages(host, 1L), "hello")
+    Sys.sleep(0.1)
+    expect_identical(lifecycle_messages(host), "hello")
+  })
+
+  test_that("jdv_disconnect closes every view and is idempotent", {
+    host <- lifecycle_host()
+    on.exit(host$cleanup(), add = TRUE)
+    expect_true(host$wait_ready())
+    # Nothing to do when not connected.
+    previous_reason <- jdv_connection()$last_disconnect_reason
+    state <- withVisible(jdv_disconnect())
+    expect_false(state$visible)
+    expect_identical(state$value$state, "disconnected")
+    expect_identical(state$value$last_disconnect_reason, previous_reason)
+
+    jdv_connect()
+    first <- jdv_view(mtcars, title = "life-disc-1")
+    second <- jdv_view(mtcars, title = "life-disc-2")
+    registered <- jdv_register(mtcars, title = "life-disc-embedded")
+    expect_length(ls(.jdv_state$entries, all.names = TRUE), 3L)
+
+    state <- jdv_disconnect()
+    expect_identical(state$state, "disconnected")
+    expect_false(state$persistent)
+    expect_null(state$address)
+    expect_identical(state$last_disconnect_reason, "disconnect")
+    expect_length(ls(.jdv_state$entries, all.names = TRUE), 0L)
+    expect_true(wait_for_file(paste0(host$result, ".eof")))
+    expect_identical(jdv_disconnect()$state, "disconnected")
+    expect_identical(jdv_connection()$last_disconnect_reason, "disconnect")
+    expect_identical(jdv_close(first), character())
+  })
+
+  test_that("a peer disconnect ends the session without reconnecting", {
+    host <- lifecycle_host()
+    on.exit(host$cleanup(), add = TRUE)
+    expect_true(host$wait_ready())
+    jdv_connect()
+    jdv_view(mtcars, title = "life-peer")
+    expect_identical(lifecycle_messages(host, 2L), c("hello", "view/open"))
+    file.create(paste0(host$control, ".close"))
+    deadline <- Sys.time() + 5
+    while (
+      !identical(jdv_connection()$state, "disconnected") &&
+        Sys.time() < deadline
+    ) {
+      jdv_rpc(NULL)
+      Sys.sleep(0.01)
+    }
+    state <- jdv_connection()
+    expect_identical(state$state, "disconnected")
+    expect_identical(state$last_disconnect_reason, "peer_closed")
+    expect_false(state$persistent)
+    expect_length(ls(.jdv_state$entries, all.names = TRUE), 0L)
+    # No automatic reconnect: the next explicit call starts a new session.
+    expect_identical(jdv_connection()$state, "disconnected")
+  })
 })

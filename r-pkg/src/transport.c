@@ -82,6 +82,7 @@ struct jdv_transport_state {
     int pending_disconnect;
     int disconnect_called;
     int pending_close;
+    int close_after_response;
     uint64_t epoch;
     size_t holds;
     char *read_buffer;
@@ -1553,6 +1554,12 @@ static void release_dispatch_frame(void *data, Rboolean jump)
     if (dispatch->request_source)
         memset(dispatch->request_source, 0, sizeof(*dispatch->request_source));
     if (state) {
+        /* A callback may ask to end the session once its response is out. */
+        if (state->close_after_response) {
+            state->close_after_response = 0;
+            if (active_state == state && state->connected && !state->closing)
+                stop_connection(state, 1);
+        }
         state->busy = 0;
         if (state->closing) state->pending_close = 1;
     }
@@ -2096,6 +2103,16 @@ SEXP C_jdv_transport_close(void)
     if (!state->busy && !dispatch_depth)
         (void)run_disconnect_callback(state);
     return status_for(retiring_state);
+}
+
+SEXP C_jdv_transport_close_after_response(void)
+{
+    jdv_transport_state *state = active_state;
+    if (state && state->busy && dispatch_depth > 0 && !state->closing) {
+        state->close_after_response = 1;
+        return status_for(state);
+    }
+    return C_jdv_transport_close();
 }
 
 SEXP C_jdv_transport_status(void)

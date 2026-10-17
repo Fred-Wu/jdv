@@ -87,17 +87,21 @@
 #' notification in vector order before delivering `open`. Registration does not
 #' open a socket.
 #'
-#' `jdv_view()` registers the view, opens the local connection on first use,
-#' sends `hello`, pending `view/closed` notifications, then `view/open`, and
-#' returns the view id invisibly. The R API keeps the return-list key `id` and
-#' generates opaque view id strings such as `v-1`; consumers must not interpret
-#' the id format. Its default title is the deparsed expression passed as `x`; an
-#' explicit `title = NULL` creates a new slot. `jdv_close(id)` closes one view,
-#' and `jdv_close()` closes every view. Closing the last view stops the
-#' connection. `jdv_rpc()` with no argument or `NULL` explicitly polls the
-#' active connection and drains at most eight requests. This recovery path
-#' bypasses the normal event gate and is non-reentrant. Passing a JSON string to
-#' `jdv_rpc()` remains a synchronous, transport-independent embedding call.
+#' `jdv_view()` registers the view, opens the local connection on first use
+#' (unless [jdv_connect()] already did), sends `hello` on a new connection,
+#' pending `view/closed` notifications, then `view/open`, and returns the view
+#' id invisibly. The R API keeps the return-list key `id` and generates opaque
+#' view id strings such as `v-1`; consumers must not interpret the id format.
+#' Its default title is the deparsed expression passed as `x`; an explicit
+#' `title = NULL` creates a new slot. `jdv_close(id)` closes one view, and
+#' `jdv_close()` closes every view. Closing the last view stops a connection
+#' that [jdv_view()] opened implicitly, after the close notification and any
+#' pending response are sent; a persistent connection from [jdv_connect()] stays
+#' open until [jdv_disconnect()]. [jdv_rpc()] with no argument or `NULL`
+#' explicitly polls the active connection and drains at most eight requests.
+#' This recovery path bypasses the normal event gate and is non-reentrant.
+#' Passing a JSON string to `jdv_rpc()` remains a synchronous,
+#' transport-independent embedding call.
 #'
 #' The address is selected from `options(jdv.address = ...)`, then `JDV_ADDRESS`,
 #' then `discovery.json` under the user cache directory. On Linux and other Unix
@@ -866,7 +870,10 @@
 #'
 #'
 #' At the start of each R-to-host connection, the transport sends a `hello`
-#' notification with no request id:
+#' notification with no request id. [jdv_connect()] sends it immediately, even
+#' with no open view; a connection opened implicitly by [jdv_view()] sends it
+#' with the first `view/open`. Promoting an implicit connection with
+#' [jdv_connect()] does not send it again:
 #'
 #' ```json
 #' {
@@ -900,10 +907,10 @@
 #' The transport emits `hello` as part of connection setup. It is not a method
 #' handled by `jdv_rpc()` and is not returned by `jdv_register()`. The R process
 #' does not retry a failed request or automatically reconnect after disconnect;
-#' the next `jdv_view()` call starts a new session. A disconnect closes every
-#' active registry entry and releases its retained table data. Entries created
-#' with `jdv_register()` share this process-wide registry and are cleared by a
-#' viewer disconnect as well.
+#' the next [jdv_view()] or [jdv_connect()] call starts a new session. A
+#' disconnect closes every active registry entry and releases its retained table
+#' data. Entries created with `jdv_register()` share this process-wide registry
+#' and are cleared by a viewer disconnect as well.
 #'
 #' `params.limits` reports the effective limits captured for this connection:
 #' the maximum complete frames and bytes read in one receive callback, pending
