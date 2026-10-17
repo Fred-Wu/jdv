@@ -7,7 +7,7 @@
 jdv_close(id = NULL)
 }
 \arguments{
-\item{id}{Optional view id returned by \code{jdv_view()}. When omitted, all active
+\item{id}{Optional view id returned by \code{\link[=jdv_view]{jdv_view()}}. When omitted, all active
 views are closed.}
 }
 \value{

@@ -21,8 +21,8 @@ valid. Returned \code{row_index} values are the
 For a data frame, jdv reads each column with \code{x[[j]]} and selects rows by
 applying that column's \code{[} method. It never calls table-level \code{[}, including
 \verb{[.data.table}, \verb{[.tbl_df}, or \verb{[.sf}. For a matrix it selects a column and
-rows with \code{x[rows, j]}. Extraction does not call \code{unclass()} or coerce a
-source column before its own subset method runs. Filtering and sorting use
+rows with \code{x[rows, j]}. Extraction does not call \code{\link[base:unclass]{base::unclass()}} or coerce
+a source column before its own subset method runs. Filtering and sorting use
 each full column first; only after the original row indices are fixed does
 paging slice the requested rows. Classes that need table-level behavior
 require a future source adapter.
@@ -95,10 +95,11 @@ formatted for that slice, independently of full-column filter text.
 
 A filter or sort retrieves only its referenced full source columns and
 required channels. An \code{other} text filter requests the full column's
-\code{format()} output at that point. It never substitutes a page's display text.
-Custom subsetting must preserve the column class and requested row count.
-Atomic S3 classes without a subset method retain their metadata; classes with
-row-dependent attributes must supply suitable subsetting behavior.
+\code{\link[base:format]{base::format()}} output at that point. It never substitutes a page's display
+text. Custom subsetting must preserve the column class and requested row
+count. Atomic S3 classes without a subset method retain their metadata;
+classes with row-dependent attributes must supply suitable subsetting
+behavior.
 
 Three least-recently-used caches have separate entry limits:\tabular{lrl}{
    Cache \tab Default entries \tab Contents \cr
@@ -227,8 +228,8 @@ string \code{"NA"}.
 \section{Text}{
 
 
-Text comparison folds \strong{ASCII A-Z only} to a-z with \code{chartr()} after UTF-8
-conversion. Non-ASCII characters retain their case: \code{Ä} and \code{ä} remain
+Text comparison folds \strong{ASCII A-Z only} to a-z with \code{\link[base:chartr]{base::chartr()}} after
+UTF-8 conversion. Non-ASCII characters retain their case: \code{Ä} and \code{ä} remain
 distinct. Matching uses fixed literal strings, not regular expressions.
 Brackets, dots, and asterisks have no pattern meaning. An empty needle
 matches every nonmissing text for contains/prefix/suffix operations;
@@ -238,7 +239,7 @@ Text sources are:
 \itemize{
 \item String: the original, untruncated character value.
 \item Factor: its label.
-\item Other: \code{format()} over the complete column, computed and cached on request.
+\item Other: \code{\link[base:format]{base::format()}} over the complete column, computed and cached on request.
 }
 
 Number, integer, Boolean, date, datetime, and integer64 columns do not
@@ -247,6 +248,26 @@ previews but no text-filter capability. Page display truncation or formatting
 does not alter the filter source. Factor \verb{in} is exact, case-sensitive label
 membership and does not use text folding; duplicate labels are harmless and
 an empty label array matches no rows.
+}
+
+\section{Blank and non-blank filters}{
+
+
+There is no dedicated blank operator; clients combine existing ones. A
+text-filterable column has a schema \code{type} of \code{string}, \code{factor}, or \code{other}
+and \code{filterable} true. For such a column, blank (missing or empty string) is
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"op": "or", "args": [
+  \{"op": "is_na", "col": 2\},
+  \{"op": "text_equals", "col": 2, "value": ""\}
+]\}
+}\if{html}{\out{</div>}}
+
+and non-blank is \verb{\{"op": "not", "arg": ...\}} wrapped around it. Any other
+column type has no text filter source, so \code{text_equals} fails with
+\code{unsupported} ("Column has no text filter source."). Such columns have no
+empty-string value: blank is \verb{\{"op": "is_na", "col": N\}} and non-blank is
+\code{not} applied to it. \code{is_na} itself is accepted for every column type.
 }
 
 \section{Numeric values and infinity}{
@@ -321,18 +342,18 @@ produced for a missing source value; missing keys themselves also sort last.\tab
    Column kind \tab Comparison keys \cr
    Plain Boolean/integer/number \tab Numeric values, including restored infinities. \cr
    Plain string, collation \code{C} \tab UTF-8 byte/radix order. Paged uses the original strings; Snapshot uses dense numeric ranks. \cr
-   String, collation \code{locale} \tab R \code{xtfrm()} keys under the system locale. \cr
+   String, collation \code{locale} \tab R \code{\link[base:xtfrm]{base::xtfrm()}} keys under the system locale. \cr
    Factor/ordered factor \tab Factor level codes, regardless of alphabetical label order. \cr
    Date/POSIXct/POSIXlt \tab Canonical days/seconds. \cr
    Integer64 \tab C-generated dense ranks with equal keys for equal values. \cr
-   Other sortable class \tab Its \code{xtfrm()} keys; nonmissing nonfinite keys or keys outside \verb{[-2^53, 2^53]} become dense ranks. \cr
+   Other sortable class \tab Its \code{\link[base:xtfrm]{base::xtfrm()}} keys; nonmissing nonfinite keys or keys outside \verb{[-2^53, 2^53]} become dense ranks. \cr
 }
 
 
-Paged passes the selected keys to one radix \code{order()} call with a per-term
-\code{decreasing} vector and missing values last. It does not use an order
-permutation as a sort key, because that would lose ties. Character C sorting
-avoids an unnecessary full-column rank computation in Paged mode.
+Paged passes the selected keys to one radix \code{\link[base:order]{base::order()}} call with a
+per-term \code{decreasing} vector and missing values last. It does not use an
+order permutation as a sort key, because that would lose ties. Character C
+sorting avoids an unnecessary full-column rank computation in Paged mode.
 
 Snapshot consumers must compare supplied numeric keys rather than
 JavaScript's raw UTF-16 string order or an independent browser locale
@@ -397,7 +418,7 @@ expose \code{code}, \code{message}, and optional \code{details}:\tabular{ll}{
 \code{snapshot_table()} materializes the column channels, including full filter
 text. Its reference consumer evaluates filters one row at a time and
 implements lexicographic scalar comparison with a stable merge sort. It does
-not call the Paged \code{order()} or vectorized filter evaluator. Request
+not call the Paged \code{\link[base:order]{base::order()}} or vectorized filter evaluator. Request
 validation, operand parsing, and ASCII folding are shared so accepted
 requests have one meaning. Integer64 reference filtering compares canonical
 decimal strings by sign, digit count, and digits rather than converting them
@@ -417,9 +438,9 @@ timezone metadata.
 
 \code{example-other} uses a synthetic \code{query_record} class factory: its fixture
 \code{values} array supplies the numeric constructor input, with JSON null
-becoming R missing data. Its \code{format()} method returns
-\code{paste0("value:", as.numeric(x))}, \code{xtfrm()} returns \code{as.numeric(x)}, and
-missingness follows \code{is.na(x)}. The class's runtime \code{values} channel is
+becoming R missing data. Its \code{\link[base:format]{base::format()}} method returns
+\code{paste0("value:", as.numeric(x))}, \code{\link[base:xtfrm]{base::xtfrm()}} returns \code{as.numeric(x)},
+and missingness follows \code{is.na(x)}. The class's runtime \code{values} channel is
 absent (\code{NULL}). The JSON fixture's numeric factory input is therefore not an
 \code{other} column's wire values or a numeric-filter capability.
 

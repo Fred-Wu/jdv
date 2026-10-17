@@ -1,8 +1,8 @@
 #' jdv JSON Lines Protocol Specification
 #'
 #'
-#' This document defines the JSON protocol implemented by `jdv_register()`,
-#' `jdv_rpc()`, and the local transport. It describes the R view registry, JSON
+#' This document defines the JSON protocol implemented by [jdv_register()],
+#' [jdv_rpc()], and the local transport. It describes the R view registry, JSON
 #' Lines (JSONL) messages, optional Arrow IPC binary response bodies, and
 #' request and response messages shared by the package, reference server, and
 #' viewer, including object-tree navigation.
@@ -53,7 +53,7 @@
 #'
 #' The R package uses base R and its bundled cJSON implementation at runtime. It
 #' does not require jsonlite. Consumers can parse and construct JSON with their
-#' own tooling and pass the resulting JSON string to `jdv_rpc()`.
+#' own tooling and pass the resulting JSON string to [jdv_rpc()].
 #'
 #'
 #' @section Registration API:
@@ -80,25 +80,25 @@
 #' `nanoarrow_array_stream` pointers, and Polars DataFrame objects register as
 #' forward-only Arrow grid views through the optional nanoarrow producer
 #' adapter. Their `mode` and `collation` arguments do not change sequential
-#' access. Other objects use the tree view by default. `jdv_register()` returns
+#' access. Other objects use the tree view by default. [jdv_register()] returns
 #' `list(id, generation)` and does not open a socket. Its `view/open` message,
 #' and every other notification, is queued; see the Notification delivery
 #' section.
 #'
-#' `jdv_view()` registers the view, opens the local connection on first use
+#' [jdv_view()] registers the view, opens the local connection on first use
 #' (unless [jdv_connect()] already did), sends `hello` on a new connection, then
 #' the queued notifications (`view/closed`, then `view/open`), and returns the
 #' view id invisibly. The R API keeps the return-list key `id` and generates
 #' opaque view id strings such as `v-1`; consumers must not interpret the id
 #' format. Its default title is the deparsed expression passed as `x`; an
 #' explicit `title = NULL` creates a new slot. `jdv_close(id)` closes one view,
-#' and `jdv_close()` closes every view. Closing the last view stops a connection
+#' and [jdv_close()] closes every view. Closing the last view stops a connection
 #' that [jdv_view()] opened implicitly, after the close notification and any
 #' pending response are sent; a persistent connection from [jdv_connect()] stays
 #' open until [jdv_disconnect()]. [jdv_rpc()] with no argument or `NULL`
 #' explicitly polls the active connection and drains at most eight requests.
 #' This recovery path bypasses the normal event gate and is non-reentrant.
-#' Passing a JSON string to `jdv_rpc()` remains a synchronous,
+#' Passing a JSON string to [jdv_rpc()] remains a synchronous,
 #' transport-independent embedding call.
 #'
 #' The address is selected from `options(jdv.address = ...)`, then `JDV_ADDRESS`,
@@ -210,7 +210,7 @@
 #' ```
 #'
 #' The example omits schema entries for brevity. `view/open` has no request id
-#' and is not passed to `jdv_rpc()`; `jdv_register()` queues it for the host to
+#' and is not passed to [jdv_rpc()]; [jdv_register()] queues it for the host to
 #' deliver (see the Notification delivery section). `kind` is `grid`; `access`
 #' is `snapshot` or `random` for Snapshot or Paged mode, respectively; and
 #' `encoding` is `r-json`. Every descriptor includes all seven `capabilities`
@@ -224,10 +224,10 @@
 #' (`mode`, `nrow`, `ncol`, `row_names`, `columns`, and `data`). A tree
 #' descriptor includes an empty `path` at its root. A child descriptor may
 #' include `parent`, the parent view id. `title` is optional. A tree descriptor
-#' also has `class`, a string array that follows `class()` semantics for the
-#' root object, and `type`, the string `typeof()` returns for it (for example
-#' `"list"`, `"double"`, `"environment"`, or `"S4"`). A grid descriptor omits
-#' both.
+#' also has `class`, a string array that follows [base::class()] semantics for
+#' the root object, and `type`, the string [base::typeof()] returns for it (for
+#' example `"list"`, `"double"`, `"environment"`, or `"S4"`). A grid descriptor
+#' omits both.
 #'
 #' | Descriptor field                                                   | Grid                                     | Tree                         |
 #' | ------------------------------------------------------------------ | ---------------------------------------- | ---------------------------- |
@@ -341,12 +341,12 @@
 #' `details`. Every accepted request receives exactly one terminal response.
 #' Work cancelled, expired, or stale before it begins receives an error response
 #' with code `cancelled`, `expired`, or `stale_generation`; a closed view
-#' receives `view_not_found`. A synchronous `jdv_rpc()` call is an embedding
+#' receives `view_not_found`. A synchronous [jdv_rpc()] call is an embedding
 #' path and does not apply the local transport execution gate. It treats `wake`
 #' and `cancel` as no-op notifications and returns `NULL` for them; the
 #' transport queue matches cancellation ids to pending work before execution.
 #' `ack` is transport-owned and flows only from R to the host; it is not passed
-#' to `jdv_rpc()`.
+#' to [jdv_rpc()].
 #'
 #'
 #' @section Arrow IPC binary responses:
@@ -668,7 +668,7 @@
 #'
 #' | Method            | Direction        | Kind         | Result                                                                             |
 #' | ----------------- | ---------------- | ------------ | ---------------------------------------------------------------------------------- |
-#' | `view/open`       | R/host to viewer | Notification | Descriptor and, for Snapshot, all column payloads. Queued by `jdv_register()`.     |
+#' | `view/open`       | R/host to viewer | Notification | Descriptor and, for Snapshot, all column payloads. Queued by [jdv_register()].     |
 #' | `view/schema`     | Host to R        | Request      | Current dimensions and schema.                                                     |
 #' | `stream/next`     | Host to R        | Request      | One forward-only Arrow IPC page and cursor metadata.                               |
 #' | `table/rows`      | Host to R        | Request      | One selected page from a Paged view.                                               |
@@ -763,7 +763,7 @@
 #' and `collation`. `mode` must be exactly `"auto"`, `"snapshot"`, or `"paged"`;
 #' when omitted, it defaults to `"auto"`. `collation` must be exactly `"C"` or
 #' `"locale"`; when omitted, it uses the same `getOption("jdv.collation", "C")`
-#' default as `jdv_register()`. These options apply when the selected value
+#' default as [jdv_register()]. These options apply when the selected value
 #' opens as a grid and do not inherit from the parent view. If the selected
 #' value opens as a tree, valid `mode` and `collation` values are ignored.
 #' Invalid values, including explicit `null`, return `invalid_request`.
@@ -1009,7 +1009,7 @@
 #' `generation`. The notification enters the session queue ahead of the
 #' associated new `view/open`, and the host delivers both in queue order.
 #' Explicit host-initiated `view/close` returns a successful close result
-#' without a separate `view/closed` notification. `jdv_close()` queues
+#' without a separate `view/closed` notification. [jdv_close()] queues
 #' `view/closed` for views it closes. Re-registering an active title replaces
 #' the same id with a newer generation; after close or eviction, a later
 #' registration uses a new id and generation 1.
@@ -1109,12 +1109,12 @@
 #' message semantics.
 #'
 #' The transport emits `hello` as part of connection setup. It is not a method
-#' handled by `jdv_rpc()`. For an embedded session it is the first message in
+#' handled by [jdv_rpc()]. For an embedded session it is the first message in
 #' the queue; see the Notification delivery section. The R process does not
 #' retry a failed request or automatically reconnect after disconnect; the next
 #' [jdv_view()] or [jdv_connect()] call starts a new session. A disconnect
 #' closes every active registry entry and releases its retained table data.
-#' Entries created with `jdv_register()` share this process-wide registry and
+#' Entries created with [jdv_register()] share this process-wide registry and
 #' are cleared by a viewer disconnect as well.
 #'
 #' `params.limits` reports the effective limits captured for this connection:
@@ -1245,9 +1245,10 @@
 #' source; otherwise it falls back to 17 significant digits. The emitted text
 #' round-trips to the original finite double with correctly rounded parsers such
 #' as JavaScript `JSON.parse`, C `strtod`, and `jsonlite::fromJSON`. R's
-#' `as.numeric()` and `scan()` do not guarantee rounding to the nearest
-#' representable value, so a 15-digit token can read back one ULP away across a
-#' wide exponent range. Negative zero is written as `0`, without its sign.
+#' [base::as.numeric()] and [base::scan()] do not guarantee rounding to the
+#' nearest representable value, so a 15-digit token can read back one ULP away
+#' across a wide exponent range. Negative zero is written as `0`, without its
+#' sign.
 #'
 #' Snapshot payloads contain all table rows in one `data` object. Paged payloads
 #' contain only the requested row slice. Paged display formatting is performed
@@ -1256,9 +1257,9 @@
 #' semantics, not identical display strings. For data frames, row slicing is
 #' performed per column using `x[[j]]` followed by that column's `[` method. It
 #' does not call table-level `[`. For matrices, slicing uses `x[rows, j]`.
-#' Source classes are preserved through slicing; jdv does not `unclass()` or
-#' coerce a column before its subset method runs. Filtering and sorting use full
-#' column semantics before the requested rows are sliced. See
+#' Source classes are preserved through slicing; jdv does not [base::unclass()]
+#' or coerce a column before its subset method runs. Filtering and sorting use
+#' full column semantics before the requested rows are sliced. See
 #' \link[=jdv_query_spec]{query specification} for the detailed source and query
 #' contract.
 #'
@@ -1410,22 +1411,22 @@
 #' errors, including while another R method is running. The R adapter returns
 #' `view_not_found` for a closed or missing view and `stale_generation` for an
 #' obsolete generation. For each request, dispatch requires native `busy == 0`
-#' and a single `sys.nframe()` evaluation in `R_BaseEnv` to return zero. If the
-#' queue is empty, the gate skips that evaluation. A started request that fails,
-#' including an interrupt, is terminal and is never retried. A synchronous or
-#' queued stale generation returns `stale_generation`. A second live pending
-#' request with the same typed id is rejected as `invalid_request` on a
-#' best-effort basis and closes the connection to avoid ambiguous responses.
-#' Cancelled requests no longer reserve their ids.
+#' and a single [base::sys.nframe()] evaluation in `R_BaseEnv` to return zero.
+#' If the queue is empty, the gate skips that evaluation. A started request that
+#' fails, including an interrupt, is terminal and is never retried. A
+#' synchronous or queued stale generation returns `stale_generation`. A second
+#' live pending request with the same typed id is rejected as `invalid_request`
+#' on a best-effort basis and closes the connection to avoid ambiguous
+#' responses. Cancelled requests no longer reserve their ids.
 #'
 #' The gate temporarily saves `R_interrupts_suspended`, sets it to `TRUE` for
 #' the single frame-count evaluation, and restores the prior value with
 #' unwind-safe cleanup. It does not use `END_SUSPEND_INTERRUPTS`, call `onintr`,
 #' or inspect or change private pending-interrupt state. This practical
 #' function-frame check is not a guarantee that R is idle: on Windows, a timer
-#' can run during a top-level `for` loop while `sys.nframe()` is zero, and this
-#' dispatch behavior has been observed. The Windows timer interval is about 200
-#' ms. If the request callback begins with interrupts enabled, an interrupt
+#' can run during a top-level `for` loop while [base::sys.nframe()] is zero, and
+#' this dispatch behavior has been observed. The Windows timer interval is about
+#' 200 ms. If the request callback begins with interrupts enabled, an interrupt
 #' after dequeue becomes an `interrupted` error. If R entered the callback with
 #' interrupts already suspended, R may defer delivery; long sort or filter work
 #' may therefore not stop promptly. The viewer should show a busy state and
@@ -1434,12 +1435,12 @@
 #' `jdv_rpc(NULL)` is a non-reentrant recovery path that bypasses the normal
 #' gate and drains at most the configured batch under `R_UnwindProtect`; it does
 #' not use a background `R_ToplevelExec`. Disconnect cleanup is deferred until
-#' the callback stack is safe. A public R `addTaskCallback()` performs cleanup
-#' after a successful top-level task, while explicit polling and later public
-#' package entries also check for pending cleanup. This task callback is
+#' the callback stack is safe. A public R [base::addTaskCallback()] performs
+#' cleanup after a successful top-level task, while explicit polling and later
+#' public package entries also check for pending cleanup. This task callback is
 #' cleanup-only and does not dispatch requests. It is an event-driven cleanup
 #' opportunity, not a general timer. A disconnect closes every registered table,
-#' and the next `jdv_view()` call starts a new connection; no in-flight request
+#' and the next [jdv_view()] call starts a new connection; no in-flight request
 #' is retried.
 #'
 #' On namespace unload, the transport source is stopped, queued requests and

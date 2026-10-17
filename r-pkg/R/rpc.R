@@ -729,7 +729,7 @@ jdv_json_object <- function(x = list()) {
 #' is unknown. They support forward-only pages, not Snapshot/Paged modes, random
 #' access, sorting, or filtering. The mode and collation arguments apply to
 #' ordinary R tables. Closing or replacing a view releases its stream and any
-#' retained batch. A string call to `jdv_rpc()` cannot consume a sequential
+#' retained batch. A string call to [jdv_rpc()] cannot consume a sequential
 #' page; those pages require the viewer binary transport.
 #'
 #' Re-registering a title that is still active reuses its view ID and increments

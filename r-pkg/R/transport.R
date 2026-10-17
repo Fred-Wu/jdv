@@ -686,16 +686,17 @@ jdv_notifications <- function() {
 #' methods. If interrupts were already suspended on entry, R may defer Ctrl-C
 #' during a long sort or filter until a later check; use the viewer's busy state
 #' as an indication that the request is still running. A bare top-level
-#' `browser()` can service requests; a frontend waiting inside a function frame,
-#' such as a function that calls `browser()`, must let that frame unwind or
-#' explicitly call `jdv_rpc(NULL)` before queued work can progress. Windows GUI
-#' and Esc behavior have not been validated. Windows named pipes must use
-#' byte-type mode; message-type pipes are unsupported, and Windows transport
-#' behavior has not yet been exercised on a Windows host. Named-pipe ACLs are
-#' not hardened, and an explicitly selected TCP endpoint has no authentication.
-#' Registry entries created with [jdv_register()] share this process-wide
-#' registry and are also released if the viewer disconnects. Package unload
-#' stops the event source and pending work before releasing table references.
+#' [base::browser()] can service requests; a frontend waiting inside a function
+#' frame, such as a function that calls [base::browser()], must let that frame
+#' unwind or explicitly call `jdv_rpc(NULL)` before queued work can progress.
+#' Windows GUI and Esc behavior have not been validated. Windows named pipes
+#' must use byte-type mode; message-type pipes are unsupported, and Windows
+#' transport behavior has not yet been exercised on a Windows host. Named-pipe
+#' ACLs are not hardened, and an explicitly selected TCP endpoint has no
+#' authentication. Registry entries created with [jdv_register()] share this
+#' process-wide registry and are also released if the viewer disconnects.
+#' Package unload stops the event source and pending work before releasing table
+#' references.
 #'
 #' **Tracking.** With `track = TRUE` (the default), a call whose argument is a
 #' single variable name, such as `jdv_view(df)`, follows that variable. After
@@ -716,7 +717,7 @@ jdv_notifications <- function() {
 #' never evaluated by the check: they are skipped and looked at again after
 #' later tasks. When the variable is removed or its environment is garbage
 #' collected, tracking ends and the last view stays; the view can then no longer
-#' be refreshed, and re-running `jdv_view()` tracks again. The environment is
+#' be refreshed, and re-running [jdv_view()] tracks again. The environment is
 #' only weakly referenced, but a displayed object that refers to it, for example
 #' a closure, keeps it alive. Views opened from a view, and sequential sources,
 #' are not tracked. If an update fails (for example the new object exceeds a
@@ -853,7 +854,7 @@ jdv_view <- function(
 
 #' Close one or all views in the local jdv viewer
 #'
-#' @param id Optional view id returned by `jdv_view()`. When omitted, all active
+#' @param id Optional view id returned by [jdv_view()]. When omitted, all active
 #'   views are closed.
 #' @return The ids that were closed, invisibly.
 #' @details

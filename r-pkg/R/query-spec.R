@@ -18,8 +18,8 @@
 #' For a data frame, jdv reads each column with `x[[j]]` and selects rows by
 #' applying that column's `[` method. It never calls table-level `[`, including
 #' `[.data.table`, `[.tbl_df`, or `[.sf`. For a matrix it selects a column and
-#' rows with `x[rows, j]`. Extraction does not call `unclass()` or coerce a
-#' source column before its own subset method runs. Filtering and sorting use
+#' rows with `x[rows, j]`. Extraction does not call [base::unclass()] or coerce
+#' a source column before its own subset method runs. Filtering and sorting use
 #' each full column first; only after the original row indices are fixed does
 #' paging slice the requested rows. Classes that need table-level behavior
 #' require a future source adapter.
@@ -93,10 +93,11 @@
 #'
 #' A filter or sort retrieves only its referenced full source columns and
 #' required channels. An `other` text filter requests the full column's
-#' `format()` output at that point. It never substitutes a page's display text.
-#' Custom subsetting must preserve the column class and requested row count.
-#' Atomic S3 classes without a subset method retain their metadata; classes with
-#' row-dependent attributes must supply suitable subsetting behavior.
+#' [base::format()] output at that point. It never substitutes a page's display
+#' text. Custom subsetting must preserve the column class and requested row
+#' count. Atomic S3 classes without a subset method retain their metadata;
+#' classes with row-dependent attributes must supply suitable subsetting
+#' behavior.
 #'
 #' Three least-recently-used caches have separate entry limits:
 #'
@@ -226,8 +227,8 @@
 #' @section Text:
 #'
 #'
-#' Text comparison folds **ASCII A-Z only** to a-z with `chartr()` after UTF-8
-#' conversion. Non-ASCII characters retain their case: `Ä` and `ä` remain
+#' Text comparison folds **ASCII A-Z only** to a-z with [base::chartr()] after
+#' UTF-8 conversion. Non-ASCII characters retain their case: `Ä` and `ä` remain
 #' distinct. Matching uses fixed literal strings, not regular expressions.
 #' Brackets, dots, and asterisks have no pattern meaning. An empty needle
 #' matches every nonmissing text for contains/prefix/suffix operations;
@@ -237,7 +238,7 @@
 #'
 #' - String: the original, untruncated character value.
 #' - Factor: its label.
-#' - Other: `format()` over the complete column, computed and cached on request.
+#' - Other: [base::format()] over the complete column, computed and cached on request.
 #'
 #' Number, integer, Boolean, date, datetime, and integer64 columns do not
 #' support text operators. List, matrix, and packed data-frame columns have
@@ -245,6 +246,27 @@
 #' does not alter the filter source. Factor `in` is exact, case-sensitive label
 #' membership and does not use text folding; duplicate labels are harmless and
 #' an empty label array matches no rows.
+#'
+#'
+#' @section Blank and non-blank filters:
+#'
+#'
+#' There is no dedicated blank operator; clients combine existing ones. A
+#' text-filterable column has a schema `type` of `string`, `factor`, or `other`
+#' and `filterable` true. For such a column, blank (missing or empty string) is
+#'
+#' ```json
+#' {"op": "or", "args": [
+#'   {"op": "is_na", "col": 2},
+#'   {"op": "text_equals", "col": 2, "value": ""}
+#' ]}
+#' ```
+#'
+#' and non-blank is `{"op": "not", "arg": ...}` wrapped around it. Any other
+#' column type has no text filter source, so `text_equals` fails with
+#' `unsupported` ("Column has no text filter source."). Such columns have no
+#' empty-string value: blank is `{"op": "is_na", "col": N}` and non-blank is
+#' `not` applied to it. `is_na` itself is accepted for every column type.
 #'
 #'
 #' @section Numeric values and infinity:
@@ -323,16 +345,16 @@
 #' | --- | --- |
 #' | Plain Boolean/integer/number | Numeric values, including restored infinities. |
 #' | Plain string, collation `C` | UTF-8 byte/radix order. Paged uses the original strings; Snapshot uses dense numeric ranks. |
-#' | String, collation `locale` | R `xtfrm()` keys under the system locale. |
+#' | String, collation `locale` | R [base::xtfrm()] keys under the system locale. |
 #' | Factor/ordered factor | Factor level codes, regardless of alphabetical label order. |
 #' | Date/POSIXct/POSIXlt | Canonical days/seconds. |
 #' | Integer64 | C-generated dense ranks with equal keys for equal values. |
-#' | Other sortable class | Its `xtfrm()` keys; nonmissing nonfinite keys or keys outside `[-2^53, 2^53]` become dense ranks. |
+#' | Other sortable class | Its [base::xtfrm()] keys; nonmissing nonfinite keys or keys outside `[-2^53, 2^53]` become dense ranks. |
 #'
-#' Paged passes the selected keys to one radix `order()` call with a per-term
-#' `decreasing` vector and missing values last. It does not use an order
-#' permutation as a sort key, because that would lose ties. Character C sorting
-#' avoids an unnecessary full-column rank computation in Paged mode.
+#' Paged passes the selected keys to one radix [base::order()] call with a
+#' per-term `decreasing` vector and missing values last. It does not use an
+#' order permutation as a sort key, because that would lose ties. Character C
+#' sorting avoids an unnecessary full-column rank computation in Paged mode.
 #'
 #' Snapshot consumers must compare supplied numeric keys rather than
 #' JavaScript's raw UTF-16 string order or an independent browser locale
@@ -398,7 +420,7 @@
 #' `snapshot_table()` materializes the column channels, including full filter
 #' text. Its reference consumer evaluates filters one row at a time and
 #' implements lexicographic scalar comparison with a stable merge sort. It does
-#' not call the Paged `order()` or vectorized filter evaluator. Request
+#' not call the Paged [base::order()] or vectorized filter evaluator. Request
 #' validation, operand parsing, and ASCII folding are shared so accepted
 #' requests have one meaning. Integer64 reference filtering compares canonical
 #' decimal strings by sign, digit count, and digits rather than converting them
@@ -418,9 +440,9 @@
 #'
 #' `example-other` uses a synthetic `query_record` class factory: its fixture
 #' `values` array supplies the numeric constructor input, with JSON null
-#' becoming R missing data. Its `format()` method returns
-#' `paste0("value:", as.numeric(x))`, `xtfrm()` returns `as.numeric(x)`, and
-#' missingness follows `is.na(x)`. The class's runtime `values` channel is
+#' becoming R missing data. Its [base::format()] method returns
+#' `paste0("value:", as.numeric(x))`, [base::xtfrm()] returns `as.numeric(x)`,
+#' and missingness follows `is.na(x)`. The class's runtime `values` channel is
 #' absent (`NULL`). The JSON fixture's numeric factory input is therefore not an
 #' `other` column's wire values or a numeric-filter capability.
 #'

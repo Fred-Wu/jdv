@@ -5,8 +5,8 @@
 \alias{jdv_protocol}
 \title{jdv JSON Lines Protocol Specification}
 \description{
-This document defines the JSON protocol implemented by \code{jdv_register()},
-\code{jdv_rpc()}, and the local transport. It describes the R view registry, JSON
+This document defines the JSON protocol implemented by \code{\link[=jdv_register]{jdv_register()}},
+\code{\link[=jdv_rpc]{jdv_rpc()}}, and the local transport. It describes the R view registry, JSON
 Lines (JSONL) messages, optional Arrow IPC binary response bodies, and
 request and response messages shared by the package, reference server, and
 viewer, including object-tree navigation.
@@ -58,7 +58,7 @@ node or object-member limits.
 
 The R package uses base R and its bundled cJSON implementation at runtime. It
 does not require jsonlite. Consumers can parse and construct JSON with their
-own tooling and pass the resulting JSON string to \code{jdv_rpc()}.
+own tooling and pass the resulting JSON string to \code{\link[=jdv_rpc]{jdv_rpc()}}.
 }
 
 \section{Registration API}{
@@ -84,25 +84,25 @@ matrices register as grid views. Arrow Table and RecordBatchReader objects,
 \code{nanoarrow_array_stream} pointers, and Polars DataFrame objects register as
 forward-only Arrow grid views through the optional nanoarrow producer
 adapter. Their \code{mode} and \code{collation} arguments do not change sequential
-access. Other objects use the tree view by default. \code{jdv_register()} returns
+access. Other objects use the tree view by default. \code{\link[=jdv_register]{jdv_register()}} returns
 \code{list(id, generation)} and does not open a socket. Its \code{view/open} message,
 and every other notification, is queued; see the Notification delivery
 section.
 
-\code{jdv_view()} registers the view, opens the local connection on first use
+\code{\link[=jdv_view]{jdv_view()}} registers the view, opens the local connection on first use
 (unless \code{\link[=jdv_connect]{jdv_connect()}} already did), sends \code{hello} on a new connection, then
 the queued notifications (\code{view/closed}, then \code{view/open}), and returns the
 view id invisibly. The R API keeps the return-list key \code{id} and generates
 opaque view id strings such as \code{v-1}; consumers must not interpret the id
 format. Its default title is the deparsed expression passed as \code{x}; an
 explicit \code{title = NULL} creates a new slot. \code{jdv_close(id)} closes one view,
-and \code{jdv_close()} closes every view. Closing the last view stops a connection
+and \code{\link[=jdv_close]{jdv_close()}} closes every view. Closing the last view stops a connection
 that \code{\link[=jdv_view]{jdv_view()}} opened implicitly, after the close notification and any
 pending response are sent; a persistent connection from \code{\link[=jdv_connect]{jdv_connect()}} stays
 open until \code{\link[=jdv_disconnect]{jdv_disconnect()}}. \code{\link[=jdv_rpc]{jdv_rpc()}} with no argument or \code{NULL}
 explicitly polls the active connection and drains at most eight requests.
 This recovery path bypasses the normal event gate and is non-reentrant.
-Passing a JSON string to \code{jdv_rpc()} remains a synchronous,
+Passing a JSON string to \code{\link[=jdv_rpc]{jdv_rpc()}} remains a synchronous,
 transport-independent embedding call.
 
 The address is selected from \code{options(jdv.address = ...)}, then \code{JDV_ADDRESS},
@@ -213,7 +213,7 @@ A view descriptor is sent as a notification:
 }\if{html}{\out{</div>}}
 
 The example omits schema entries for brevity. \code{view/open} has no request id
-and is not passed to \code{jdv_rpc()}; \code{jdv_register()} queues it for the host to
+and is not passed to \code{\link[=jdv_rpc]{jdv_rpc()}}; \code{\link[=jdv_register]{jdv_register()}} queues it for the host to
 deliver (see the Notification delivery section). \code{kind} is \code{grid}; \code{access}
 is \code{snapshot} or \code{random} for Snapshot or Paged mode, respectively; and
 \code{encoding} is \code{r-json}. Every descriptor includes all seven \code{capabilities}
@@ -227,10 +227,10 @@ that \code{view/refresh} is accepted. Tree descriptors use \code{kind: "tree"},
 (\code{mode}, \code{nrow}, \code{ncol}, \code{row_names}, \code{columns}, and \code{data}). A tree
 descriptor includes an empty \code{path} at its root. A child descriptor may
 include \code{parent}, the parent view id. \code{title} is optional. A tree descriptor
-also has \code{class}, a string array that follows \code{class()} semantics for the
-root object, and \code{type}, the string \code{typeof()} returns for it (for example
-\code{"list"}, \code{"double"}, \code{"environment"}, or \code{"S4"}). A grid descriptor omits
-both.\tabular{lll}{
+also has \code{class}, a string array that follows \code{\link[base:class]{base::class()}} semantics for
+the root object, and \code{type}, the string \code{\link[base:typeof]{base::typeof()}} returns for it (for
+example \code{"list"}, \code{"double"}, \code{"environment"}, or \code{"S4"}). A grid descriptor
+omits both.\tabular{lll}{
    Descriptor field \tab Grid \tab Tree \cr
    \code{view}, \code{generation}, \code{kind}, \code{access}, \code{encoding}, \code{capabilities} \tab Required \tab Required \cr
    \code{title} \tab Optional \tab Optional \cr
@@ -340,12 +340,12 @@ used as a stable machine-readable discriminator. An error may also include
 \code{details}. Every accepted request receives exactly one terminal response.
 Work cancelled, expired, or stale before it begins receives an error response
 with code \code{cancelled}, \code{expired}, or \code{stale_generation}; a closed view
-receives \code{view_not_found}. A synchronous \code{jdv_rpc()} call is an embedding
+receives \code{view_not_found}. A synchronous \code{\link[=jdv_rpc]{jdv_rpc()}} call is an embedding
 path and does not apply the local transport execution gate. It treats \code{wake}
 and \code{cancel} as no-op notifications and returns \code{NULL} for them; the
 transport queue matches cancellation ids to pending work before execution.
 \code{ack} is transport-owned and flows only from R to the host; it is not passed
-to \code{jdv_rpc()}.
+to \code{\link[=jdv_rpc]{jdv_rpc()}}.
 }
 
 \section{Arrow IPC binary responses}{
@@ -663,7 +663,7 @@ any output path detach the browser. Repeated close/detach is harmless.
 \section{Methods}{
 \tabular{llll}{
    Method \tab Direction \tab Kind \tab Result \cr
-   \code{view/open} \tab R/host to viewer \tab Notification \tab Descriptor and, for Snapshot, all column payloads. Queued by \code{jdv_register()}. \cr
+   \code{view/open} \tab R/host to viewer \tab Notification \tab Descriptor and, for Snapshot, all column payloads. Queued by \code{\link[=jdv_register]{jdv_register()}}. \cr
    \code{view/schema} \tab Host to R \tab Request \tab Current dimensions and schema. \cr
    \code{stream/next} \tab Host to R \tab Request \tab One forward-only Arrow IPC page and cursor metadata. \cr
    \code{table/rows} \tab Host to R \tab Request \tab One selected page from a Paged view. \cr
@@ -759,7 +759,7 @@ Parameters are \code{view}, \code{generation}, a non-empty \code{path}, and opti
 and \code{collation}. \code{mode} must be exactly \code{"auto"}, \code{"snapshot"}, or \code{"paged"};
 when omitted, it defaults to \code{"auto"}. \code{collation} must be exactly \code{"C"} or
 \code{"locale"}; when omitted, it uses the same \code{getOption("jdv.collation", "C")}
-default as \code{jdv_register()}. These options apply when the selected value
+default as \code{\link[=jdv_register]{jdv_register()}}. These options apply when the selected value
 opens as a grid and do not inherit from the parent view. If the selected
 value opens as a tree, valid \code{mode} and \code{collation} values are ignored.
 Invalid values, including explicit \code{null}, return \code{invalid_request}.
@@ -1002,7 +1002,7 @@ it queues a \code{view/closed} notification with the evicted \code{view} and
 \code{generation}. The notification enters the session queue ahead of the
 associated new \code{view/open}, and the host delivers both in queue order.
 Explicit host-initiated \code{view/close} returns a successful close result
-without a separate \code{view/closed} notification. \code{jdv_close()} queues
+without a separate \code{view/closed} notification. \code{\link[=jdv_close]{jdv_close()}} queues
 \code{view/closed} for views it closes. Re-registering an active title replaces
 the same id with a newer generation; after close or eviction, a later
 registration uses a new id and generation 1.
@@ -1101,12 +1101,12 @@ the handshake with \code{unsupported}; it must not continue with incompatible
 message semantics.
 
 The transport emits \code{hello} as part of connection setup. It is not a method
-handled by \code{jdv_rpc()}. For an embedded session it is the first message in
+handled by \code{\link[=jdv_rpc]{jdv_rpc()}}. For an embedded session it is the first message in
 the queue; see the Notification delivery section. The R process does not
 retry a failed request or automatically reconnect after disconnect; the next
 \code{\link[=jdv_view]{jdv_view()}} or \code{\link[=jdv_connect]{jdv_connect()}} call starts a new session. A disconnect
 closes every active registry entry and releases its retained table data.
-Entries created with \code{jdv_register()} share this process-wide registry and
+Entries created with \code{\link[=jdv_register]{jdv_register()}} share this process-wide registry and
 are cleared by a viewer disconnect as well.
 
 \code{params.limits} reports the effective limits captured for this connection:
@@ -1236,9 +1236,10 @@ finite double and accepts it only when its own double read-back equals the
 source; otherwise it falls back to 17 significant digits. The emitted text
 round-trips to the original finite double with correctly rounded parsers such
 as JavaScript \code{JSON.parse}, C \code{strtod}, and \code{jsonlite::fromJSON}. R's
-\code{as.numeric()} and \code{scan()} do not guarantee rounding to the nearest
-representable value, so a 15-digit token can read back one ULP away across a
-wide exponent range. Negative zero is written as \code{0}, without its sign.
+\code{\link[base:as.numeric]{base::as.numeric()}} and \code{\link[base:scan]{base::scan()}} do not guarantee rounding to the
+nearest representable value, so a 15-digit token can read back one ULP away
+across a wide exponent range. Negative zero is written as \code{0}, without its
+sign.
 
 Snapshot payloads contain all table rows in one \code{data} object. Paged payloads
 contain only the requested row slice. Paged display formatting is performed
@@ -1247,9 +1248,9 @@ across the whole column. The protocol guarantees matching sort and filter
 semantics, not identical display strings. For data frames, row slicing is
 performed per column using \code{x[[j]]} followed by that column's \code{[} method. It
 does not call table-level \code{[}. For matrices, slicing uses \code{x[rows, j]}.
-Source classes are preserved through slicing; jdv does not \code{unclass()} or
-coerce a column before its subset method runs. Filtering and sorting use full
-column semantics before the requested rows are sliced. See
+Source classes are preserved through slicing; jdv does not \code{\link[base:unclass]{base::unclass()}}
+or coerce a column before its subset method runs. Filtering and sorting use
+full column semantics before the requested rows are sliced. See
 \link[=jdv_query_spec]{query specification} for the detailed source and query
 contract.
 }
@@ -1400,22 +1401,22 @@ removes cancelled and expired queued requests and sends their terminal
 errors, including while another R method is running. The R adapter returns
 \code{view_not_found} for a closed or missing view and \code{stale_generation} for an
 obsolete generation. For each request, dispatch requires native \code{busy == 0}
-and a single \code{sys.nframe()} evaluation in \code{R_BaseEnv} to return zero. If the
-queue is empty, the gate skips that evaluation. A started request that fails,
-including an interrupt, is terminal and is never retried. A synchronous or
-queued stale generation returns \code{stale_generation}. A second live pending
-request with the same typed id is rejected as \code{invalid_request} on a
-best-effort basis and closes the connection to avoid ambiguous responses.
-Cancelled requests no longer reserve their ids.
+and a single \code{\link[base:sys.nframe]{base::sys.nframe()}} evaluation in \code{R_BaseEnv} to return zero.
+If the queue is empty, the gate skips that evaluation. A started request that
+fails, including an interrupt, is terminal and is never retried. A
+synchronous or queued stale generation returns \code{stale_generation}. A second
+live pending request with the same typed id is rejected as \code{invalid_request}
+on a best-effort basis and closes the connection to avoid ambiguous
+responses. Cancelled requests no longer reserve their ids.
 
 The gate temporarily saves \code{R_interrupts_suspended}, sets it to \code{TRUE} for
 the single frame-count evaluation, and restores the prior value with
 unwind-safe cleanup. It does not use \code{END_SUSPEND_INTERRUPTS}, call \code{onintr},
 or inspect or change private pending-interrupt state. This practical
 function-frame check is not a guarantee that R is idle: on Windows, a timer
-can run during a top-level \code{for} loop while \code{sys.nframe()} is zero, and this
-dispatch behavior has been observed. The Windows timer interval is about 200
-ms. If the request callback begins with interrupts enabled, an interrupt
+can run during a top-level \code{for} loop while \code{\link[base:sys.nframe]{base::sys.nframe()}} is zero, and
+this dispatch behavior has been observed. The Windows timer interval is about
+200 ms. If the request callback begins with interrupts enabled, an interrupt
 after dequeue becomes an \code{interrupted} error. If R entered the callback with
 interrupts already suspended, R may defer delivery; long sort or filter work
 may therefore not stop promptly. The viewer should show a busy state and
@@ -1424,12 +1425,12 @@ offer a retry after a terminal failure.
 \code{jdv_rpc(NULL)} is a non-reentrant recovery path that bypasses the normal
 gate and drains at most the configured batch under \code{R_UnwindProtect}; it does
 not use a background \code{R_ToplevelExec}. Disconnect cleanup is deferred until
-the callback stack is safe. A public R \code{addTaskCallback()} performs cleanup
-after a successful top-level task, while explicit polling and later public
-package entries also check for pending cleanup. This task callback is
+the callback stack is safe. A public R \code{\link[base:addTaskCallback]{base::addTaskCallback()}} performs
+cleanup after a successful top-level task, while explicit polling and later
+public package entries also check for pending cleanup. This task callback is
 cleanup-only and does not dispatch requests. It is an event-driven cleanup
 opportunity, not a general timer. A disconnect closes every registered table,
-and the next \code{jdv_view()} call starts a new connection; no in-flight request
+and the next \code{\link[=jdv_view]{jdv_view()}} call starts a new connection; no in-flight request
 is retried.
 
 On namespace unload, the transport source is stopped, queued requests and
