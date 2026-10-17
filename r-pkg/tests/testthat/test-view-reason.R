@@ -179,18 +179,21 @@ test_that("child titles cover slots, bindings, and grid cells", {
     "s@`odd name`"
   )
 
-  env <- new.env()
-  env$val <- list(1)
-  env$`my var` <- list(2)
-  view <- jdv_register(env, title = "e")
-  expect_identical(
-    child_title(view, list(list(type = "binding", name = "val")))$title,
-    "e$val"
-  )
-  expect_identical(
-    child_title(view, list(list(type = "binding", name = "my var")))$title,
-    "e$`my var`"
-  )
+  # Environment bindings are readable without evaluation only from R 4.6.0.
+  if (getRversion() >= "4.6.0") {
+    env <- new.env()
+    env$val <- list(1)
+    env$`my var` <- list(2)
+    view <- jdv_register(env, title = "e")
+    expect_identical(
+      child_title(view, list(list(type = "binding", name = "val")))$title,
+      "e$val"
+    )
+    expect_identical(
+      child_title(view, list(list(type = "binding", name = "my var")))$title,
+      "e$`my var`"
+    )
+  }
 
   cell <- function(row, column) {
     list(kind = "cell", row_index = row, column = column)
