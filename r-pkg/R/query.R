@@ -1,9 +1,6 @@
 # Internal query state owns references and bounded entry caches, not a registry.
 query_error <- function(code, message, details = NULL) {
-  stop(structure(
-    list(message = message, call = NULL, code = code, details = details),
-    class = c("jdv_query_error", "error", "condition")
-  ))
+  stop(jdv_condition(code, message, details, "jdv_query_error"))
 }
 
 query_try <- function(fun, code = "r_error") {

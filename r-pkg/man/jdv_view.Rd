@@ -24,7 +24,8 @@ used; explicitly passing \code{NULL} creates an independent table slot.}
 
 \item{collation}{Grid string ordering policy, \code{"C"} or \code{"locale"}.}
 
-\item{track}{Whether to follow the variable passed as \code{x}; see Details.}
+\item{track}{Whether to follow the variable passed as \code{x}; see Details. To
+follow a variable on behalf of a caller, see \code{\link[=jdv_binding]{jdv_binding()}}.}
 }
 \value{
 The view id, invisibly.
@@ -62,15 +63,16 @@ during a long sort or filter until a later check; use the viewer's busy state
 as an indication that the request is still running. A bare top-level
 \code{\link[base:browser]{base::browser()}} can service requests; a frontend waiting inside a function
 frame, such as a function that calls \code{\link[base:browser]{base::browser()}}, must let that frame
-unwind or explicitly call \code{jdv_rpc(NULL)} before queued work can progress.
-Windows GUI and Esc behavior have not been validated. Windows named pipes
-must use byte-type mode; message-type pipes are unsupported, and Windows
-transport behavior has not yet been exercised on a Windows host. Named-pipe
-ACLs are not hardened, and an explicitly selected TCP endpoint has no
-authentication. Registry entries created with \code{\link[=jdv_register]{jdv_register()}} share this
-process-wide registry and are also released if the viewer disconnects.
-Package unload stops the event source and pending work before releasing table
-references.
+unwind or explicitly call \code{jdv_rpc(NULL)} before queued work can progress. A
+script that waits in a loop never returns to top level, so it must poll with
+\code{jdv_rpc(NULL)}; see \code{\link[=jdv_rpc]{jdv_rpc()}}. Windows GUI and Esc behavior have not been
+validated. Windows named pipes must use byte-type mode; message-type pipes
+are unsupported, and Windows transport behavior has not yet been exercised on
+a Windows host. Named-pipe ACLs are not hardened, and an explicitly selected
+TCP endpoint has no authentication. Registry entries created with
+\code{\link[=jdv_register]{jdv_register()}} share this process-wide registry and are also released if
+the viewer disconnects. Package unload stops the event source and pending
+work before releasing table references.
 
 \strong{Tracking.} With \code{track = TRUE} (the default), a call whose argument is a
 single variable name, such as \code{jdv_view(df)}, follows that variable. After

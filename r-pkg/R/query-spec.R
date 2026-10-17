@@ -479,8 +479,9 @@
 #' channel, including when all rows are missing. Zero-row columns use the same
 #' equality checks, with empty comparisons treated as equal.
 #'
-#' Conditions inherit from `jdv_query_error`, `error`, and `condition`, and
-#' expose `code`, `message`, and optional `details`:
+#' Conditions inherit from `jdv_query_error`, `jdv_error_<code>`, `jdv_error`,
+#' `error`, and `condition` (see [jdv_errors]), and expose `code`, `message`,
+#' and optional `details`:
 #'
 #' | Code | Typical cause |
 #' | --- | --- |

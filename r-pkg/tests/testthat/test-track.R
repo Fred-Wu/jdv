@@ -95,7 +95,7 @@ test_that("jdv_register validates the binding argument", {
   for (binding in bad) {
     expect_error(
       jdv_register(mtcars, binding = binding),
-      class = "jdv_query_error"
+      class = "jdv_error_invalid_argument"
     )
   }
   # Nothing is registered or started by a rejected call.
@@ -808,4 +808,103 @@ test_that("re-registering a title tracks again as active", {
   second <- track_register(mtcars[1:3, ], env, title = "t")
   expect_identical(second$id, first$id)
   expect_identical(.jdv_track_state(track_entry(second$id)), "active")
+})
+
+test_that("jdv_binding finds the binding without evaluating it", {
+  outer <- new.env()
+  outer$x <- mtcars
+  inner <- new.env(parent = outer)
+  inner$y <- 1
+
+  found <- jdv_binding("x", inner)
+  expect_identical(names(found), c("name", "env"))
+  expect_identical(found$name, "x")
+  expect_identical(found$env, outer)
+  expect_identical(jdv_binding(quote(x), inner)$env, outer)
+  # The nearest binding wins, as it does for jdv_view().
+  inner$x <- data.frame(a = 1)
+  expect_identical(jdv_binding("x", inner)$env, inner)
+  # The default searches from the caller.
+  local({
+    local_var <- 1
+    expect_identical(jdv_binding("local_var")$env, environment())
+  })
+
+  expect_null(jdv_binding("absent", inner))
+  expect_null(jdv_binding(quote(head(x)), inner))
+  expect_null(jdv_binding(1, inner))
+  expect_error(jdv_binding("", inner), class = "jdv_error_invalid_argument")
+  expect_error(
+    jdv_binding(c("x", "y"), inner),
+    class = "jdv_error_invalid_argument"
+  )
+  expect_error(
+    jdv_binding(NA_character_, inner),
+    class = "jdv_error_invalid_argument"
+  )
+})
+
+test_that("jdv_binding never evaluates promises or active bindings", {
+  env <- new.env()
+  counter <- new.env()
+  counter$n <- 0L
+  delayedAssign(
+    "p",
+    {
+      counter$n <- counter$n + 1L
+      mtcars
+    },
+    assign.env = env
+  )
+  makeActiveBinding(
+    "a",
+    function() {
+      counter$n <- counter$n + 1L
+      mtcars
+    },
+    env
+  )
+  env$m <- quote(expr = )
+  expect_null(jdv_binding("p", env))
+  expect_null(jdv_binding("a", env))
+  expect_null(jdv_binding("m", env))
+  expect_identical(counter$n, 0L)
+
+  # A forced promise holds an object and can be tracked.
+  force(env$p)
+  expect_identical(counter$n, 1L)
+  expect_identical(jdv_binding("p", env)$env, env)
+  expect_identical(counter$n, 1L)
+})
+
+test_that("an older R gives no binding", {
+  env <- new.env()
+  env$x <- mtcars
+  testthat::local_mocked_bindings(.jdv_track_supported = function() FALSE)
+  expect_null(jdv_binding("x", env))
+})
+
+test_that("the result of jdv_binding tracks through jdv_register", {
+  track_new_session()
+  env <- new.env()
+  env$x <- data.frame(a = 1)
+  # A viewer hook in the style of View().
+  hook <- function(x) {
+    jdv_register(
+      x,
+      title = deparse1(substitute(x)),
+      binding = jdv_binding(substitute(x), parent.frame())
+    )
+  }
+  id <- local(hook(x), env)$id
+  jdv_notifications()
+  expect_identical(.jdv_track_state(track_entry(id)), "active")
+  env$x <- data.frame(a = 2)
+  jdv_rpc(NULL)
+  expect_true("view/open" %in% track_methods())
+  expect_identical(track_entry(id)$generation, 2)
+
+  # An expression has no binding, so the view is registered but not tracked.
+  id2 <- local(hook(head(x)), env)$id
+  expect_null(.jdv_track_state(track_entry(id2)))
 })

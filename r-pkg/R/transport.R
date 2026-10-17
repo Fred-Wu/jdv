@@ -24,9 +24,9 @@
   if (
     !is.character(path) || length(path) != 1L || is.na(path) || !nzchar(path)
   ) {
-    stop(
-      "Option 'jdv.discovery_path' must be one non-empty path.",
-      call. = FALSE
+    jdv_abort(
+      "invalid_argument",
+      "Option 'jdv.discovery_path' must be one non-empty path."
     )
   }
   path
@@ -41,7 +41,10 @@
         is.na(address) ||
         !nzchar(address)
     ) {
-      stop("Option 'jdv.address' must be one non-empty address.", call. = FALSE)
+      jdv_abort(
+        "invalid_argument",
+        "Option 'jdv.address' must be one non-empty address."
+      )
     }
     return(address)
   }
@@ -53,13 +56,16 @@
   path <- .jdv_discovery_path()
   info <- file.info(path)
   if (is.na(info$size) || isTRUE(info$isdir) || info$size > 65536) {
-    stop(
-      "The viewer discovery file is missing or exceeds 64 KiB.",
-      call. = FALSE
+    jdv_abort(
+      "connect_failed",
+      "The viewer discovery file is missing or exceeds 64 KiB."
     )
   }
   bytes <- readBin(path, what = "raw", n = 65536L)
-  discovery <- .jdv_json_parse(rawToChar(bytes))
+  discovery <- tryCatch(
+    .jdv_json_parse(rawToChar(bytes)),
+    error = function(error) jdv_abort("connect_failed", conditionMessage(error))
+  )
   address <- discovery$socketPath
   if (
     !is.character(address) ||
@@ -67,7 +73,10 @@
       is.na(address) ||
       !nzchar(address)
   ) {
-    stop("The viewer discovery file has no valid socketPath.", call. = FALSE)
+    jdv_abort(
+      "connect_failed",
+      "The viewer discovery file has no valid socketPath."
+    )
   }
   address
 }
@@ -354,9 +363,9 @@
     return(invisible(NULL))
   }
   if (!is.null(status) && isTRUE(status$pending_cleanup)) {
-    stop(
-      "The previous viewer connection is still being cleaned up.",
-      call. = FALSE
+    jdv_abort(
+      "in_use",
+      "The previous viewer connection is still being cleaned up."
     )
   }
   if (!is.null(.jdv_state$transport)) {
@@ -377,19 +386,30 @@
     function() .jdv_transport_disconnect(callback_epoch)
   })
   .jdv_assert_active()
-  .Call(
-    C_jdv_transport_connect,
-    address,
-    request_callback,
-    disconnect_callback,
-    .jdv_transport_limits()
+  tryCatch(
+    .Call(
+      C_jdv_transport_connect,
+      address,
+      request_callback,
+      disconnect_callback,
+      .jdv_transport_limits()
+    ),
+    error = function(error) {
+      if (inherits(error, "jdv_error")) {
+        stop(error)
+      }
+      jdv_abort("connect_failed", conditionMessage(error))
+    }
   )
   .jdv_assert_active()
   status <- .Call(C_jdv_transport_status)
   .jdv_assert_active()
   if (!isTRUE(status$connected)) {
     .jdv_transport_disconnect(epoch)
-    stop("The viewer transport disconnected during setup.", call. = FALSE)
+    jdv_abort(
+      "connect_failed",
+      "The viewer transport disconnected during setup."
+    )
   }
   # A new connection must not inherit notifications from an earlier session.
   .jdv_queue_reset(.jdv_notification_limits())
@@ -441,7 +461,7 @@
     return(invisible(NULL))
   }
   if (is.null(.jdv_state$transport)) {
-    stop("The viewer transport is not connected.", call. = FALSE)
+    jdv_abort("not_connected", "The viewer transport is not connected.")
   }
   messages <- enc2utf8(as.character(messages))
   .jdv_assert_active()
@@ -519,6 +539,10 @@
 #' active, [jdv_connect()] and [jdv_view()] fail until [jdv_disconnect()] is
 #' called. [jdv_connection()] has no side effects: it neither connects nor
 #' polls.
+#'
+#' Errors raised on purpose, such as an unreachable address or an address that
+#' conflicts with the current connection, carry condition classes that name the
+#' reason; see [jdv_errors].
 #' @export
 jdv_connect <- function(address = NULL) {
   .jdv_assert_active()
@@ -529,25 +553,30 @@ jdv_connect <- function(address = NULL) {
         is.na(address) ||
         !nzchar(address))
   ) {
-    stop("'address' must be NULL or one non-empty address.", call. = FALSE)
+    jdv_abort(
+      "invalid_argument",
+      "'address' must be NULL or one non-empty address."
+    )
   }
   .jdv_transport_housekeeping()
   .jdv_assert_active()
   .jdv_assert_not_embedded()
   status <- .jdv_transport_status()
   if (!is.null(status) && isTRUE(status$pending_cleanup)) {
-    stop(
-      "The previous viewer connection is still being cleaned up.",
-      call. = FALSE
+    jdv_abort(
+      "in_use",
+      "The previous viewer connection is still being cleaned up."
     )
   }
   if (!is.null(status) && isTRUE(status$connected)) {
     current <- .jdv_state$transport_address
     if (!is.null(address) && !identical(address, current)) {
-      stop(
-        "Already connected to a different address; ",
-        "call jdv_disconnect() before connecting to another one.",
-        call. = FALSE
+      jdv_abort(
+        "in_use",
+        paste0(
+          "Already connected to a different address; ",
+          "call jdv_disconnect() before connecting to another one."
+        )
       )
     }
     .jdv_state$transport_persistent <- TRUE
@@ -636,10 +665,12 @@ jdv_connection <- function() {
 jdv_notifications <- function() {
   .jdv_assert_active()
   if (identical(.jdv_session_owner(), "transport")) {
-    stop(
-      "The viewer connection owns the notifications; ",
-      "jdv_notifications() is only for an embedded session.",
-      call. = FALSE
+    jdv_abort(
+      "in_use",
+      paste0(
+        "The viewer connection owns the notifications; ",
+        "jdv_notifications() is only for an embedded session."
+      )
     )
   }
   if (!isTRUE(.jdv_state$embedded)) {
@@ -663,7 +694,8 @@ jdv_notifications <- function() {
 #'   used; explicitly passing `NULL` creates an independent table slot.
 #' @param mode Grid view mode: `"auto"`, `"snapshot"`, or `"paged"`.
 #' @param collation Grid string ordering policy, `"C"` or `"locale"`.
-#' @param track Whether to follow the variable passed as `x`; see Details.
+#' @param track Whether to follow the variable passed as `x`; see Details. To
+#'   follow a variable on behalf of a caller, see [jdv_binding()].
 #' @return The view id, invisibly.
 #' @details
 #' In a grid view, every column is displayed, but only some columns can be
@@ -695,15 +727,16 @@ jdv_notifications <- function() {
 #' as an indication that the request is still running. A bare top-level
 #' [base::browser()] can service requests; a frontend waiting inside a function
 #' frame, such as a function that calls [base::browser()], must let that frame
-#' unwind or explicitly call `jdv_rpc(NULL)` before queued work can progress.
-#' Windows GUI and Esc behavior have not been validated. Windows named pipes
-#' must use byte-type mode; message-type pipes are unsupported, and Windows
-#' transport behavior has not yet been exercised on a Windows host. Named-pipe
-#' ACLs are not hardened, and an explicitly selected TCP endpoint has no
-#' authentication. Registry entries created with [jdv_register()] share this
-#' process-wide registry and are also released if the viewer disconnects.
-#' Package unload stops the event source and pending work before releasing table
-#' references.
+#' unwind or explicitly call `jdv_rpc(NULL)` before queued work can progress. A
+#' script that waits in a loop never returns to top level, so it must poll with
+#' `jdv_rpc(NULL)`; see [jdv_rpc()]. Windows GUI and Esc behavior have not been
+#' validated. Windows named pipes must use byte-type mode; message-type pipes
+#' are unsupported, and Windows transport behavior has not yet been exercised on
+#' a Windows host. Named-pipe ACLs are not hardened, and an explicitly selected
+#' TCP endpoint has no authentication. Registry entries created with
+#' [jdv_register()] share this process-wide registry and are also released if
+#' the viewer disconnects. Package unload stops the event source and pending
+#' work before releasing table references.
 #'
 #' **Tracking.** With `track = TRUE` (the default), a call whose argument is a
 #' single variable name, such as `jdv_view(df)`, follows that variable. After
@@ -757,24 +790,25 @@ jdv_view <- function(
     title <- deparse1(expr)
   }
   if (!is.logical(track) || length(track) != 1L || is.na(track)) {
-    stop("'track' must be TRUE or FALSE.", call. = FALSE)
+    jdv_abort("invalid_argument", "'track' must be TRUE or FALSE.")
   }
   # Find the binding before x is evaluated, and without evaluating anything.
   untracked <- NULL
-  owner <- NULL
+  found <- NULL
   if (track && is.symbol(expr)) {
-    if (!.jdv_track_supported()) {
+    found <- .jdv_binding_lookup(as.character(expr), parent.frame())
+    if (is.character(found)) {
       # Older R cannot track at all, so say so once per session rather than on
       # every call.
-      if (!isTRUE(.jdv_state$track_version_warned)) {
-        .jdv_state$track_version_warned <- TRUE
-        untracked <- "tracking requires R 4.6.0 or later"
+      if (identical(found, .jdv_track_version_reason)) {
+        if (!isTRUE(.jdv_state$track_version_warned)) {
+          .jdv_state$track_version_warned <- TRUE
+          untracked <- found
+        }
+      } else {
+        untracked <- found
       }
-    } else {
-      owner <- .jdv_binding_owner(as.character(expr), parent.frame())
-      if (is.null(owner)) {
-        untracked <- "no variable with that name was found"
-      }
+      found <- NULL
     }
   }
   mode <- match.arg(mode)
@@ -787,13 +821,13 @@ jdv_view <- function(
   .jdv_assert_not_embedded()
   status <- .jdv_transport_status()
   if (!is.null(status) && isTRUE(status$pending_cleanup)) {
-    stop(
-      "The previous viewer connection is still being cleaned up.",
-      call. = FALSE
+    jdv_abort(
+      "in_use",
+      "The previous viewer connection is still being cleaned up."
     )
   }
   if (!is.null(status) && isTRUE(status$busy)) {
-    stop("Cannot open a table while a viewer request is active.", call. = FALSE)
+    jdv_abort("in_use", "Cannot open a table while a viewer request is active.")
   }
   if (!is.null(status) && !isTRUE(status$connected)) {
     .jdv_transport_disconnect(.jdv_state$transport_epoch)
@@ -806,8 +840,8 @@ jdv_view <- function(
     .jdv_notify(.jdv_json_encode(.jdv_hello()))
   }
   prepared <- NULL
-  if (!is.null(owner) && !identical(source$access, "sequential")) {
-    prepared <- .jdv_track_prepare(owner, as.character(expr), original)
+  if (!is.null(found) && !identical(source$access, "sequential")) {
+    prepared <- .jdv_track_prepare(found$env, found$name, original)
     if (is.character(prepared)) {
       untracked <- prepared
       prepared <- NULL
@@ -896,7 +930,7 @@ jdv_close <- function(id = NULL) {
     !is.null(id) &&
       (!is.character(id) || length(id) != 1L || is.na(id) || !nzchar(id))
   ) {
-    stop("'id' must be NULL or one non-empty view id.", call. = FALSE)
+    jdv_abort("invalid_argument", "'id' must be NULL or one non-empty view id.")
   }
   ids <- if (is.null(id)) {
     ls(.jdv_state$entries, all.names = TRUE)

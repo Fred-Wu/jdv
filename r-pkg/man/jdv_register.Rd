@@ -35,7 +35,8 @@ readable without evaluation (a plain or already forced binding), or the
 call fails. Tracking needs R 4.6.0 or later; older versions fail with the
 \code{unsupported} error code. The environment is referenced weakly. Sequential
 sources cannot be tracked. See the Details of \code{\link[=jdv_view]{jdv_view()}} for what is
-detected.}
+detected. \code{\link[=jdv_binding]{jdv_binding()}} finds such a binding from a variable name without
+evaluating it.}
 }
 \value{
 A list with the view \code{id} and its \code{generation}. The \code{view/open} message, and

@@ -479,8 +479,9 @@ class-specific formatter that uses another missing label keeps its \code{display
 channel, including when all rows are missing. Zero-row columns use the same
 equality checks, with empty comparisons treated as equal.
 
-Conditions inherit from \code{jdv_query_error}, \code{error}, and \code{condition}, and
-expose \code{code}, \code{message}, and optional \code{details}:\tabular{ll}{
+Conditions inherit from \code{jdv_query_error}, \verb{jdv_error_<code>}, \code{jdv_error},
+\code{error}, and \code{condition} (see \link{jdv_errors}), and expose \code{code}, \code{message},
+and optional \code{details}:\tabular{ll}{
    Code \tab Typical cause \cr
    \code{invalid_request} \tab Malformed objects, selectors, directions, operands, or reversed bounds. \cr
    \code{unsupported} \tab A valid request uses a column capability/type/operator combination that is unavailable. \cr

@@ -30,9 +30,103 @@
   state
 })
 
+# Every error jdv raises on purpose is a `jdv_error` with a `code`. `extra` adds
+# classes in front, for internal conditions that need their own handling.
+#' Errors signaled by jdv
+#'
+#' Errors that jdv raises on purpose are conditions of class `jdv_error`. Each
+#' also has a class that names its reason, `jdv_error_<code>`, and a `code`
+#' field with the same `<code>`, so that a caller can decide what to do without
+#' matching the message. The full class vector is
+#' `c("jdv_error_<code>", "jdv_error", "error", "condition")`; errors of the
+#' query layer, such as those of [jdv_register()], also have the class
+#' `jdv_query_error` in front, and a notification queue overflow has the class
+#' `jdv_notification_overflow` (see [jdv_notifications()]). Unexpected R errors,
+#' for example from a failing `format()` method of the user, are not wrapped.
+#'
+#' The codes below are the ones R functions can signal. `invalid_request`,
+#' `unsupported`, `unavailable`, `limit_exceeded`, `schema_changed`, `r_error`,
+#' `view_not_found`, and `in_use` have the same meaning as the protocol error
+#' codes of the same name (see [jdv_spec]). `invalid_argument`,
+#' `connect_failed`, `not_connected`, and `shutting_down` exist only in the R
+#' API; they are never sent to a viewer.
+#'
+#' | Code | Signaled when |
+#' | --- | --- |
+#' | `invalid_argument` | An argument or option has a wrong type or value, such as `track` or `address` of [jdv_view()] and [jdv_connect()], the `id` of [jdv_close()], the shape of the `binding` argument of [jdv_register()], an option that sets the address or discovery file, or the `name` and `env` of [jdv_binding()]. |
+#' | `in_use` | Another owner holds the resource. An embedded notification session and a viewer connection exclude each other, [jdv_connect()] is asked for a different address while connected, the previous connection is still being cleaned up, a table is opened while a viewer request is running, or [jdv_rpc()] is called again from inside a request. |
+#' | `connect_failed` | The viewer cannot be reached: the discovery file is missing, too large, or unusable, or the connection cannot be made or ends during setup. |
+#' | `not_connected` | A message is sent while there is no viewer connection. |
+#' | `shutting_down` | A function is called while the package is being unloaded. |
+#' | `invalid_request` | The `binding` of [jdv_register()] has the right shape but does not hold the object registered, or a registered object fails validation. |
+#' | `unsupported` | The operation is not available for the object, such as tracking a sequential source or tracking on R older than 4.6.0. |
+#' | `unavailable` | A binding cannot be read without evaluating it. |
+#' | `limit_exceeded` | A configured limit is exceeded, including a notification queue overflow. |
+#' | `schema_changed`, `r_error`, `view_not_found` | Errors of the query layer; see [jdv_query_spec]. |
+#'
+#' @examples
+#' library(jdv)
+#' result <- tryCatch(
+#'   jdv_view(mtcars, track = NA),
+#'   jdv_error_invalid_argument = function(error) error$code
+#' )
+#' result
+#'
+#' # Fall back when no viewer is available, and report anything else.
+#' open_view <- function(x) {
+#'   tryCatch(
+#'     jdv_view(x),
+#'     jdv_error_connect_failed = function(error) {
+#'       message("No viewer: ", conditionMessage(error))
+#'       NULL
+#'     },
+#'     jdv_error_in_use = function(error) {
+#'       message("The viewer is busy: ", conditionMessage(error))
+#'       NULL
+#'     }
+#'   )
+#' }
+#' @name jdv_errors
+NULL
+
+jdv_condition <- function(code, message, details = NULL, extra = character()) {
+  structure(
+    list(message = message, call = NULL, code = code, details = details),
+    class = c(
+      extra,
+      paste0("jdv_error_", code),
+      "jdv_error",
+      "error",
+      "condition"
+    )
+  )
+}
+
+jdv_abort <- function(code, message) stop(jdv_condition(code, message))
+
+# The error codes of the wire protocol. Other jdv_error codes belong to the R
+# API only and are reported to a viewer as `r_error`.
+.jdv_protocol_codes <- c(
+  "invalid_request",
+  "unsupported",
+  "limit_exceeded",
+  "schema_changed",
+  "r_error",
+  "interrupted",
+  "cancelled",
+  "expired",
+  "unavailable",
+  "stale_generation",
+  "view_not_found",
+  "cache_changed",
+  "in_use",
+  "stream_failed",
+  "method_not_found"
+)
+
 .jdv_assert_active <- function() {
   if (isTRUE(.jdv_state$unloading)) {
-    stop("The jdv namespace is shutting down.", call. = FALSE)
+    jdv_abort("shutting_down", "The jdv namespace is shutting down.")
   }
   invisible(NULL)
 }
@@ -114,15 +208,13 @@
     .jdv_state$embedded <- FALSE
     .jdv_state$last_disconnect_reason <- "notification_overflow"
   }
-  stop(structure(
-    list(
-      message = paste(
-        "The notification queue overflowed; the viewer session was ended",
-        "and all views were closed."
-      ),
-      call = NULL
+  stop(jdv_condition(
+    "limit_exceeded",
+    paste(
+      "The notification queue overflowed; the viewer session was ended",
+      "and all views were closed."
     ),
-    class = c("jdv_notification_overflow", "error", "condition")
+    extra = "jdv_notification_overflow"
   ))
 }
 
@@ -179,10 +271,12 @@
 
 .jdv_assert_not_embedded <- function() {
   if (isTRUE(.jdv_state$embedded) && is.null(.jdv_state$transport)) {
-    stop(
-      "An embedded notification session is active; ",
-      "call jdv_disconnect() before opening a viewer connection.",
-      call. = FALSE
+    jdv_abort(
+      "in_use",
+      paste0(
+        "An embedded notification session is active; ",
+        "call jdv_disconnect() before opening a viewer connection."
+      )
     )
   }
   invisible(NULL)
@@ -734,7 +828,8 @@ jdv_json_object <- function(x = list()) {
 #'   call fails. Tracking needs R 4.6.0 or later; older versions fail with the
 #'   `unsupported` error code. The environment is referenced weakly. Sequential
 #'   sources cannot be tracked. See the Details of [jdv_view()] for what is
-#'   detected.
+#'   detected. [jdv_binding()] finds such a binding from a variable name without
+#'   evaluating it.
 #' @details
 #' Sequential sources are exported through the optional nanoarrow package and
 #' moved into the viewer without fetching a record batch. Their total row count
@@ -1583,8 +1678,25 @@ jdv_register <- function(
 #' an embedding host takes them with [jdv_notifications()] and delivers them
 #' before the response.
 #'
+#' @section Driving requests from a script:
+#' The event gate dispatches viewer requests only at top level, when
+#' `sys.nframe() == 0`; see [jdv_view()]. A script run with `Rscript` that waits
+#' in a loop, for example with [base::Sys.sleep()], never returns to top level
+#' while the loop runs, so no request is processed. Poll explicitly with
+#' `jdv_rpc(NULL)` inside the loop instead.
+#'
 #' @param request One JSON request string, or `NULL` to poll the active viewer.
 #' @return A JSON response string or NULL for a notification.
+#' @examples
+#' \dontrun{
+#' # In a script: keep answering the viewer for 60 seconds.
+#' jdv_view(mtcars)
+#' deadline <- Sys.time() + 60
+#' while (Sys.time() < deadline) {
+#' jdv_rpc(NULL)
+#' Sys.sleep(0.1)
+#' }
+#' }
 #' @export
 jdv_rpc <- function(request = NULL) {
   .jdv_rpc_internal(request, allow_binary = FALSE)
@@ -1594,7 +1706,7 @@ jdv_rpc <- function(request = NULL) {
   .jdv_assert_active()
   if (is.null(request)) {
     if (.jdv_state$rpc_depth > 0L) {
-      stop("RPC re-entry is not supported.", call. = FALSE)
+      jdv_abort("in_use", "RPC re-entry is not supported.")
     }
     .jdv_transport_housekeeping()
     .jdv_assert_active()
@@ -1717,6 +1829,9 @@ jdv_rpc <- function(request = NULL) {
   response <- if (inherits(result, "error")) {
     if (!inherits(result, "jdv_query_error")) {
       code <- if (!is.null(result$code)) result$code else "r_error"
+      if (inherits(result, "jdv_error") && !code %in% .jdv_protocol_codes) {
+        code <- "r_error"
+      }
       result <- structure(
         list(message = conditionMessage(result), call = NULL, code = code),
         class = c("jdv_rpc_error", "error", "condition")

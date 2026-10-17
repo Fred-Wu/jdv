@@ -252,12 +252,12 @@ string array that follows \code{\link[base:class]{base::class()}} semantics for 
 \verb{\{"name": "df", "state": "active"\}}: \code{name} is the variable name and \code{state}
 is \code{"active"} (the view follows the variable), \code{"paused"} (the host stopped
 following with \code{view/track}; the binding is kept), or \code{"lost"} (following
-ended; the object also has a \code{reason} token and an optional \code{message}). A \code{view/open} from a
-registration carries \code{"active"}. A view that does not follow a variable
-(created from an expression, a child view, a sequential view, or registered
-without tracking) has no \code{tracking} field and \code{capabilities.track: false}.
-The state changes afterwards are announced by \code{view/tracking}, and the host
-changes them with \code{view/track}.\tabular{ll}{
+ended; the object also has a \code{reason} token and an optional \code{message}). A
+\code{view/open} from a registration carries \code{"active"}. A view that does not
+follow a variable (created from an expression, a child view, a sequential
+view, or registered without tracking) has no \code{tracking} field and
+\code{capabilities.track: false}. The state changes afterwards are announced by
+\code{view/tracking}, and the host changes them with \code{view/track}.\tabular{ll}{
    \code{tracking.reason} \tab Meaning \cr
    \code{"removed"} \tab The variable was removed. \cr
    \code{"collected"} \tab The environment of the variable was garbage collected. \cr

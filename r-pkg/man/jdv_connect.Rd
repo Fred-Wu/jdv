@@ -62,4 +62,8 @@ notifications. Ownership never moves implicitly: while an embedded session is
 active, \code{\link[=jdv_connect]{jdv_connect()}} and \code{\link[=jdv_view]{jdv_view()}} fail until \code{\link[=jdv_disconnect]{jdv_disconnect()}} is
 called. \code{\link[=jdv_connection]{jdv_connection()}} has no side effects: it neither connects nor
 polls.
+
+Errors raised on purpose, such as an unreachable address or an address that
+conflicts with the current connection, carry condition classes that name the
+reason; see \link{jdv_errors}.
 }

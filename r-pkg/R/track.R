@@ -22,10 +22,111 @@
   NULL
 }
 
+# Why a name cannot be tracked on this R, or NULL.
+.jdv_track_version_reason <- "tracking requires R 4.6.0 or later"
+
+# The shared lookup of jdv_view() and jdv_binding(): where the symbol `name`
+# would be tracked from `env` outward, found without evaluating anything.
+# Returns list(name, env) for the environment that holds the binding, or the
+# reason as a string when there is nothing to track.
+.jdv_binding_lookup <- function(name, env) {
+  if (!.jdv_track_supported()) {
+    return(.jdv_track_version_reason)
+  }
+  owner <- .jdv_binding_owner(name, env)
+  if (is.null(owner)) {
+    return("no variable with that name was found")
+  }
+  list(name = name, env = owner)
+}
+
+#' Find the binding behind a variable name
+#'
+#' [jdv_binding()] looks up a variable name without evaluating anything and
+#' returns the value for the `binding` argument of [jdv_register()]. It is meant
+#' for code that shows an object on behalf of a caller, such as a replacement
+#' for `View()`, so that the view follows the caller's variable as [jdv_view()]
+#' does. See the Details of [jdv_view()] for what tracking detects.
+#'
+#' @param name The name to look up: one string or a symbol, for example
+#'   `substitute(x)`. An expression that is not a name, such as a call or a
+#'   constant, cannot be tracked and gives `NULL`.
+#' @param env The environment to start the search from. The search continues
+#'   outward through its parents, and the first environment that has a binding
+#'   for `name` is used, as [jdv_view()] does.
+#' @return
+#' A list `list(name = , env = )` that can be passed to the `binding` argument
+#' of [jdv_register()] as it is, where `env` is the environment in which the
+#' binding was found. It is `NULL`, without a warning, when the name cannot be
+#' tracked: the expression is not a name, no environment from `env` outward has
+#' the binding, the binding is a promise that has not been forced, an active
+#' binding, or an empty argument, or R is older than 4.6.0.
+#' @details
+#' Nothing is evaluated: a promise is not forced and an active binding is not
+#' called. To track an argument of the calling function, force it first, for
+#' example by evaluating it before the call, or [jdv_binding()] returns `NULL`
+#' for it.
+#'
+#' A non-`NULL` result means the binding can be read without evaluation.
+#' [jdv_register()] additionally requires that the binding holds exactly the
+#' object registered and that the object is not a sequential source; it fails
+#' otherwise, so pass the binding only together with the object the variable
+#' holds.
+#'
+#' A name that is not a single non-empty string or a symbol, or an `env` that is
+#' not an environment, is an error with class `jdv_error_invalid_argument`; see
+#' [jdv_errors].
+#' @examples
+#' df <- data.frame(a = 1:3)
+#' binding <- jdv_binding("df")
+#' identical(binding$env, globalenv())
+#'
+#' # A viewer hook that follows the variable its caller passed.
+#' view <- function(x) {
+#'   jdv_register(
+#'     x,
+#'     title = deparse1(substitute(x)),
+#'     binding = jdv_binding(substitute(x), parent.frame())
+#'   )
+#' }
+#' view(df)
+#' jdv_disconnect()
+#' @export
+jdv_binding <- function(name, env = parent.frame()) {
+  .jdv_assert_active()
+  if (!is.environment(env)) {
+    jdv_abort("invalid_argument", "'env' must be an environment.")
+  }
+  if (is.symbol(name)) {
+    name <- as.character(name)
+  } else if (is.character(name)) {
+    if (length(name) != 1L || is.na(name) || !nzchar(name)) {
+      jdv_abort(
+        "invalid_argument",
+        "'name' must be one non-empty string or a symbol."
+      )
+    }
+  } else {
+    return(NULL)
+  }
+  found <- .jdv_binding_lookup(name, env)
+  if (is.character(found)) {
+    return(NULL)
+  }
+  ref <- .Call(C_jdv_weakref_make, found$env)
+  if (!.jdv_binding_readable(.jdv_binding_read(ref, name))) {
+    return(NULL)
+  }
+  found
+}
+
 # Read the binding behind a weak environment reference. `status` is one of
 # value, forced, delayed, active, missing, unbound, gone (environment
 # collected), or opaque. Only value and forced carry an object.
 .jdv_binding_read <- function(ref, name) .Call(C_jdv_binding_read, ref, name)
+
+# Whether a binding read carries an object, so no evaluation is needed.
+.jdv_binding_readable <- function(read) read$status %in% c("value", "forced")
 
 # Validate the explicit `binding` argument of jdv_register().
 .jdv_binding_spec <- function(binding) {
@@ -35,8 +136,8 @@
       !identical(sort(names(binding) %||% character()), c("env", "name")) ||
       anyDuplicated(names(binding))
   ) {
-    query_error(
-      "invalid_request",
+    jdv_abort(
+      "invalid_argument",
       "'binding' must be NULL or list(name = <string>, env = <environment>)."
     )
   }
@@ -44,13 +145,13 @@
   if (
     !is.character(name) || length(name) != 1L || is.na(name) || !nzchar(name)
   ) {
-    query_error(
-      "invalid_request",
+    jdv_abort(
+      "invalid_argument",
       "'binding$name' must be one non-empty string."
     )
   }
   if (!is.environment(binding$env)) {
-    query_error("invalid_request", "'binding$env' must be an environment.")
+    jdv_abort("invalid_argument", "'binding$env' must be an environment.")
   }
   list(name = name, env = binding$env)
 }
@@ -67,7 +168,7 @@
   spec <- .jdv_binding_spec(binding)
   ref <- .Call(C_jdv_weakref_make, spec$env)
   read <- .jdv_binding_read(ref, spec$name)
-  if (!read$status %in% c("value", "forced")) {
+  if (!.jdv_binding_readable(read)) {
     query_error(
       "unavailable",
       paste0(
@@ -173,7 +274,7 @@
 .jdv_track_prepare <- function(env, name, value) {
   ref <- .Call(C_jdv_weakref_make, env)
   read <- .jdv_binding_read(ref, name)
-  if (!read$status %in% c("value", "forced")) {
+  if (!.jdv_binding_readable(read)) {
     return(paste0(
       "its binding cannot be read without evaluating it (",
       read$status,

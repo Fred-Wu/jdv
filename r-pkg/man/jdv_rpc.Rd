@@ -27,3 +27,23 @@ embedding API and remains independent of the transport. Notifications such as
 an embedding host takes them with \code{\link[=jdv_notifications]{jdv_notifications()}} and delivers them
 before the response.
 }
+\section{Driving requests from a script}{
+
+The event gate dispatches viewer requests only at top level, when
+\code{sys.nframe() == 0}; see \code{\link[=jdv_view]{jdv_view()}}. A script run with \code{Rscript} that waits
+in a loop, for example with \code{\link[base:Sys.sleep]{base::Sys.sleep()}}, never returns to top level
+while the loop runs, so no request is processed. Poll explicitly with
+\code{jdv_rpc(NULL)} inside the loop instead.
+}
+
+\examples{
+\dontrun{
+# In a script: keep answering the viewer for 60 seconds.
+jdv_view(mtcars)
+deadline <- Sys.time() + 60
+while (Sys.time() < deadline) {
+jdv_rpc(NULL)
+Sys.sleep(0.1)
+}
+}
+}
