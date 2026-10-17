@@ -784,7 +784,14 @@ Deno.test({
           "object/children",
           { path: [], offset: 0, limit: 10 },
         );
-        assertEquals(responseErrorCode(missing), "session_not_found");
+        // The implicit connection ends after its last view closes, but the
+        // hub may still see the session until R's EOF is processed.
+        const missingCode = responseErrorCode(missing);
+        assert(
+          missingCode === "session_not_found" ||
+            missingCode === "view_not_found",
+          `Unexpected error after closing the root: ${missingCode}`,
+        );
 
         {
           const ownedBrowser = await launchOwnedBrowser({
