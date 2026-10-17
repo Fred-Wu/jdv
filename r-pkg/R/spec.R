@@ -223,8 +223,11 @@
 #' `children: true`, and `refresh: true`. Tree descriptors omit grid-only fields
 #' (`mode`, `nrow`, `ncol`, `row_names`, `columns`, and `data`). A tree
 #' descriptor includes an empty `path` at its root. A child descriptor may
-#' include `parent`, the parent view id. `title` and `class` are optional; when
-#' present, `class` is an array of strings.
+#' include `parent`, the parent view id. `title` is optional. A tree descriptor
+#' also has `class`, a string array that follows `class()` semantics for the
+#' root object, and `type`, the string `typeof()` returns for it (for example
+#' `"list"`, `"double"`, `"environment"`, or `"S4"`). A grid descriptor omits
+#' both.
 #'
 #' | Descriptor field                                                   | Grid                                     | Tree                         |
 #' | ------------------------------------------------------------------ | ---------------------------------------- | ---------------------------- |
@@ -233,7 +236,7 @@
 #' | `mode`, `collation`, `nrow`, `ncol`, `row_names`, `columns`        | Required                                 | Omitted                      |
 #' | `data`                                                             | Required for Snapshot; omitted for Paged | Omitted                      |
 #' | `path`                                                             | Omitted                                  | Required; empty for the root |
-#' | `class`                                                            | Omitted                                  | Optional string array        |
+#' | `class`, `type`                                                    | Omitted                                  | Required                     |
 #' | `parent`                                                           | Optional on child views                  | Optional on child views      |
 #'
 #' Grid-level flags declare the operations available in protocol v1; each
@@ -259,6 +262,7 @@
 #'     "access": "random",
 #'     "encoding": "r-json",
 #'     "class": ["list"],
+#'     "type": "list",
 #'     "capabilities": {
 #'       "seek": true,
 #'       "sort": false,
@@ -695,11 +699,13 @@
 #' This method is available only on tree views. A grid with `children: true`
 #' uses `object/open` to capture a cell; it does not expose `object/children`.
 #'
-#' Parameters are `view`, `generation`, `path`, and optionally `offset` and
-#' `limit`. The path is a full typed path from the root value held by the named
-#' tree view; an empty path selects that root. `offset` is zero-based and
-#' defaults to 0; `limit` defaults to 200 and must be between 1 and 500. A path
-#' contains at most 32 steps. Each step is one of:
+#' Parameters are `view`, `generation`, `path`, and optionally `offset`,
+#' `limit`, and `attributes`. The path is a full typed path from the root value
+#' held by the named tree view; an empty path selects that root. `offset` is
+#' zero-based and defaults to 0; `limit` defaults to 200 and must be between 1
+#' and 500. `attributes` is a Boolean that defaults to `true`; any other value,
+#' including `null`, returns `invalid_request`. A path contains at most 32
+#' steps. Each step is one of:
 #'
 #' | Step `type` | Fields  | Meaning                                                |
 #' | ----------- | ------- | ------------------------------------------------------ |
@@ -710,9 +716,11 @@
 #'
 #' The result contains the same `view`, `generation`, full `path`, and `offset`,
 #' plus `children` and `total_children`. Each child has its one-based `index`,
-#' bounded `label`, string-array `class`, bounded `summary`, `has_children`,
-#' `viewable`, and its full typed `path` when the child is addressable. A child
-#' whose binding, slot, or attribute name exceeds 1,000 characters is not
+#' bounded `label`, string-array `class`, `type`, bounded `summary`,
+#' `has_children`, `viewable`, and its full typed `path` when the child is
+#' addressable. `class` and `type` have the same meaning as in a tree
+#' descriptor; a child that is unavailable has an empty `class` and no `type`. A
+#' child whose binding, slot, or attribute name exceeds 1,000 characters is not
 #' addressable: it has `viewable: false`, `has_children: false`,
 #' `unavailable: "path_limit"`, and may omit `path`. Other children include the
 #' full typed path. When a value cannot safely be read, the child carries a
@@ -721,6 +729,27 @@
 #' children and at most three levels deep. Environment names are enumerated
 #' locally and paged; active and delayed bindings are reported as unavailable
 #' without reading their values.
+#'
+#' Children are the elements of the object followed by its attributes. Within an
+#' atomic vector (logical, integer, double, complex, character, or raw), every
+#' element is a leaf with `has_children: false`. Its `summary` has the form
+#' `<class> (1): <value>`, for example `double (1): 1.5`, and always includes
+#' the value regardless of depth. A page of elements is read and formatted as
+#' one range, so only the requested range of an ALTREP vector is read. A missing
+#' value is shown as `NA`, and strings and formatted values are cut at 160
+#' characters. A factor element, and every value in a factor's summary, is shown
+#' as its level name; a missing code is `NA`, and a code outside the levels is
+#' shown as `<invalid code N>`. An atomic vector has children only if it has
+#' more than one element, or if attributes are listed and it has any, so a
+#' length-one vector without attributes is a leaf.
+#'
+#' With `attributes: false`, the attribute children (`attr` steps) are left out:
+#' of every vector and other object, including a vector's `names`, which remains
+#' visible as the label of each element. `total_children`, paging, and
+#' `has_children` of the listed children follow the setting, and attributes that
+#' are present are neither counted nor paged. Environment bindings and S4 slots
+#' are the contents of those objects, not attribute children, so the setting
+#' does not hide them.
 #'
 #' Tree navigation never evaluates a promise, active binding, classed `[[`, `$`,
 #' or `names` method. Paths are resolved again for each `object/children`
@@ -788,11 +817,13 @@
 #'
 #' The browser uses the same child-view navigation for tree and grid parents.
 #' Opening controls appear only in drillable cells and use the displayed row's
-#' original `row_index`. View breadcrumbs restore the parent's sort, filter,
-#' page, horizontal scroll, or tree path and child-page offset. A pending child
-#' open is tied to the active parent view and generation, separately from page
-#' query epochs: Snapshot sort, filter, and page operations remain local and do
-#' not cancel the captured cell request. Returning to the R prompt lets that
+#' original `row_index`. The tree viewer shows the root `class`, and a checkbox,
+#' checked by default, sets the `attributes` parameter of its `object/children`
+#' requests. View breadcrumbs restore the parent's sort, filter, page,
+#' horizontal scroll, or tree path and child-page offset. A pending child open
+#' is tied to the active parent view and generation, separately from page query
+#' epochs: Snapshot sort, filter, and page operations remain local and do not
+#' cancel the captured cell request. Returning to the R prompt lets that
 #' original request complete without another browser request. Selecting a
 #' different view, replacing its generation, or closing it cancels its pending
 #' browser requests. Display text and navigation labels are inserted as DOM

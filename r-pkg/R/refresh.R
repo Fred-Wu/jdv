@@ -134,7 +134,7 @@
     )
   }
   if (identical(source$kind, "tree")) {
-    descriptor <- .jdv_tree_descriptor(id, generation, title, parent)
+    descriptor <- .jdv_tree_descriptor(id, generation, title, parent, value)
     open <- .jdv_json_encode(descriptor, .jdv_max_message_bytes())
     replacement <- .jdv_tree_new_entry(value, id, generation, title, parent)
   } else {

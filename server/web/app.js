@@ -58,6 +58,8 @@ const treeReturn = $("#tree-return");
 const treeParentReturn = $("#tree-parent-return");
 const gridRefresh = $("#refresh-view");
 const treeRefresh = $("#tree-refresh");
+const treeAttributes = $("#tree-attributes");
+const treeAttributesLabel = $("#tree-attributes-label");
 const viewBreadcrumb = $("#view-breadcrumb");
 const childOpenStatus = $("#child-open-status");
 const sequentialControls = $("#sequential-controls");
@@ -252,6 +254,9 @@ treeRefresh.addEventListener("click", () => {
   if (selected?.kind === "tree") {
     refreshView(selected.session, selected.descriptor, treeRefresh);
   }
+});
+treeAttributes.addEventListener("change", () => {
+  if (selected?.kind === "tree") loadTreeChildren(selected, 0);
 });
 treeReturn.addEventListener("click", returnToTree);
 treeParentReturn.addEventListener("click", returnToTree);
@@ -526,9 +531,7 @@ function renderLists() {
     const detail = document.createElement("p");
     detail.className = "muted";
     detail.textContent = descriptor.kind === "tree"
-      ? `Object tree · ${
-        descriptor.class?.join(", ") ?? "unknown class"
-      } · ${session}`
+      ? `Object tree · ${treeDescriptorText(descriptor)} · ${session}`
       : `${countLabel(descriptor.nrow, "row")} · ${
         countLabel(descriptor.ncol, "column")
       } · ${descriptor.mode ?? "unknown"} · ${session}`;
@@ -696,6 +699,15 @@ function closeSelectedTable() {
   childOpenStatus.hidden = true;
 }
 
+function treeDescriptorText(descriptor) {
+  const classes = Array.isArray(descriptor.class)
+    ? descriptor.class.filter((value) => typeof value === "string").join(", ")
+    : "";
+  const type = typeof descriptor.type === "string" ? descriptor.type : "";
+  if (classes && type) return `${classes} (${type})`;
+  return classes || type || "unknown class";
+}
+
 function openTree(session, descriptor, returnTree = null) {
   closeSelectedTable();
   selected = {
@@ -718,8 +730,7 @@ function openTree(session, descriptor, returnTree = null) {
   treeViewer.hidden = false;
   treeParentReturn.hidden = returnTree === null;
   treeTitleElement.textContent = descriptor.title ?? "Untitled object";
-  treeMetaElement.textContent =
-    (descriptor.class?.join(", ") ?? "unknown class") +
+  treeMetaElement.textContent = treeDescriptorText(descriptor) +
     " · " + session;
   treeChildList.replaceChildren();
   renderTreeBreadcrumbs(selected);
@@ -756,6 +767,7 @@ function loadTreeChildren(state, offset) {
       path: state.path,
       offset: state.offset,
       limit: TREE_PAGE_SIZE,
+      attributes: treeAttributes.checked,
     },
     60_000,
   );
@@ -820,6 +832,7 @@ function renderTreeBreadcrumbs(state) {
 }
 
 function renderTreePage(state) {
+  treeAttributesLabel.hidden = state.kind !== "tree";
   treeChildList.replaceChildren();
   for (const [position, child] of state.children.entries()) {
     if (!child || typeof child !== "object") continue;
@@ -1121,8 +1134,7 @@ function returnToView(state) {
     treeViewer.hidden = false;
     treeParentReturn.hidden = state.returnTree === null;
     treeTitleElement.textContent = state.descriptor.title ?? "Untitled object";
-    treeMetaElement.textContent =
-      (state.descriptor.class?.join(", ") ?? "unknown class") +
+    treeMetaElement.textContent = treeDescriptorText(state.descriptor) +
       " · " + state.session;
     renderTreeBreadcrumbs(state);
     loadTreeChildren(state, state.offset);

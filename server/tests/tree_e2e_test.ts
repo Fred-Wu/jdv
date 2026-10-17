@@ -853,6 +853,30 @@ Deno.test({
             );
             assertEquals(await count(page, "#tree-child-list img"), 0);
             assert(
+              (await text(page, "#tree-meta"))?.includes("list (list)"),
+              "The tree meta line must show the root class and type.",
+            );
+            await waitFor(
+              page,
+              () =>
+                document.querySelector("#tree-page-label")?.textContent
+                  ?.includes("of 16 children") === true,
+            );
+            await click(page, "#tree-attributes");
+            await waitFor(
+              page,
+              () =>
+                document.querySelector("#tree-page-label")?.textContent
+                  ?.includes("of 14 children") === true,
+            );
+            await click(page, "#tree-attributes");
+            await waitFor(
+              page,
+              () =>
+                document.querySelector("#tree-page-label")?.textContent
+                  ?.includes("of 16 children") === true,
+            );
+            assert(
               (await text(page, '#tree-child-list li[data-child-index="11"]'))
                 ?.includes("<img src=x onerror=alert(1)>"),
               "HTML-like child label must remain visible as text.",

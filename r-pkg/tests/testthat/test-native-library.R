@@ -27,7 +27,15 @@ test_that("the native library registers only its private routines", {
       "C_jdv_json_encode",
       paste0(
         "C_jdv_tree_",
-        c("info", "child", "same", "scalar_text", "names", "vector_names")
+        c(
+          "info",
+          "child",
+          "same",
+          "scalar_text",
+          "names",
+          "vector_names",
+          "vector_page"
+        )
       ),
       "C_jdv_weakref_make",
       "C_jdv_weakref_key",

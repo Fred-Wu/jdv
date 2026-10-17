@@ -123,6 +123,7 @@ SEXP C_jdv_tree_same(SEXP x, SEXP y);
 SEXP C_jdv_tree_scalar_text(SEXP x);
 SEXP C_jdv_tree_names(SEXP x);
 SEXP C_jdv_tree_vector_names(SEXP x, SEXP start, SEXP count);
+SEXP C_jdv_tree_vector_page(SEXP x, SEXP start, SEXP count);
 SEXP C_jdv_weakref_make(SEXP env);
 SEXP C_jdv_weakref_key(SEXP ref);
 SEXP C_jdv_binding_read(SEXP ref, SEXP name);
@@ -153,6 +154,7 @@ JDV_WRAP_2(jdv_entry_tree_same, C_jdv_tree_same)
 JDV_WRAP_1(jdv_entry_tree_scalar_text, C_jdv_tree_scalar_text)
 JDV_WRAP_1(jdv_entry_tree_names, C_jdv_tree_names)
 JDV_WRAP_3(jdv_entry_tree_vector_names, C_jdv_tree_vector_names)
+JDV_WRAP_3(jdv_entry_tree_vector_page, C_jdv_tree_vector_page)
 JDV_WRAP_1(jdv_entry_weakref_make, C_jdv_weakref_make)
 JDV_WRAP_1(jdv_entry_weakref_key, C_jdv_weakref_key)
 JDV_WRAP_2(jdv_entry_binding_read, C_jdv_binding_read)
@@ -201,6 +203,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_jdv_tree_scalar_text", (DL_FUNC)&jdv_entry_tree_scalar_text, 1},
     {"C_jdv_tree_names", (DL_FUNC)&jdv_entry_tree_names, 1},
     {"C_jdv_tree_vector_names", (DL_FUNC)&jdv_entry_tree_vector_names, 3},
+    {"C_jdv_tree_vector_page", (DL_FUNC)&jdv_entry_tree_vector_page, 3},
     {"C_jdv_weakref_make", (DL_FUNC)&jdv_entry_weakref_make, 1},
     {"C_jdv_weakref_key", (DL_FUNC)&jdv_entry_weakref_key, 1},
     {"C_jdv_binding_read", (DL_FUNC)&jdv_entry_binding_read, 2},

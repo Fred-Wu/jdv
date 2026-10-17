@@ -226,15 +226,18 @@ that \code{view/refresh} is accepted. Tree descriptors use \code{kind: "tree"},
 \code{children: true}, and \code{refresh: true}. Tree descriptors omit grid-only fields
 (\code{mode}, \code{nrow}, \code{ncol}, \code{row_names}, \code{columns}, and \code{data}). A tree
 descriptor includes an empty \code{path} at its root. A child descriptor may
-include \code{parent}, the parent view id. \code{title} and \code{class} are optional; when
-present, \code{class} is an array of strings.\tabular{lll}{
+include \code{parent}, the parent view id. \code{title} is optional. A tree descriptor
+also has \code{class}, a string array that follows \code{class()} semantics for the
+root object, and \code{type}, the string \code{typeof()} returns for it (for example
+\code{"list"}, \code{"double"}, \code{"environment"}, or \code{"S4"}). A grid descriptor omits
+both.\tabular{lll}{
    Descriptor field \tab Grid \tab Tree \cr
    \code{view}, \code{generation}, \code{kind}, \code{access}, \code{encoding}, \code{capabilities} \tab Required \tab Required \cr
    \code{title} \tab Optional \tab Optional \cr
    \code{mode}, \code{collation}, \code{nrow}, \code{ncol}, \code{row_names}, \code{columns} \tab Required \tab Omitted \cr
    \code{data} \tab Required for Snapshot; omitted for Paged \tab Omitted \cr
    \code{path} \tab Omitted \tab Required; empty for the root \cr
-   \code{class} \tab Omitted \tab Optional string array \cr
+   \code{class}, \code{type} \tab Omitted \tab Required \cr
    \code{parent} \tab Optional on child views \tab Optional on child views \cr
 }
 
@@ -261,6 +264,7 @@ A tree descriptor has no grid fields:
     "access": "random",
     "encoding": "r-json",
     "class": ["list"],
+    "type": "list",
     "capabilities": \{
       "seek": true,
       "sort": false,
@@ -691,11 +695,13 @@ closed view produces \code{view_not_found}.
 This method is available only on tree views. A grid with \code{children: true}
 uses \code{object/open} to capture a cell; it does not expose \code{object/children}.
 
-Parameters are \code{view}, \code{generation}, \code{path}, and optionally \code{offset} and
-\code{limit}. The path is a full typed path from the root value held by the named
-tree view; an empty path selects that root. \code{offset} is zero-based and
-defaults to 0; \code{limit} defaults to 200 and must be between 1 and 500. A path
-contains at most 32 steps. Each step is one of:\tabular{lll}{
+Parameters are \code{view}, \code{generation}, \code{path}, and optionally \code{offset},
+\code{limit}, and \code{attributes}. The path is a full typed path from the root value
+held by the named tree view; an empty path selects that root. \code{offset} is
+zero-based and defaults to 0; \code{limit} defaults to 200 and must be between 1
+and 500. \code{attributes} is a Boolean that defaults to \code{true}; any other value,
+including \code{null}, returns \code{invalid_request}. A path contains at most 32
+steps. Each step is one of:\tabular{lll}{
    Step \code{type} \tab Fields \tab Meaning \cr
    \code{index} \tab \code{index} \tab One-based position in an unnamed or positional object. \cr
    \code{binding} \tab \code{name} \tab Environment binding name. \cr
@@ -706,9 +712,11 @@ contains at most 32 steps. Each step is one of:\tabular{lll}{
 
 The result contains the same \code{view}, \code{generation}, full \code{path}, and \code{offset},
 plus \code{children} and \code{total_children}. Each child has its one-based \code{index},
-bounded \code{label}, string-array \code{class}, bounded \code{summary}, \code{has_children},
-\code{viewable}, and its full typed \code{path} when the child is addressable. A child
-whose binding, slot, or attribute name exceeds 1,000 characters is not
+bounded \code{label}, string-array \code{class}, \code{type}, bounded \code{summary},
+\code{has_children}, \code{viewable}, and its full typed \code{path} when the child is
+addressable. \code{class} and \code{type} have the same meaning as in a tree
+descriptor; a child that is unavailable has an empty \code{class} and no \code{type}. A
+child whose binding, slot, or attribute name exceeds 1,000 characters is not
 addressable: it has \code{viewable: false}, \code{has_children: false},
 \code{unavailable: "path_limit"}, and may omit \code{path}. Other children include the
 full typed path. When a value cannot safely be read, the child carries a
@@ -717,6 +725,27 @@ are at most 1,000 characters. Summaries inspect at most five values or
 children and at most three levels deep. Environment names are enumerated
 locally and paged; active and delayed bindings are reported as unavailable
 without reading their values.
+
+Children are the elements of the object followed by its attributes. Within an
+atomic vector (logical, integer, double, complex, character, or raw), every
+element is a leaf with \code{has_children: false}. Its \code{summary} has the form
+\verb{<class> (1): <value>}, for example \code{double (1): 1.5}, and always includes
+the value regardless of depth. A page of elements is read and formatted as
+one range, so only the requested range of an ALTREP vector is read. A missing
+value is shown as \code{NA}, and strings and formatted values are cut at 160
+characters. A factor element, and every value in a factor's summary, is shown
+as its level name; a missing code is \code{NA}, and a code outside the levels is
+shown as \verb{<invalid code N>}. An atomic vector has children only if it has
+more than one element, or if attributes are listed and it has any, so a
+length-one vector without attributes is a leaf.
+
+With \code{attributes: false}, the attribute children (\code{attr} steps) are left out:
+of every vector and other object, including a vector's \code{names}, which remains
+visible as the label of each element. \code{total_children}, paging, and
+\code{has_children} of the listed children follow the setting, and attributes that
+are present are neither counted nor paged. Environment bindings and S4 slots
+are the contents of those objects, not attribute children, so the setting
+does not hide them.
 
 Tree navigation never evaluates a promise, active binding, classed \code{[[}, \code{$},
 or \code{names} method. Paths are resolved again for each \code{object/children}
@@ -783,11 +812,13 @@ its descendants; each cascaded child emits \code{view/closed} with
 
 The browser uses the same child-view navigation for tree and grid parents.
 Opening controls appear only in drillable cells and use the displayed row's
-original \code{row_index}. View breadcrumbs restore the parent's sort, filter,
-page, horizontal scroll, or tree path and child-page offset. A pending child
-open is tied to the active parent view and generation, separately from page
-query epochs: Snapshot sort, filter, and page operations remain local and do
-not cancel the captured cell request. Returning to the R prompt lets that
+original \code{row_index}. The tree viewer shows the root \code{class}, and a checkbox,
+checked by default, sets the \code{attributes} parameter of its \code{object/children}
+requests. View breadcrumbs restore the parent's sort, filter, page,
+horizontal scroll, or tree path and child-page offset. A pending child open
+is tied to the active parent view and generation, separately from page query
+epochs: Snapshot sort, filter, and page operations remain local and do not
+cancel the captured cell request. Returning to the R prompt lets that
 original request complete without another browser request. Selecting a
 different view, replacing its generation, or closing it cancels its pending
 browser requests. Display text and navigation labels are inserted as DOM
@@ -861,9 +892,9 @@ rebuild shows the same data unless the captured object is a reference object
 that changed in place. A tracked view (see Binding tracking) is instead
 rebuilt from the current value of its variable, read without evaluation; it
 fails with \code{unavailable} when tracking has ended (the reason is in the
-message) or the variable is a promise or active binding. The rebuild
-happens even if nothing changed and always advances the generation by one.
-The registration \code{mode} and \code{collation} are reused as they were requested: an
+message) or the variable is a promise or active binding. The rebuild happens
+even if nothing changed and always advances the generation by one. The
+registration \code{mode} and \code{collation} are reused as they were requested: an
 \code{"auto"} mode is decided again (a grid may move between Snapshot and Paged,
 and the effective mode is never frozen), an explicit mode is kept, and an
 omitted collation reads \code{jdv.collation} again. A refresh of a titled view
@@ -927,12 +958,13 @@ right after the check.
 Only plain and already forced bindings are read (R 4.6.0 or later). Promise,
 active, and missing bindings are skipped and looked at again later. If the
 variable is removed or its environment is garbage collected, tracking ends,
-the last view stays, and a later \code{view/refresh} fails with \code{unavailable};
-a recreated variable is not picked up. Objects changed in place (environments,
+the last view stays, and a later \code{view/refresh} fails with \code{unavailable}; a
+recreated variable is not picked up. Objects changed in place (environments,
 reference objects, \code{data.table} updates by reference) keep their identity and
-are not detected; a manual \code{view/refresh} covers them. The environment is held
-weakly, but a displayed object that refers to it, such as a closure, keeps it
-alive. Views opened from another view and sequential views are not tracked.
+are not detected; a manual \code{view/refresh} covers them. The environment is
+held weakly, but a displayed object that refers to it, such as a closure,
+keeps it alive. Views opened from another view and sequential views are not
+tracked.
 
 \strong{Embedding hosts.} R runs task callbacks in registration order. A host
 whose own callback takes notifications before the callback of jdv would see
@@ -948,12 +980,12 @@ error), the previous generation stays and one notification is queued:
             "message": "..."\}\}
 }\if{html}{\out{</div>}}
 
-\code{generation} is the generation still displayed and \code{code} is one of the
-usual error codes. The same object is not tried again, and so not reported
-again, until the variable holds a different object or \code{view/refresh} is
-requested. A host that forwards the notification ignores one for a generation
-it no longer shows. A notification queue overflow ends the session as
-described under Notification delivery.
+\code{generation} is the generation still displayed and \code{code} is one of the usual
+error codes. The same object is not tried again, and so not reported again,
+until the variable holds a different object or \code{view/refresh} is requested. A
+host that forwards the notification ignores one for a generation it no longer
+shows. A notification queue overflow ends the session as described under
+Notification delivery.
 }
 
 \section{\code{view/close} and \code{view/closed}}{
@@ -985,11 +1017,10 @@ Replacing or evicting a parent has the same descendant-close effect.
 
 
 Every notification R produces for a session (\code{hello}, \code{view/open},
-\code{view/closed}, including evictions, cascaded child closes, the
-\code{view/open} of a child created by \code{object/open}, and \code{view/update_failed})
-goes through one first-in,
-first-out queue. A session has exactly one owner of that queue, reported by
-the \code{owner} field of \code{\link[=jdv_connection]{jdv_connection()}}:
+\code{view/closed}, including evictions, cascaded child closes, the \code{view/open} of
+a child created by \code{object/open}, and \code{view/update_failed}) goes through one
+first-in, first-out queue. A session has exactly one owner of that queue,
+reported by the \code{owner} field of \code{\link[=jdv_connection]{jdv_connection()}}:
 \itemize{
 \item \code{"transport"}: the built-in connection, whenever one is open. The
 transport sends the queue itself, before the response of the request being

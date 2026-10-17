@@ -1217,6 +1217,8 @@ jdv_register <- function(
     allowed <- c("view", "generation", "path", "offset", "limit")
     if (method == "object/open") {
       allowed <- c(allowed, "mode", "collation")
+    } else {
+      allowed <- c(allowed, "attributes")
     }
     .jdv_fields(params, allowed, c("view", "generation", "path"))
     if (
@@ -1227,6 +1229,24 @@ jdv_register <- function(
         "invalid_request",
         "object/children does not accept grid registration options."
       )
+    }
+    if (method == "object/open" && "attributes" %in% names(params)) {
+      query_error(
+        "invalid_request",
+        "object/open does not accept the attributes option."
+      )
+    }
+    show_attributes <- TRUE
+    if ("attributes" %in% names(params)) {
+      show_attributes <- params$attributes
+      if (
+        !is.logical(show_attributes) ||
+          is.object(show_attributes) ||
+          length(show_attributes) != 1L ||
+          is.na(show_attributes)
+      ) {
+        query_error("invalid_request", "attributes must be a boolean.")
+      }
     }
     child_mode <- "auto"
     if ("mode" %in% names(params)) {
@@ -1291,7 +1311,8 @@ jdv_register <- function(
         path,
         offset,
         limit,
-        c(ancestry, resolved$seen)
+        c(ancestry, resolved$seen),
+        show_attributes
       )
       return(list(
         view = entry$id,

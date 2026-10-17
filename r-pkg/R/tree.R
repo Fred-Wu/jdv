@@ -132,48 +132,28 @@
   .jdv_json_values(klass)
 }
 
-.jdv_tree_scalar_preview <- function(x) {
-  if (
-    !isTRUE(
-      .jdv_tree_info(x)$type %in%
-        c("logical", "integer", "double", "complex", "character", "raw")
-    )
-  ) {
-    return(NULL)
-  }
-  info <- .jdv_tree_info(x)
-  n <- as.integer(min(5, max(0, info$length)))
-  if (!n) {
-    return(character())
-  }
-  vapply(
-    seq_len(n),
-    function(i) {
-      scalar <- .Call(C_jdv_tree_child, x, "index", as.double(i), "")
-      if (!identical(scalar$status, "value")) {
-        return("<unavailable>")
-      }
-      text <- .Call(C_jdv_tree_scalar_text, scalar$value)
-      if (length(text) != 1L || is.na(text)) {
-        "NA"
-      } else {
-        enc2utf8(substr(text, 1L, 160L))
-      }
-    },
-    character(1L),
-    USE.NAMES = FALSE
+.jdv_tree_atomic_types <- c(
+  "logical",
+  "integer",
+  "double",
+  "complex",
+  "character",
+  "raw"
+)
+
+# The value of `typeof()` for the described object.
+.jdv_tree_typeof <- function(info) {
+  switch(
+    info$storage_type,
+    null = "NULL",
+    s4 = "S4",
+    dots = "...",
+    info$storage_type
   )
 }
 
-.jdv_tree_summary <- function(x, depth = 0L) {
-  info <- .jdv_tree_info(x)
-  type <- info$type
-  count <- if (identical(type, "environment")) {
-    length(base::ls(envir = x, all.names = TRUE))
-  } else {
-    max(0, info$length)
-  }
-  class_text <- if (length(info$class)) {
+.jdv_tree_class_text <- function(info) {
+  if (length(info$class)) {
     paste(
       vapply(
         info$class,
@@ -185,9 +165,64 @@
       collapse = "/"
     )
   } else {
-    type
+    info$type
   }
-  preview <- if (depth < 3L) .jdv_tree_scalar_preview(x) else NULL
+}
+
+# Factor levels are read as a stored attribute, never through `levels()`.
+.jdv_tree_levels <- function(x) {
+  found <- .Call(C_jdv_tree_child, x, "attr", 0, "levels")
+  if (identical(found$status, "value") && is.character(found$value)) {
+    found$value
+  } else {
+    character()
+  }
+}
+
+# Format `count` elements starting at the one-based position `first` in one
+# pass. Only the requested range is read from the vector.
+.jdv_tree_element_text <- function(x, info, first, count) {
+  values <- .Call(C_jdv_tree_vector_page, x, as.double(first), as.double(count))
+  if (identical(info$type, "integer") && "factor" %in% info$class) {
+    levels <- .jdv_tree_levels(x)
+    text <- rep.int("NA", length(values))
+    present <- !is.na(values)
+    valid <- present & values >= 1L & values <= length(levels)
+    text[valid] <- levels[values[valid]]
+    invalid <- present & !valid
+    text[invalid] <- paste0("<invalid code ", values[invalid], ">")
+  } else {
+    text <- as.character(values)
+  }
+  text[is.na(text)] <- "NA"
+  text <- enc2utf8(text)
+  text[!validUTF8(text)] <- "<invalid string>"
+  substr(text, 1L, 160L)
+}
+
+.jdv_tree_scalar_preview <- function(x, info = .jdv_tree_info(x)) {
+  if (!isTRUE(info$type %in% .jdv_tree_atomic_types)) {
+    return(NULL)
+  }
+  n <- as.integer(min(5, max(0, info$length)))
+  if (!n) {
+    return(character())
+  }
+  tryCatch(
+    .jdv_tree_element_text(x, info, 1L, n),
+    error = function(error) rep.int("<unavailable>", n)
+  )
+}
+
+.jdv_tree_summary <- function(x, depth = 0L, info = .jdv_tree_info(x)) {
+  type <- info$type
+  count <- if (identical(type, "environment")) {
+    length(base::ls(envir = x, all.names = TRUE))
+  } else {
+    max(0, info$length)
+  }
+  class_text <- .jdv_tree_class_text(info)
+  preview <- if (depth < 3L) .jdv_tree_scalar_preview(x, info) else NULL
   text <- paste0(class_text, " (", format(count, scientific = FALSE), ")")
   if (!is.null(preview) && length(preview)) {
     text <- paste0(text, ": ", paste(preview, collapse = ", "))
@@ -221,26 +256,22 @@
   .jdv_tree_names(x)
 }
 
-.jdv_tree_total <- function(x, type) {
+# Attribute children are listed after the elements. Environment bindings and
+# S4 slots are the content of those objects, so `attributes` does not hide them.
+.jdv_tree_total <- function(
+  x,
+  type,
+  attributes = TRUE,
+  info = .jdv_tree_info(x)
+) {
   if (identical(type, "environment")) {
     return(length(base::ls(envir = x, all.names = TRUE)))
   }
-  info <- .jdv_tree_info(x)
+  show_names <- attributes || identical(type, "s4")
   storage_type <- .jdv_tree_storage_type(info)
   if (
     storage_type %in%
-      c(
-        "list",
-        "expression",
-        "pairlist",
-        "dots",
-        "logical",
-        "integer",
-        "double",
-        "complex",
-        "character",
-        "raw"
-      )
+      c("list", "expression", "pairlist", "dots", .jdv_tree_atomic_types)
   ) {
     n <- info$length
     if (n < 0) {
@@ -249,9 +280,21 @@
         "Pairlist is cyclic or exceeds the safe traversal limit."
       )
     }
-    return(n + length(.jdv_tree_names(x)))
+    return(n + if (show_names) length(.jdv_tree_names(x)) else 0L)
   }
-  length(.jdv_tree_names(x))
+  if (show_names) length(.jdv_tree_names(x)) else 0L
+}
+
+# Elements of an atomic vector are leaves, and a single unattributed element
+# is fully described by its parent's summary.
+.jdv_tree_has_children <- function(x, info, attributes, depth) {
+  if (depth >= .jdv_tree_path_limit) {
+    return(FALSE)
+  }
+  if (info$type %in% .jdv_tree_atomic_types) {
+    return(info$length > 1 || (attributes && length(.jdv_tree_names(x)) > 0L))
+  }
+  .jdv_tree_total(x, info$type, attributes, info) > 0L
 }
 
 .jdv_tree_step_for <- function(x, type, label, index) {
@@ -264,11 +307,75 @@
   list(type = "attr", name = label)
 }
 
-.jdv_tree_list_children <- function(x, path, offset, limit, ancestry = list()) {
+# Cheap constructors for pages of trusted, internally built values.
+.jdv_tree_object <- function(x) {
+  class(x) <- "jdv_json_object"
+  x
+}
+
+.jdv_tree_array <- function(x) {
+  class(x) <- "jdv_json_array"
+  x
+}
+
+# Children for the elements of an atomic vector are leaves. The whole page is
+# read and formatted at once instead of resolving each element on its own.
+.jdv_tree_atomic_children <- function(x, info, path, indices, labels) {
+  texts <- tryCatch(
+    .jdv_tree_element_text(x, info, indices[[1L]], length(indices)),
+    error = function(error) NULL
+  )
+  # An element is a plain scalar: it keeps the class attribute but not dim.
+  class_json <- .jdv_tree_class(list(
+    class = info$class,
+    type = info$type,
+    is_matrix = FALSE
+  ))
+  type <- .jdv_tree_typeof(info)
+  class_text <- .jdv_tree_class_text(info)
+  prefix <- lapply(path, jdv_json_object)
+  lapply(seq_along(indices), function(k) {
+    i <- indices[[k]]
+    child <- list(
+      index = as.double(i),
+      label = enc2utf8(substr(labels[[k]], 1L, .jdv_tree_text_limit)),
+      class = class_json,
+      type = type,
+      summary = if (is.null(texts)) {
+        "unavailable"
+      } else {
+        enc2utf8(substr(
+          paste0(class_text, " (1): ", texts[[k]]),
+          1L,
+          .jdv_tree_text_limit
+        ))
+      },
+      has_children = FALSE,
+      viewable = !is.null(texts),
+      path = .jdv_tree_array(c(
+        prefix,
+        list(.jdv_tree_object(list(type = "index", index = i)))
+      ))
+    )
+    if (is.null(texts)) child$unavailable <- "unavailable"
+    child
+  })
+}
+
+.jdv_tree_list_children <- function(
+  x,
+  path,
+  offset,
+  limit,
+  ancestry = list(),
+  attributes = TRUE
+) {
   info <- .jdv_tree_info(x)
   storage_type <- .jdv_tree_storage_type(info)
+  vector_like <- storage_type %in%
+    c("list", "expression", "pairlist", "dots", .jdv_tree_atomic_types)
   base_length <- max(0, info$length)
-  total <- .jdv_tree_total(x, info$type)
+  total <- .jdv_tree_total(x, info$type, attributes, info)
   start <- min(offset, total)
   indices <- if (start >= total || limit == 0L) {
     integer()
@@ -278,64 +385,33 @@
   labels <- if (identical(info$type, "environment")) {
     names <- .jdv_tree_child_names(x, info$type)
     if (!length(indices)) character() else names[indices]
-  } else if (
-    storage_type %in%
-      c(
-        "list",
-        "expression",
-        "pairlist",
-        "dots",
-        "logical",
-        "integer",
-        "double",
-        "complex",
-        "character",
-        "raw"
-      )
-  ) {
-    attr_names <- .jdv_tree_names(x)
+  } else if (vector_like) {
+    element_idx <- indices[indices <= base_length]
+    out <- if (length(element_idx)) {
+      paste0("[", element_idx, "]")
+    } else {
+      character()
+    }
     vector_names <- tryCatch(
-      .jdv_tree_vector_names(x, indices[indices <= base_length]),
+      .jdv_tree_vector_names(x, element_idx),
       error = function(error) character()
     )
-    if (!length(indices)) character() else vapply(
-      indices,
-      function(i) {
-        if (i <= base_length) {
-          if (length(vector_names) == length(indices[indices <= base_length])) {
-            candidate <- vector_names[[
-              match(i, indices[indices <= base_length])
-            ]]
-            if (!is.na(candidate)) return(candidate)
-          }
-          paste0("[", i, "]")
-        } else {
-          attr_names[[i - base_length]]
-        }
-      },
-      character(1L),
-      USE.NAMES = FALSE
-    )
+    if (length(vector_names) == length(element_idx)) {
+      named <- !is.na(vector_names)
+      out[named] <- vector_names[named]
+    }
+    extra <- indices[indices > base_length]
+    if (length(extra)) {
+      out <- c(out, .jdv_tree_names(x)[extra - base_length])
+    }
+    out
   } else {
     names <- .jdv_tree_child_names(x, info$type)
     if (!length(indices)) character() else names[indices]
   }
-  children <- lapply(indices, function(i) {
+  build_child <- function(i) {
     label <- labels[[i - start]]
-    indexed <- storage_type %in%
-      c(
-        "list",
-        "expression",
-        "pairlist",
-        "dots",
-        "logical",
-        "integer",
-        "double",
-        "complex",
-        "character",
-        "raw"
-      ) &&
-      i <= base_length
+    indexed <- vector_like && i <= base_length
     step <- if (indexed) {
       list(type = "index", index = i)
     } else {
@@ -394,9 +470,17 @@
         {
           child_info <- .jdv_tree_info(child_value)
           list(
-            summary = .jdv_tree_summary(child_value, length(child_path)),
-            has_children = length(child_path) < .jdv_tree_path_limit &&
-              .jdv_tree_total(child_value, child_info$type) > 0L
+            summary = .jdv_tree_summary(
+              child_value,
+              length(child_path),
+              child_info
+            ),
+            has_children = .jdv_tree_has_children(
+              child_value,
+              child_info,
+              attributes,
+              length(child_path)
+            )
           )
         },
         error = function(error) NULL
@@ -418,18 +502,37 @@
       } else {
         .jdv_tree_class(child_info)
       },
+      type = if (is.null(child_info)) NULL else .jdv_tree_typeof(child_info),
       summary = enc2utf8(substr(summary, 1L, .jdv_tree_text_limit)),
       has_children = has_children,
       viewable = is.null(unavailable)
     )
+    if (is.null(child_info)) {
+      child$type <- NULL
+    }
     if (!name_too_long) {
       child$path <- .jdv_json_values(lapply(child_path, jdv_json_object))
     }
     if (!is.null(unavailable)) child$unavailable <- unavailable
     child
-  })
+  }
+  atomic <- info$type %in% .jdv_tree_atomic_types
+  elements <- if (atomic) indices[indices <= base_length] else indices[0L]
+  others <- indices[!indices %in% elements]
+  children <- c(
+    if (length(elements)) {
+      .jdv_tree_atomic_children(
+        x,
+        info,
+        path,
+        elements,
+        labels[elements - start]
+      )
+    },
+    lapply(others, build_child)
+  )
   list(
-    children = .jdv_json_values(lapply(children, jdv_json_object)),
+    children = .jdv_tree_array(lapply(children, .jdv_tree_object)),
     total_children = as.double(total)
   )
 }
@@ -463,7 +566,13 @@
   total
 }
 
-.jdv_tree_descriptor <- function(id, generation, title, parent = NULL) {
+.jdv_tree_descriptor <- function(
+  id,
+  generation,
+  title,
+  parent = NULL,
+  value = NULL
+) {
   capabilities <- stats::setNames(
     as.list(c(TRUE, FALSE, FALSE, TRUE, FALSE, TRUE, TRUE)),
     c("seek", "sort", "filter", "known_total", "next", "children", "refresh")
@@ -478,6 +587,9 @@
     title = title,
     path = jdv_json_array()
   )
+  info <- .jdv_tree_info(value)
+  params$class <- .jdv_tree_class(info)
+  params$type <- .jdv_tree_typeof(info)
   if (!is.null(parent)) {
     params$parent <- parent$id
   }
@@ -548,7 +660,7 @@
       )
     }
   }
-  descriptor <- .jdv_tree_descriptor(id, generation, title, parent)
+  descriptor <- .jdv_tree_descriptor(id, generation, title, parent, x)
   open <- .jdv_json_encode(descriptor, .jdv_max_message_bytes())
   .jdv_assert_active()
 

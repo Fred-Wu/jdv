@@ -126,6 +126,17 @@ input:disabled {
   color: #b45309;
 }
 
+.tree-options {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.5rem 0;
+}
+
+.tree-options[hidden] {
+  display: none;
+}
+
 .tree-pagination {
   display: flex;
   align-items: center;

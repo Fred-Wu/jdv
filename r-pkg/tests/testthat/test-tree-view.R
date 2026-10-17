@@ -562,6 +562,243 @@ local({
     }
   )
 
+  tree_children <- function(view, path = list(), ...) {
+    tree_call(
+      view,
+      "object/children",
+      c(list(path = path, offset = 0, limit = 50), list(...))
+    )
+  }
+
+  test_that("atomic elements are leaves and never nest", {
+    root <- register_view(list(a = 1, b = c(x = 1, y = 2)))
+    on.exit(.jdv_close_internal(root$id), add = TRUE)
+    page <- tree_children(root)
+    expect_false(page$children[[1]]$has_children)
+    expect_true(page$children[[2]]$has_children)
+
+    named <- tree_call(
+      root,
+      "object/open",
+      list(path = list(list(type = "index", index = 2)))
+    )
+    named_view <- list(id = named$view, generation = named$generation)
+    elements <- tree_children(named_view)
+    expect_equal(elements$total_children, 3)
+    expect_identical(
+      vapply(elements$children, `[[`, "", "label"),
+      c("x", "y", "names")
+    )
+    expect_false(any(vapply(
+      elements$children[1:2],
+      `[[`,
+      logical(1),
+      "has_children"
+    )))
+    expect_identical(elements$children[[1]]$summary, "double (1): 1")
+    expect_identical(unlist(elements$children[[1]]$class), "numeric")
+    expect_identical(elements$children[[1]]$type, "double")
+    expect_identical(
+      unclass(elements$children[[2]]$path[[1]]),
+      list(type = "index", index = 2)
+    )
+
+    scalar <- register_view(c(only = 1.5))
+    on.exit(.jdv_close_internal(scalar$id), add = TRUE)
+    expect_equal(tree_children(scalar)$total_children, 2)
+    expect_equal(tree_children(scalar, attributes = FALSE)$total_children, 1)
+    plain <- tree_children(scalar, attributes = FALSE)
+    expect_false(plain$children[[1]]$has_children)
+  })
+
+  test_that("attributes controls whether attribute children are listed", {
+    value <- list(items = structure(c(a = 1, b = 2, c = 3), extra = "e"))
+    root <- register_view(value)
+    on.exit(.jdv_close_internal(root$id), add = TRUE)
+
+    shown <- tree_children(root, list(), attributes = TRUE)
+    implicit <- tree_children(root)
+    expect_identical(shown$children, implicit$children)
+    expect_equal(shown$total_children, implicit$total_children)
+
+    item_path <- list(list(type = "index", index = 1))
+    both <- tree_children(root, item_path)
+    expect_equal(both$total_children, 5)
+    expect_identical(
+      vapply(both$children, `[[`, "", "label"),
+      c("a", "b", "c", "names", "extra")
+    )
+    hidden <- tree_children(root, item_path, attributes = FALSE)
+    expect_equal(hidden$total_children, 3)
+    expect_identical(
+      vapply(hidden$children, `[[`, "", "label"),
+      c("a", "b", "c")
+    )
+    paged <- tree_rpc(
+      "object/children",
+      list(
+        view = root$id,
+        generation = 1,
+        path = item_path,
+        offset = 2,
+        limit = 10,
+        attributes = FALSE
+      )
+    )$result
+    expect_equal(paged$total_children, 3)
+    expect_length(paged$children, 1)
+
+    # The child's own attribute children follow the same switch.
+    top <- tree_children(root, attributes = FALSE)
+    expect_true(top$children[[1]]$has_children)
+    unnamed <- register_view(list(x = c(a = 1)))
+    on.exit(.jdv_close_internal(unnamed$id), add = TRUE)
+    expect_true(tree_children(unnamed)$children[[1]]$has_children)
+    expect_false(tree_children(unnamed, attributes = FALSE)$children[[
+      1
+    ]]$has_children)
+
+    for (bad in list(NULL, "yes", 1, NA, c(TRUE, FALSE), list(TRUE))) {
+      failed <- tree_rpc(
+        "object/children",
+        list(view = root$id, generation = 1, path = list(), attributes = bad)
+      )
+      expect_identical(failed$error$code, "invalid_request")
+    }
+    refused <- tree_rpc(
+      "object/open",
+      list(view = root$id, generation = 1, path = item_path, attributes = FALSE)
+    )
+    expect_identical(refused$error$code, "invalid_request")
+  })
+
+  test_that("attributes does not hide environment bindings or S4 slots", {
+    env <- new.env(parent = emptyenv())
+    env$one <- 1L
+    root <- register_view(env)
+    on.exit(.jdv_close_internal(root$id), add = TRUE)
+    expect_equal(tree_children(root, attributes = FALSE)$total_children, 1)
+
+    methods::setClass("jdvTreeAttributeFixture", slots = c(note = "character"))
+    object <- methods::new("jdvTreeAttributeFixture", note = "kept")
+    s4_root <- register_view(object)
+    on.exit(.jdv_close_internal(s4_root$id), add = TRUE)
+    s4_page <- tree_children(s4_root, attributes = FALSE)
+    expect_identical(s4_page$children[[1]]$label, "note")
+    expect_identical(s4_page$children[[1]]$path[[1]]$type, "slot")
+  })
+
+  test_that("tree descriptors and children report class and type", {
+    root <- register_view(list(
+      number = 1.5,
+      table = mtcars,
+      env = new.env(parent = emptyenv()),
+      fun = identity,
+      nothing = NULL
+    ))
+    on.exit(.jdv_close_internal(root$id), add = TRUE)
+    descriptor <- .jdv_json_parse(root$open)$params
+    expect_identical(unlist(descriptor$class), "list")
+    expect_identical(descriptor$type, "list")
+
+    children <- stats::setNames(
+      tree_children(root)$children[1:5],
+      c("number", "table", "env", "fun", "nothing")
+    )
+    types <- vapply(children, `[[`, "", "type")
+    expect_identical(
+      unname(types),
+      c("double", "list", "environment", "closure", "NULL")
+    )
+    expect_identical(unlist(children$table$class), "data.frame")
+
+    opened <- tree_call(
+      root,
+      "object/open",
+      list(path = list(list(type = "index", index = 3)))
+    )
+    expect_identical(unlist(opened$class), "environment")
+    expect_identical(opened$type, "environment")
+
+    methods::setClass("jdvTreeTypeFixture", slots = c(a = "numeric"))
+    s4 <- register_view(methods::new("jdvTreeTypeFixture", a = 1))
+    on.exit(.jdv_close_internal(s4$id), add = TRUE)
+    s4_descriptor <- .jdv_json_parse(s4$open)$params
+    expect_identical(s4_descriptor$type, "S4")
+    expect_identical(unlist(s4_descriptor$class), "jdvTreeTypeFixture")
+  })
+
+  test_that("factors list level names in summaries and elements", {
+    value <- factor(c("q", NA, "z", "q"), levels = c("q", "z"))
+    root <- register_view(list(f = factor("q"), g = value))
+    on.exit(.jdv_close_internal(root$id), add = TRUE)
+    top <- tree_children(root)
+    expect_identical(top$children[[1]]$summary, "factor (1): q")
+    expect_identical(top$children[[2]]$summary, "factor (4): q, NA, z, q")
+
+    inner <- tree_call(
+      root,
+      "object/open",
+      list(path = list(list(type = "index", index = 2)))
+    )
+    elements <- tree_children(list(
+      id = inner$view,
+      generation = inner$generation
+    ))$children
+    expect_identical(
+      vapply(elements[1:4], `[[`, "", "summary"),
+      c("factor (1): q", "factor (1): NA", "factor (1): z", "factor (1): q")
+    )
+    expect_identical(unlist(elements[[1]]$class), "factor")
+    expect_identical(elements[[1]]$type, "integer")
+
+    odd <- structure(c(1L, 5L, 0L, NA), levels = c("a", NA), class = "factor")
+    expect_identical(
+      .jdv_tree_element_text(odd, .jdv_tree_info(odd), 1, 4),
+      c("a", "<invalid code 5>", "<invalid code 0>", "NA")
+    )
+    broken <- structure(1:2, levels = 3, class = "factor")
+    expect_identical(
+      .jdv_tree_element_text(broken, .jdv_tree_info(broken), 1, 2),
+      c("<invalid code 1>", "<invalid code 2>")
+    )
+  })
+
+  test_that(
+    "atomic pages are formatted as one batch from the requested range",
+    {
+      values <- c(1.5, NA, 3)
+      expect_identical(
+        .jdv_tree_element_text(values, .jdv_tree_info(values), 1, 3),
+        c("1.5", "NA", "3")
+      )
+      chars <- c("a", NA, strrep("x", 200))
+      expect_identical(
+        .jdv_tree_element_text(chars, .jdv_tree_info(chars), 2, 2),
+        c("NA", strrep("x", 160))
+      )
+      expect_error(.Call(C_jdv_tree_vector_page, values, 3, 2), "invalid")
+      expect_error(.Call(C_jdv_tree_vector_page, list(1), 1, 1), "atomic")
+
+      for (value in list(
+        as.double(seq_len(1e6)),
+        as.character(seq_len(1e6)),
+        seq_len(1e8)
+      )) {
+        root <- register_view(value)
+        page <- tree_call(
+          root,
+          "object/children",
+          list(path = list(), offset = 999000, limit = 500)
+        )
+        expect_length(page$children, 500)
+        expect_identical(page$children[[1]]$label, "[999001]")
+        expect_match(page$children[[500]]$summary, "999500$")
+        .jdv_close_internal(root$id)
+      }
+    }
+  )
+
   test_that(
     "native scalar child copies survive focused garbage collection pressure",
     {

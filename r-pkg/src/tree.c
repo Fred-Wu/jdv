@@ -351,6 +351,52 @@ SEXP C_jdv_tree_vector_names(SEXP x, SEXP start, SEXP count)
     return out;
 }
 
+/* Copy a contiguous range of an atomic vector into a plain vector of the same
+ * type with no attributes. Only the requested range is read, through the
+ * region accessors, so ALTREP values never materialize a full data pointer. */
+SEXP C_jdv_tree_vector_page(SEXP x, SEXP start, SEXP count)
+{
+    SEXPTYPE type = TYPEOF(x);
+    if (!tree_vector_type(type) || type == VECSXP || type == EXPRSXP)
+        Rf_error("expected an atomic vector");
+    double first = Rf_asReal(start);
+    double n = Rf_asReal(count);
+    if (!R_FINITE(first) || !R_FINITE(n) || first < 1 || n < 0 ||
+        first != floor(first) || n != floor(n) || n > 500 ||
+        first + n - 1 > (double)XLENGTH(x))
+        Rf_error("invalid vector page");
+    R_xlen_t from = (R_xlen_t)first - 1;
+    R_xlen_t size = (R_xlen_t)n;
+    SEXP out = PROTECT(Rf_allocVector(type, size));
+    if (size > 0) {
+        switch (type) {
+        case LGLSXP:
+            LOGICAL_GET_REGION(x, from, size, LOGICAL(out));
+            break;
+        case INTSXP:
+            INTEGER_GET_REGION(x, from, size, INTEGER(out));
+            break;
+        case REALSXP:
+            REAL_GET_REGION(x, from, size, REAL(out));
+            break;
+        case CPLXSXP:
+            COMPLEX_GET_REGION(x, from, size, COMPLEX(out));
+            break;
+        case RAWSXP:
+            RAW_GET_REGION(x, from, size, RAW(out));
+            break;
+        case STRSXP:
+            for (R_xlen_t i = 0; i < size; i++)
+                SET_STRING_ELT(out, i, STRING_ELT(x, from + i));
+            break;
+        default:
+            break;
+        }
+    }
+    UNPROTECT(1);
+    return out;
+}
+
 /* Binding tracking helpers. The environment is held through a public weak
  * reference so tracking never keeps a local frame alive by itself. */
 SEXP C_jdv_weakref_make(SEXP env)
