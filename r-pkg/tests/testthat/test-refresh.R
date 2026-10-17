@@ -437,3 +437,26 @@ test_that("sequential views cannot be refreshed", {
   expect_false(refresh_entry(view$id)$closed)
   expect_identical(jdv_notifications(), character())
 })
+
+test_that(
+  "a notification overflow during refresh still releases the old generation",
+  {
+    refresh_new_session()
+    old <- options(jdv.notification_max_messages = 2L)
+    on.exit(options(old), add = TRUE)
+    # hello and the first view/open fill the queue, so the refresh overflows.
+    view <- jdv_register(mtcars, mode = "paged")
+    previous <- refresh_entry(view$id)
+    expect_false(is.null(previous$holder))
+
+    tryCatch(refresh_json(view), error = function(error) NULL)
+
+    expect_true(previous$closed)
+    expect_null(previous$holder)
+    expect_identical(
+      jdv_connection()$last_disconnect_reason,
+      "notification_overflow"
+    )
+    expect_identical(ls(.jdv_state$entries), character())
+  }
+)

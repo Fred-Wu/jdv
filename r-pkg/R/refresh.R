@@ -204,10 +204,20 @@
   # closes the refreshed view must queue its view/closed after this view/open
   # so the host never keeps a generation R no longer has. The old parent
   # generation gets no view/closed because the new view/open supersedes it;
-  # its children then close deepest first with parent_closed.
+  # its children then close deepest first with parent_closed. A notification
+  # overflow ends the session mid-way; the old generation is still released.
+  released <- FALSE
+  on.exit(
+    if (!released) {
+      try(.jdv_close_children(entry, notify = FALSE), silent = TRUE)
+      try(.jdv_close_entry(entry), silent = TRUE)
+    },
+    add = TRUE
+  )
   .jdv_notify(open)
   .jdv_close_children(entry, notify = TRUE)
   .jdv_close_entry(entry)
+  released <- TRUE
   result
 }
 
