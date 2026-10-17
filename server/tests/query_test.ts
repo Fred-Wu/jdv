@@ -44,6 +44,7 @@ Deno.test("Snapshot consumer matches independent expected rows for every shared 
       (column: Record<string, unknown>, index: number) => {
         const schema = snapshot.params.columns[index];
         assertEquals(schema.type, column.type);
+        assertEquals(schema.units, column.units);
         assertEquals(schema.filterable, column.type !== "other");
       },
     );

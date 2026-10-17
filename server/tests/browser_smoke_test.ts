@@ -1496,6 +1496,113 @@ Deno.test({
         );
         assertEquals(requests.length, pagedRequestsBeforeSnapshot);
 
+        // Duration columns offer comparisons and accept numbers or H:MM:SS.
+        const durationValues = [3661.5, 59, -30];
+        await writeFrame(rConnection, {
+          method: "view/open",
+          params: {
+            view: "duration-snapshot",
+            generation: 1,
+            kind: "grid",
+            access: "snapshot",
+            encoding: "r-json",
+            mode: "snapshot",
+            title: "Duration smoke",
+            nrow: durationValues.length,
+            ncol: 2,
+            columns: [
+              {
+                position: 0,
+                name: "clock",
+                type: "duration",
+                class: ["hms", "difftime"],
+                units: "secs",
+                sortable: true,
+                filterable: true,
+              },
+              {
+                position: 1,
+                name: "elapsed",
+                type: "duration",
+                class: "difftime",
+                units: "mins",
+                sortable: true,
+                filterable: true,
+              },
+            ],
+            capabilities: gridCapabilities(),
+            data: {
+              row_index: [1, 2, 3],
+              columns: [0, 1].map(() => ({
+                values: durationValues,
+                display: durationValues.map(String),
+                na: durationValues.map(() => false),
+              })),
+            },
+          },
+        });
+        await clickButton(
+          page,
+          "Open view",
+          "#tables article",
+          0,
+          "Duration smoke",
+        );
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          return document.querySelector("#table-title")?.textContent ===
+            "Duration smoke";
+        });
+        await selectOption(page, "#filter-column", "0");
+        assertEquals(
+          await texts(page, "#filter-op option"),
+          [
+            "Is missing",
+            "Equals",
+            "Does not equal",
+            "Less than",
+            "At most",
+            "Greater than",
+            "At least",
+            "Between",
+          ],
+        );
+        await selectOption(page, "#filter-op", "ge");
+        const placeholder = (selector: string) =>
+          evaluateElement(
+            page,
+            selector,
+            (element: BrowserElement & { placeholder: string }) =>
+              element.placeholder,
+          );
+        assertEquals(await placeholder("#filter-value"), "H:MM:SS");
+        await fillInput(page, "#filter-value", "0:01:00");
+        await clickButton(page, "Apply filter");
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          const cells = [
+            ...document.querySelectorAll(
+              '.tabulator-row [tabulator-field="row_index"]',
+            ),
+          ];
+          return cells.length === 1 && cells[0].textContent === "1";
+        });
+        await selectOption(page, "#filter-column", "1");
+        await selectOption(page, "#filter-op", "lt");
+        assertEquals(await placeholder("#filter-value"), "mins");
+        await fillInput(page, "#filter-value", "oops:1");
+        await clickButton(page, "Apply filter");
+        assert(
+          ((await text(page, "#warnings")) ?? "").includes(
+            "H:MM:SS or a number",
+          ),
+          "An invalid duration should be rejected before the query.",
+        );
+
         const pagedCard = "Browser smoke";
         await clickButton(page, "Open view", "#tables article", 0, pagedCard);
         await waitFor(page, () => {

@@ -1036,7 +1036,8 @@
         },
         {
           "name": "dur",
-          "type": "other",
+          "type": "duration",
+          "units": "secs",
           "values": [
             60,
             30,
@@ -1586,7 +1587,9 @@
         },
         {
           "name": "dur-compare",
-          "error": "unsupported",
+          "expected": [
+            1
+          ],
           "filter": {
             "op": "eq",
             "col": 11,
@@ -1595,12 +1598,27 @@
         },
         {
           "name": "dur-between",
-          "error": "unsupported",
+          "expected": [
+            1,
+            2,
+            4
+          ],
           "filter": {
             "op": "between",
             "col": 11,
             "lower": 0,
             "upper": 100
+          }
+        },
+        {
+          "name": "dur-clock",
+          "expected": [
+            1
+          ],
+          "filter": {
+            "op": "ge",
+            "col": 11,
+            "value": "0:00:45"
           }
         },
         {
@@ -1686,6 +1704,520 @@
             "col": 15,
             "lower": 1,
             "upper": 2
+          }
+        }
+      ]
+    },
+    {
+      "name": "duration",
+      "columns": [
+        {
+          "name": "mins",
+          "type": "duration",
+          "units": "mins",
+          "values": [
+            90,
+            5,
+            null,
+            -0.5
+          ],
+          "r": "difftime"
+        },
+        {
+          "name": "clock",
+          "type": "duration",
+          "units": "secs",
+          "values": [
+            3661.5,
+            59,
+            null,
+            -30
+          ],
+          "r": "hms"
+        },
+        {
+          "name": "days",
+          "type": "duration",
+          "units": "days",
+          "values": [
+            1,
+            0.5,
+            null,
+            2
+          ],
+          "r": "difftime"
+        },
+        {
+          "name": "weeks",
+          "type": "duration",
+          "units": "weeks",
+          "values": [
+            1,
+            0.5,
+            null,
+            2
+          ],
+          "r": "difftime"
+        },
+        {
+          "name": "hours",
+          "type": "duration",
+          "units": "hours",
+          "values": [
+            1.5,
+            null,
+            null,
+            null
+          ],
+          "r": "difftime",
+          "special": [
+            null,
+            "nan",
+            "pos_inf",
+            "neg_inf"
+          ]
+        }
+      ],
+      "queries": [
+        {
+          "name": "mins-eq-number",
+          "expected": [
+            2
+          ],
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": 5
+          }
+        },
+        {
+          "name": "mins-eq-clock",
+          "expected": [
+            2
+          ],
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": "0:05:00"
+          }
+        },
+        {
+          "name": "mins-ge-clock",
+          "expected": [
+            1
+          ],
+          "filter": {
+            "op": "ge",
+            "col": 0,
+            "value": "1:30:00"
+          }
+        },
+        {
+          "name": "mins-lt-zero",
+          "expected": [
+            4
+          ],
+          "filter": {
+            "op": "lt",
+            "col": 0,
+            "value": 0
+          }
+        },
+        {
+          "name": "mins-eq-negative-clock",
+          "expected": [
+            4
+          ],
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": "-0:00:30"
+          }
+        },
+        {
+          "name": "mins-ne",
+          "expected": [
+            1,
+            4
+          ],
+          "filter": {
+            "op": "ne",
+            "col": 0,
+            "value": 5
+          }
+        },
+        {
+          "name": "mins-gt-fraction",
+          "expected": [
+            1,
+            2
+          ],
+          "filter": {
+            "op": "gt",
+            "col": 0,
+            "value": "0:00:00.5"
+          }
+        },
+        {
+          "name": "mins-between-mixed",
+          "expected": [
+            2,
+            4
+          ],
+          "filter": {
+            "op": "between",
+            "col": 0,
+            "lower": "-0:01:00",
+            "upper": 10
+          }
+        },
+        {
+          "name": "mins-is-na",
+          "expected": [
+            3
+          ],
+          "filter": {
+            "op": "is_na",
+            "col": 0
+          }
+        },
+        {
+          "name": "mins-sort",
+          "expected": [
+            4,
+            2,
+            1,
+            3
+          ],
+          "sort": [
+            {
+              "col": 0,
+              "desc": false
+            }
+          ]
+        },
+        {
+          "name": "mins-reversed-between",
+          "error": "invalid_request",
+          "filter": {
+            "op": "between",
+            "col": 0,
+            "lower": "1:00:00",
+            "upper": "0:30:00"
+          }
+        },
+        {
+          "name": "mins-invalid-short-minutes",
+          "error": "invalid_request",
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": "1:5:00"
+          }
+        },
+        {
+          "name": "mins-invalid-minutes-range",
+          "error": "invalid_request",
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": "1:60:00"
+          }
+        },
+        {
+          "name": "mins-invalid-seconds-range",
+          "error": "invalid_request",
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": "1:00:60"
+          }
+        },
+        {
+          "name": "mins-invalid-no-seconds",
+          "error": "invalid_request",
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": "1:00"
+          }
+        },
+        {
+          "name": "mins-invalid-word",
+          "error": "invalid_request",
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": "abc"
+          }
+        },
+        {
+          "name": "mins-invalid-iso-date",
+          "error": "invalid_request",
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": "2020-01-01"
+          }
+        },
+        {
+          "name": "mins-invalid-empty",
+          "error": "invalid_request",
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": ""
+          }
+        },
+        {
+          "name": "mins-invalid-plus-sign",
+          "error": "invalid_request",
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": "+1:00:00"
+          }
+        },
+        {
+          "name": "mins-invalid-padded",
+          "error": "invalid_request",
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": " 1:00:00"
+          }
+        },
+        {
+          "name": "mins-invalid-boolean",
+          "error": "invalid_request",
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": true
+          }
+        },
+        {
+          "name": "mins-text",
+          "error": "unsupported",
+          "filter": {
+            "op": "contains",
+            "col": 0,
+            "value": "1"
+          }
+        },
+        {
+          "name": "mins-in",
+          "error": "unsupported",
+          "filter": {
+            "op": "in",
+            "col": 0,
+            "values": [
+              "1"
+            ]
+          }
+        },
+        {
+          "name": "mins-is-true",
+          "error": "unsupported",
+          "filter": {
+            "op": "is_true",
+            "col": 0
+          }
+        },
+        {
+          "name": "clock-ge-fraction",
+          "expected": [
+            1
+          ],
+          "filter": {
+            "op": "ge",
+            "col": 1,
+            "value": "1:01:01.5"
+          }
+        },
+        {
+          "name": "clock-eq-negative",
+          "expected": [
+            4
+          ],
+          "filter": {
+            "op": "eq",
+            "col": 1,
+            "value": -30
+          }
+        },
+        {
+          "name": "clock-lt",
+          "expected": [
+            2,
+            4
+          ],
+          "filter": {
+            "op": "lt",
+            "col": 1,
+            "value": "0:01:00"
+          }
+        },
+        {
+          "name": "clock-eq-whole-fraction",
+          "expected": [
+            2
+          ],
+          "filter": {
+            "op": "eq",
+            "col": 1,
+            "value": "0:00:59.0"
+          }
+        },
+        {
+          "name": "clock-between",
+          "expected": [
+            1,
+            2
+          ],
+          "filter": {
+            "op": "between",
+            "col": 1,
+            "lower": 59,
+            "upper": 3661.5
+          }
+        },
+        {
+          "name": "clock-sort-desc",
+          "expected": [
+            1,
+            2,
+            4,
+            3
+          ],
+          "sort": [
+            {
+              "col": 1,
+              "desc": true
+            }
+          ]
+        },
+        {
+          "name": "days-eq-clock",
+          "expected": [
+            1
+          ],
+          "filter": {
+            "op": "eq",
+            "col": 2,
+            "value": "24:00:00"
+          }
+        },
+        {
+          "name": "days-eq-half",
+          "expected": [
+            2
+          ],
+          "filter": {
+            "op": "eq",
+            "col": 2,
+            "value": "12:00:00"
+          }
+        },
+        {
+          "name": "days-gt",
+          "expected": [
+            4
+          ],
+          "filter": {
+            "op": "gt",
+            "col": 2,
+            "value": 1
+          }
+        },
+        {
+          "name": "weeks-eq-clock",
+          "expected": [
+            1
+          ],
+          "filter": {
+            "op": "eq",
+            "col": 3,
+            "value": "168:00:00"
+          }
+        },
+        {
+          "name": "weeks-eq-half",
+          "expected": [
+            2
+          ],
+          "filter": {
+            "op": "eq",
+            "col": 3,
+            "value": "84:00:00"
+          }
+        },
+        {
+          "name": "weeks-eq-number",
+          "expected": [
+            2
+          ],
+          "filter": {
+            "op": "eq",
+            "col": 3,
+            "value": 0.5
+          }
+        },
+        {
+          "name": "hours-gt",
+          "expected": [
+            1,
+            3
+          ],
+          "filter": {
+            "op": "gt",
+            "col": 4,
+            "value": "1:00:00"
+          }
+        },
+        {
+          "name": "hours-lt",
+          "expected": [
+            4
+          ],
+          "filter": {
+            "op": "lt",
+            "col": 4,
+            "value": 0
+          }
+        },
+        {
+          "name": "hours-eq-clock",
+          "expected": [
+            1
+          ],
+          "filter": {
+            "op": "eq",
+            "col": 4,
+            "value": "1:30:00"
+          }
+        },
+        {
+          "name": "hours-eq-infinity",
+          "expected": [
+            3
+          ],
+          "filter": {
+            "op": "eq",
+            "col": 4,
+            "value": {
+              "special": "pos_inf"
+            }
+          }
+        },
+        {
+          "name": "hours-is-na",
+          "expected": [
+            2
+          ],
+          "filter": {
+            "op": "is_na",
+            "col": 4
           }
         }
       ]

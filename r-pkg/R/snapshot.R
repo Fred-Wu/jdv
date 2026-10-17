@@ -50,7 +50,7 @@ snapshot_value <- function(snapshot, j, i) {
   column <- snapshot$columns[[j]]
   type <- column$schema$type
   value <- unname(column$data$values[i])
-  if (type == "number" && !is.null(column$data$special)) {
+  if (type %in% c("number", "duration") && !is.null(column$data$special)) {
     special <- column$data$special[i]
     if (!is.na(special)) {
       return(switch(
@@ -78,7 +78,7 @@ snapshot_key <- function(snapshot, j, i) {
   if (mask[i]) {
     return(NA_real_)
   }
-  if (column$schema$type %in% c("boolean", "integer", "number")) {
+  if (column$schema$type %in% c("boolean", "integer", "number", "duration")) {
     return(snapshot_value(snapshot, j, i))
   }
   key <- column$data$sortKey

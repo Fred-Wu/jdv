@@ -86,6 +86,7 @@ query_fixture_table <- function(columns) {
           switch(
             type,
             number = NA_real_,
+            duration = NA_real_,
             integer = NA_real_,
             boolean = NA,
             other = NA_real_,
@@ -98,13 +99,14 @@ query_fixture_table <- function(columns) {
       switch(
         type,
         number = numeric(1L),
+        duration = numeric(1L),
         integer = numeric(1L),
         boolean = logical(1L),
         other = numeric(1L),
         character(1L)
       )
     )
-    if (type == "number" && !is.null(column$special)) {
+    if (type %in% c("number", "duration") && !is.null(column$special)) {
       for (i in seq_along(column$special)) {
         token <- column$special[[i]]
         if (!is.null(token)) {
@@ -133,11 +135,17 @@ query_fixture_table <- function(columns) {
         tz = column$tz
       )),
       int64 = int64_fixture(values),
+      # The hms class structure is built directly so the hms package is not
+      # needed.
+      duration = if (identical(column$r, "hms")) {
+        structure(values, units = column$units, class = c("hms", "difftime"))
+      } else {
+        as.difftime(values, units = column$units)
+      },
       other = switch(
         column$r %||% "query_record",
         query_record = structure(values, class = "query_record"),
         s4_record = methods::new("query_s4_record", values),
-        difftime = as.difftime(values, units = "secs"),
         stop("Unknown fixture class: ", column$r, call. = FALSE)
       ),
       values
@@ -156,7 +164,10 @@ query_wire_snapshot <- function(snapshot) {
   skip_if_not_installed("jsonlite")
   for (j in seq_along(snapshot$columns)) {
     data <- snapshot$columns[[j]]$data
-    if (snapshot$schema[[j]]$type %in% c("number", "integer", "boolean")) {
+    if (
+      snapshot$schema[[j]]$type %in%
+        c("number", "duration", "integer", "boolean")
+    ) {
       data$sortKey <- NULL
     }
     data <- lapply(data, unname)

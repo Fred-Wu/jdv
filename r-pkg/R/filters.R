@@ -200,6 +200,40 @@ query_date_value <- function(value, schema, limit) {
   value
 }
 
+# A duration operand is a number in the column's units, or "[-]H:MM:SS[.fff]"
+# in clock time, which is converted to seconds and then to the column's units.
+query_duration_value <- function(value, schema, limit) {
+  text <- query_string(value, limit)
+  match <- regmatches(
+    text,
+    regexec("^(-?)([0-9]+):([0-9]{2}):([0-9]{2})(\\.[0-9]+)?$", text)
+  )[[1L]]
+  if (
+    !length(match) ||
+      as.integer(match[[4L]]) > 59L ||
+      as.integer(match[[5L]]) > 59L
+  ) {
+    query_error("invalid_request", "Invalid duration; expected [-]H:MM:SS.")
+  }
+  fraction <- if (nzchar(match[[6L]])) {
+    as.numeric(paste0("0", match[[6L]]))
+  } else {
+    0
+  }
+  seconds <- as.numeric(match[[3L]]) * 3600 +
+    as.integer(match[[4L]]) * 60 +
+    as.integer(match[[5L]]) +
+    fraction
+  if (match[[2L]] == "-") {
+    seconds <- -seconds
+  }
+  result <- seconds / duration_unit_seconds[[schema$units]]
+  if (!is.finite(result)) {
+    query_error("invalid_request", "Duration is out of range.")
+  }
+  unname(result)
+}
+
 query_decimal_value <- function(value, limit) {
   value <- query_string(value, limit)
   query_try(
@@ -310,7 +344,8 @@ query_filter_validate <- function(table, filter) {
       out$values <- vapply(as.list(values), string, character(1L))
     } else {
       if (
-        !schema$type %in% c("integer", "number", "date", "datetime", "int64")
+        !schema$type %in%
+          c("integer", "number", "duration", "date", "datetime", "int64")
       ) {
         query_error("unsupported", "Column has no numeric filter source.")
       }
@@ -322,6 +357,8 @@ query_filter_validate <- function(table, filter) {
           query_decimal_value(string(value), table$limits$text_bytes)
         } else if (schema$type %in% c("date", "datetime")) {
           query_date_value(string(value), schema, table$limits$text_bytes)
+        } else if (schema$type == "duration" && is.character(value)) {
+          query_duration_value(string(value), schema, table$limits$text_bytes)
         } else {
           query_numeric_value(value)
         }
@@ -373,7 +410,7 @@ query_number_data <- function(holder, j, budget = NULL) {
   }
   data <- query_channel(holder, j, "values", budget)
   values <- data$values
-  if (schema$type == "number" && !is.null(data$special)) {
+  if (schema$type %in% c("number", "duration") && !is.null(data$special)) {
     values[which(data$special == "pos_inf")] <- Inf
     values[which(data$special == "neg_inf")] <- -Inf
   }

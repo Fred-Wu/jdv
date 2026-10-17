@@ -1233,7 +1233,9 @@ function filterOperators(schema) {
       ["text_equals", "Equals text"],
     ]);
   }
-  if (["integer", "number", "date", "datetime"].includes(schema.type)) {
+  if (
+    ["integer", "number", "duration", "date", "datetime"].includes(schema.type)
+  ) {
     return common.concat([
       ["eq", "Equals"],
       ["ne", "Does not equal"],
@@ -1285,6 +1287,9 @@ function updateFilterInputs() {
   if (schema?.type === "datetime") {
     filterHelp.textContent =
       "Use YYYY-MM-DDTHH:MM:SSZ or an explicit offset such as +05:30. R's local timezone is not inferred by the Snapshot viewer.";
+  } else if (schema?.type === "duration") {
+    filterHelp.textContent =
+      `Use a number in ${schema.units}, or H:MM:SS with an optional fraction and a leading minus sign. Comparisons use the underlying value, not the displayed rounding.`;
   } else if (["string", "factor"].includes(schema?.type)) {
     filterHelp.textContent =
       "Text comparisons ignore ASCII letter case; non-ASCII case is preserved.";
@@ -1297,6 +1302,9 @@ function updateFilterInputs() {
 function valuePlaceholder(schema, fallback = "Value") {
   if (schema?.type === "datetime") return "YYYY-MM-DDTHH:MM:SSZ or ±HH:MM";
   if (schema?.type === "date") return "YYYY-MM-DD";
+  if (schema?.type === "duration") {
+    return schema.class?.includes("hms") ? "H:MM:SS" : `${schema.units}`;
+  }
   if (schema?.type === "int64") return "Exact decimal integer";
   return fallback;
 }
@@ -1388,6 +1396,21 @@ function parseFilterValue(schema, value, label = "Value") {
     }
     if (schema.type === "integer" && !Number.isInteger(parsed)) {
       throw new Error(`${label} must be an integer.`);
+    }
+    return parsed;
+  }
+  if (schema.type === "duration") {
+    const text = value.trim();
+    if (!text) throw new Error(`${label} is required.`);
+    if (text.includes(":")) {
+      if (!/^-?\d+:\d{2}:\d{2}(?:\.\d+)?$/.test(text)) {
+        throw new Error(`${label} must use H:MM:SS or a number.`);
+      }
+      return text;
+    }
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed)) {
+      throw new Error(`${label} must use H:MM:SS or a number.`);
     }
     return parsed;
   }

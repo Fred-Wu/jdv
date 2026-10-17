@@ -534,6 +534,7 @@
     display_width <- switch(
       kind,
       number = 32,
+      duration = 48,
       integer = 24,
       boolean = 12,
       datetime = 48,
@@ -546,8 +547,11 @@
   if (schema$sortable) {
     reserve("sortKey", 8 * n)
   }
-  reserve("values", switch(kind, boolean = 4, integer = 4, number = 8, 0) * n)
-  if (kind == "number" && "values" %in% channels) {
+  reserve(
+    "values",
+    switch(kind, boolean = 4, integer = 4, number = 8, duration = 8, 0) * n
+  )
+  if (kind %in% c("number", "duration") && "values" %in% channels) {
     # `special` construction and finite-value normalization create masks and
     # a replacement vector after the raw value channel is returned.
     reserve("values", 32 * n)

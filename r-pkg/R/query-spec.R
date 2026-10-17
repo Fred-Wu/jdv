@@ -192,8 +192,8 @@
 #' | `not` | `op`, `arg` (one child object) | Any valid child. |
 #' | `is_na` | `op`, `col` | Any column with a valid missingness channel. |
 #' | `contains`, `starts_with`, `ends_with`, `text_equals` | `op`, `col`, `value` | String, factor. |
-#' | `eq`, `ne`, `lt`, `le`, `gt`, `ge` | `op`, `col`, `value` | Integer, number, date, datetime; integer64 supports only `eq`. |
-#' | `between` | `op`, `col`, `lower`, `upper` | Integer, number, date, datetime, integer64. |
+#' | `eq`, `ne`, `lt`, `le`, `gt`, `ge` | `op`, `col`, `value` | Integer, number, duration, date, datetime; integer64 supports only `eq`. |
+#' | `between` | `op`, `col`, `lower`, `upper` | Integer, number, duration, date, datetime, integer64. |
 #' | `is_true`, `is_false` | `op`, `col` | Boolean. |
 #' | `in` | `op`, `col`, `values` (array of labels) | Factor. |
 #'
@@ -225,14 +225,14 @@
 #' Being displayable and being filterable are separate. Value-based filters are
 #' limited to an explicit list of column types: logical, integer, double, and
 #' character vectors without a class, factors, `Date`, `POSIXct` and `POSIXlt`,
-#' and `integer64`. A vector wrapped only by [base::I()] is classified by its
-#' contents, so `I(1:3)` is an integer column. `I()` around a classed vector
-#' keeps the classification of that class, so an `I()` factor is a factor column
-#' and an `I()` `difftime` is `other`. Any other S3 or S4 class (including
-#' `difftime`) has schema `type` `other` and `filterable` false. It is still
-#' displayed and sorted through [base::format()] and [base::xtfrm()], and
-#' answers `is_na`, but every other operator fails with `unsupported` ("Column
-#' is not filterable.").
+#' [base::difftime()] (including the hms package's `hms`), and `integer64`. A
+#' vector wrapped only by [base::I()] is classified by its contents, so `I(1:3)`
+#' is an integer column. `I()` around a classed vector keeps the classification
+#' of that class, so an `I()` factor is a factor column and an `I()` `difftime`
+#' is a duration column. Any other S3 or S4 class has schema `type` `other` and
+#' `filterable` false. It is still displayed and sorted through [base::format()]
+#' and [base::xtfrm()], and answers `is_na`, but every other operator fails with
+#' `unsupported` ("Column is not filterable.").
 #'
 #'
 #' @section Text:
@@ -250,8 +250,8 @@
 #' - String: the original, untruncated character value.
 #' - Factor: its label.
 #'
-#' Number, integer, Boolean, date, datetime, and integer64 columns do not
-#' support text operators, and neither do `other` columns. List, matrix, and
+#' Number, integer, Boolean, duration, date, datetime, and integer64 columns do
+#' not support text operators, and neither do `other` columns. List, matrix, and
 #' packed data-frame columns have previews but no text-filter capability. Page
 #' display truncation or formatting does not alter the filter source. Factor
 #' `in` is exact, case-sensitive label membership and does not use text folding;
@@ -305,6 +305,40 @@
 #' infinities from `special`; null values alone do not distinguish all cases.
 #'
 #'
+#' @section Duration:
+#'
+#'
+#' A column that inherits from [base::difftime()] has schema `type` `duration`
+#' and a `units` field that is one of `secs`, `mins`, `hours`, `days`, or
+#' `weeks`. A class that extends it, such as `hms` from the hms package (always
+#' in `secs`), is handled the same way. A `difftime` whose `units` attribute is
+#' missing or not one of these values has type `other`. The supported operators
+#' are `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `between`, and `is_na`; text, `in`,
+#' and Boolean operators fail with `unsupported`.
+#'
+#' A duration operand is either:
+#'
+#' - a finite JSON number (or an infinity token as described above) in the
+#'   column's own units, so `5` on a column in `mins` means five minutes; or
+#' - a string `[-]H:MM:SS[.fff]`: an optional minus sign, one or more digits of
+#'   hours, two digits each of minutes and seconds (00-59), and an optional
+#'   decimal fraction of seconds. It is converted to seconds and then to the
+#'   column's units. Anything else, such as `1:5:00`, `1:60:00`, `1:00`, an
+#'   ISO date, or a string with a sign other than `-` or with whitespace, is
+#'   `invalid_request`. No date or timezone is involved.
+#'
+#' Units are converted by the factors of [base::difftime()]: 1 for `secs`, 60
+#' for `mins`, 3600 for `hours`, 86400 for `days`, and 604800 for `weeks` (a
+#' week is 7 days). Comparisons are between doubles in the column's units,
+#' without any display rounding: the fractional seconds that a format method
+#' shows (for example, those of an hms vector) are not used, so a value
+#' displayed as `0:00:01` can be larger than a `0:00:01` operand. A clock-time
+#' operand that is not exactly representable in the column's units, such as one
+#' second in `mins`, is subject to ordinary floating-point rounding. As for
+#' numbers, `NA` and `NaN` never match a comparison, and infinities are restored
+#' from `special`.
+#'
+#'
 #' @section Date and datetime:
 #'
 #'
@@ -353,7 +387,7 @@
 #'
 #' | Column kind | Comparison keys |
 #' | --- | --- |
-#' | Plain Boolean/integer/number | Numeric values, including restored infinities. |
+#' | Plain Boolean/integer/number, duration | Numeric values, including restored infinities. |
 #' | Plain string, collation `C` | UTF-8 byte/radix order. Paged uses the original strings; Snapshot uses dense numeric ranks. |
 #' | String, collation `locale` | R [base::xtfrm()] keys under the system locale. |
 #' | Factor/ordered factor | Factor level codes, regardless of alphabetical label order. |
@@ -393,9 +427,10 @@
 #' contain sort keys or full-column filter text. Display is always character
 #' text, with missing display results normalized to `"NA"`. A display failure
 #' can yield `<class>` fallback text and column diagnostics. Missingness and
-#' semantic values remain independent of display. For a number column, `special`
-#' distinguishes NA, NaN, Inf, and -Inf when present. Columns without a plain
-#' values representation can return display and missingness without values.
+#' semantic values remain independent of display. For a number or duration
+#' column, `special` distinguishes NA, NaN, Inf, and -Inf when present. Columns
+#' without a plain values representation can return display and missingness
+#' without values.
 #'
 #' Page extraction preserves per-channel downgrade diagnostics. Sort/filter
 #' requests that require an unavailable full-column channel instead raise a
@@ -446,7 +481,8 @@
 #' `queries` with expected original one-based row indices. Number `special`
 #' entries reconstruct nonfinite source values; JSON null means missing data.
 #' Factor columns include levels and orderedness; datetime columns include
-#' timezone metadata.
+#' timezone metadata; duration columns include `units`, and an `r` of `hms`
+#' marks a vector with the `c("hms", "difftime")` class structure.
 #'
 #' `example-other` uses a synthetic `query_record` class factory: its fixture
 #' `values` array supplies the numeric constructor input, with JSON null

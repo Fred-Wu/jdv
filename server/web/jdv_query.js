@@ -170,15 +170,10 @@ export function decodeRows(schema, data, rowIndex = null, rowNames = null) {
       text = "NA";
     } else if (Array.isArray(values)) {
       text = values[index];
-      if (schema?.type === "number" && data.special?.[index] === "nan") {
-        text = "NaN";
-      }
-      if (schema?.type === "number" && data.special?.[index] === "pos_inf") {
-        text = "Inf";
-      }
-      if (schema?.type === "number" && data.special?.[index] === "neg_inf") {
-        text = "-Inf";
-      }
+      const numeric = schema?.type === "number" || schema?.type === "duration";
+      if (numeric && data.special?.[index] === "nan") text = "NaN";
+      if (numeric && data.special?.[index] === "pos_inf") text = "Inf";
+      if (numeric && data.special?.[index] === "neg_inf") text = "-Inf";
     } else {
       text = "";
     }
@@ -415,7 +410,9 @@ function validateFilter(columns, node, context, depth) {
   }
   const allowed = schema.type === "int64"
     ? ["eq", "between"]
-    : ["integer", "number", "date", "datetime"].includes(schema.type)
+    : ["integer", "number", "duration", "date", "datetime"].includes(
+        schema.type,
+      )
     ? [...compareOps, "between"]
     : [];
   if (!allowed.includes(op)) {
@@ -476,8 +473,12 @@ function operand(schema, value, context) {
     }
     return timestamp;
   }
+  if (schema.type === "duration" && typeof value === "string") {
+    return parseDuration(value, schema.units, context);
+  }
   if (
-    schema.type === "number" && value && typeof value === "object" &&
+    (schema.type === "number" || schema.type === "duration") && value &&
+    typeof value === "object" &&
     !Array.isArray(value)
   ) {
     exactKeys(value, ["special"]);
@@ -489,6 +490,36 @@ function operand(schema, value, context) {
     throw queryError("invalid_request", "Invalid numeric operand.");
   }
   return value;
+}
+
+const DURATION_UNIT_SECONDS = {
+  secs: 1,
+  mins: 60,
+  hours: 3600,
+  days: 86400,
+  weeks: 604800,
+};
+
+// "[-]H:MM:SS[.fff]" is converted to seconds and then to the column's units.
+function parseDuration(value, units, context) {
+  addStringBudget(context, value);
+  const match = /^(-?)([0-9]+):([0-9]{2}):([0-9]{2})(\.[0-9]+)?$/.exec(value);
+  const factor = DURATION_UNIT_SECONDS[units];
+  if (!match || Number(match[3]) > 59 || Number(match[4]) > 59) {
+    throw queryError("invalid_request", "Invalid duration operand.");
+  }
+  if (factor === undefined) {
+    throw queryError("invalid_request", "Invalid duration units.");
+  }
+  const fraction = match[5] === undefined ? 0 : Number(`0${match[5]}`);
+  let seconds = Number(match[2]) * 3600 + Number(match[3]) * 60 +
+    Number(match[4]) + fraction;
+  if (match[1] === "-") seconds = -seconds;
+  const result = seconds / factor;
+  if (!Number.isFinite(result)) {
+    throw queryError("invalid_request", "Duration operand is out of range.");
+  }
+  return result;
 }
 
 function parseDatetime(value, timezone, allowUnpaddedYear = false) {
@@ -624,7 +655,11 @@ function compareValues(type, left, right) {
 
 function hasSortKey(schema, data) {
   if (Array.isArray(data.sortKey)) return true;
-  if (["boolean", "integer", "number", "int64"].includes(schema.type)) {
+  if (
+    ["boolean", "integer", "number", "duration", "int64"].includes(
+      schema.type,
+    )
+  ) {
     return Array.isArray(data.values);
   }
   return false;
@@ -641,7 +676,7 @@ function keyAt(column, row) {
   if (schema.type === "int64") {
     return { kind: "decimal", missing: false, value: data.values[row] };
   }
-  if (["boolean", "integer", "number"].includes(schema.type)) {
+  if (["boolean", "integer", "number", "duration"].includes(schema.type)) {
     const special = data.special?.[row];
     if (special === "pos_inf") {
       return { kind: "numeric", missing: false, value: Infinity };
@@ -704,7 +739,7 @@ function testFilter(columns, node, row) {
   }
   if (node.op === "in") return node.values.has(data.values?.[row]);
   let value = data.values?.[row];
-  if (schema.type === "number") {
+  if (schema.type === "number" || schema.type === "duration") {
     const special = data.special?.[row];
     if (special === "pos_inf") value = Infinity;
     else if (special === "neg_inf") value = -Infinity;

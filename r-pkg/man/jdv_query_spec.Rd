@@ -192,8 +192,8 @@ Filter objects use these exact fields:\tabular{lll}{
    \code{not} \tab \code{op}, \code{arg} (one child object) \tab Any valid child. \cr
    \code{is_na} \tab \code{op}, \code{col} \tab Any column with a valid missingness channel. \cr
    \code{contains}, \code{starts_with}, \code{ends_with}, \code{text_equals} \tab \code{op}, \code{col}, \code{value} \tab String, factor. \cr
-   \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge} \tab \code{op}, \code{col}, \code{value} \tab Integer, number, date, datetime; integer64 supports only \code{eq}. \cr
-   \code{between} \tab \code{op}, \code{col}, \code{lower}, \code{upper} \tab Integer, number, date, datetime, integer64. \cr
+   \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge} \tab \code{op}, \code{col}, \code{value} \tab Integer, number, duration, date, datetime; integer64 supports only \code{eq}. \cr
+   \code{between} \tab \code{op}, \code{col}, \code{lower}, \code{upper} \tab Integer, number, duration, date, datetime, integer64. \cr
    \code{is_true}, \code{is_false} \tab \code{op}, \code{col} \tab Boolean. \cr
    \verb{in} \tab \code{op}, \code{col}, \code{values} (array of labels) \tab Factor. \cr
 }
@@ -226,14 +226,14 @@ string \code{"NA"}.
 Being displayable and being filterable are separate. Value-based filters are
 limited to an explicit list of column types: logical, integer, double, and
 character vectors without a class, factors, \code{Date}, \code{POSIXct} and \code{POSIXlt},
-and \code{integer64}. A vector wrapped only by \code{\link[base:I]{base::I()}} is classified by its
-contents, so \code{I(1:3)} is an integer column. \code{I()} around a classed vector
-keeps the classification of that class, so an \code{I()} factor is a factor column
-and an \code{I()} \code{difftime} is \code{other}. Any other S3 or S4 class (including
-\code{difftime}) has schema \code{type} \code{other} and \code{filterable} false. It is still
-displayed and sorted through \code{\link[base:format]{base::format()}} and \code{\link[base:xtfrm]{base::xtfrm()}}, and
-answers \code{is_na}, but every other operator fails with \code{unsupported} ("Column
-is not filterable.").
+\code{\link[base:difftime]{base::difftime()}} (including the hms package's \code{hms}), and \code{integer64}. A
+vector wrapped only by \code{\link[base:I]{base::I()}} is classified by its contents, so \code{I(1:3)}
+is an integer column. \code{I()} around a classed vector keeps the classification
+of that class, so an \code{I()} factor is a factor column and an \code{I()} \code{difftime}
+is a duration column. Any other S3 or S4 class has schema \code{type} \code{other} and
+\code{filterable} false. It is still displayed and sorted through \code{\link[base:format]{base::format()}}
+and \code{\link[base:xtfrm]{base::xtfrm()}}, and answers \code{is_na}, but every other operator fails with
+\code{unsupported} ("Column is not filterable.").
 }
 
 \section{Text}{
@@ -252,8 +252,8 @@ Text sources are:
 \item Factor: its label.
 }
 
-Number, integer, Boolean, date, datetime, and integer64 columns do not
-support text operators, and neither do \code{other} columns. List, matrix, and
+Number, integer, Boolean, duration, date, datetime, and integer64 columns do
+not support text operators, and neither do \code{other} columns. List, matrix, and
 packed data-frame columns have previews but no text-filter capability. Page
 display truncation or formatting does not alter the filter source. Factor
 \verb{in} is exact, case-sensitive label membership and does not use text folding;
@@ -304,6 +304,41 @@ remain false at comparison leaves. Materialized number channels recover
 infinities from \code{special}; null values alone do not distinguish all cases.
 }
 
+\section{Duration}{
+
+
+A column that inherits from \code{\link[base:difftime]{base::difftime()}} has schema \code{type} \code{duration}
+and a \code{units} field that is one of \code{secs}, \code{mins}, \code{hours}, \code{days}, or
+\code{weeks}. A class that extends it, such as \code{hms} from the hms package (always
+in \code{secs}), is handled the same way. A \code{difftime} whose \code{units} attribute is
+missing or not one of these values has type \code{other}. The supported operators
+are \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between}, and \code{is_na}; text, \verb{in},
+and Boolean operators fail with \code{unsupported}.
+
+A duration operand is either:
+\itemize{
+\item a finite JSON number (or an infinity token as described above) in the
+column's own units, so \code{5} on a column in \code{mins} means five minutes; or
+\item a string \verb{[-]H:MM:SS[.fff]}: an optional minus sign, one or more digits of
+hours, two digits each of minutes and seconds (00-59), and an optional
+decimal fraction of seconds. It is converted to seconds and then to the
+column's units. Anything else, such as \code{1:5:00}, \code{1:60:00}, \code{1:00}, an
+ISO date, or a string with a sign other than \code{-} or with whitespace, is
+\code{invalid_request}. No date or timezone is involved.
+}
+
+Units are converted by the factors of \code{\link[base:difftime]{base::difftime()}}: 1 for \code{secs}, 60
+for \code{mins}, 3600 for \code{hours}, 86400 for \code{days}, and 604800 for \code{weeks} (a
+week is 7 days). Comparisons are between doubles in the column's units,
+without any display rounding: the fractional seconds that a format method
+shows (for example, those of an hms vector) are not used, so a value
+displayed as \code{0:00:01} can be larger than a \code{0:00:01} operand. A clock-time
+operand that is not exactly representable in the column's units, such as one
+second in \code{mins}, is subject to ordinary floating-point rounding. As for
+numbers, \code{NA} and \code{NaN} never match a comparison, and infinities are restored
+from \code{special}.
+}
+
 \section{Date and datetime}{
 
 
@@ -350,7 +385,7 @@ the tie in ascending order. NA and NaN are equivalent missing keys and come
 last in both directions. The source missingness mask overrides any finite key
 produced for a missing source value; missing keys themselves also sort last.\tabular{ll}{
    Column kind \tab Comparison keys \cr
-   Plain Boolean/integer/number \tab Numeric values, including restored infinities. \cr
+   Plain Boolean/integer/number, duration \tab Numeric values, including restored infinities. \cr
    Plain string, collation \code{C} \tab UTF-8 byte/radix order. Paged uses the original strings; Snapshot uses dense numeric ranks. \cr
    String, collation \code{locale} \tab R \code{\link[base:xtfrm]{base::xtfrm()}} keys under the system locale. \cr
    Factor/ordered factor \tab Factor level codes, regardless of alphabetical label order. \cr
@@ -392,9 +427,10 @@ Page column data requests display, missingness, and values only; it does not
 contain sort keys or full-column filter text. Display is always character
 text, with missing display results normalized to \code{"NA"}. A display failure
 can yield \verb{<class>} fallback text and column diagnostics. Missingness and
-semantic values remain independent of display. For a number column, \code{special}
-distinguishes NA, NaN, Inf, and -Inf when present. Columns without a plain
-values representation can return display and missingness without values.
+semantic values remain independent of display. For a number or duration
+column, \code{special} distinguishes NA, NaN, Inf, and -Inf when present. Columns
+without a plain values representation can return display and missingness
+without values.
 
 Page extraction preserves per-channel downgrade diagnostics. Sort/filter
 requests that require an unavailable full-column channel instead raise a
@@ -444,7 +480,8 @@ ASCII folding. Each \code{cases} entry describes typed source columns and
 \code{queries} with expected original one-based row indices. Number \code{special}
 entries reconstruct nonfinite source values; JSON null means missing data.
 Factor columns include levels and orderedness; datetime columns include
-timezone metadata.
+timezone metadata; duration columns include \code{units}, and an \code{r} of \code{hms}
+marks a vector with the \code{c("hms", "difftime")} class structure.
 
 \code{example-other} uses a synthetic \code{query_record} class factory: its fixture
 \code{values} array supplies the numeric constructor input, with JSON null

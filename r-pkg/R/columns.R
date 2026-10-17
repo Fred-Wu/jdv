@@ -13,6 +13,8 @@ column_schema <- function(x, name = "", position = 0L) {
     "date"
   } else if (inherits(x, "POSIXt")) {
     "datetime"
+  } else if (inherits(x, "difftime") && column_duration_units(x)) {
+    "duration"
   } else if (!is.object(bare)) {
     switch(
       typeof(bare),
@@ -47,8 +49,31 @@ column_schema <- function(x, name = "", position = 0L) {
     schema$levels <- levels(x)
     schema$ordered <- is.ordered(x)
   }
-  if (type == "datetime") schema$tz <- column_tz(x)
+  if (type == "datetime") {
+    schema$tz <- column_tz(x)
+  }
+  if (type == "duration") schema$units <- attr(x, "units", exact = TRUE)
   schema
+}
+
+# The unit conversion factors follow base::difftime(), where a week is 7 days.
+duration_unit_seconds <- c(
+  secs = 1,
+  mins = 60,
+  hours = 3600,
+  days = 86400,
+  weeks = 604800
+)
+
+# A difftime whose units attribute is not one of the five known units cannot be
+# converted, so it is left to the unfiltered "other" type.
+column_duration_units <- function(x) {
+  units <- attr(x, "units", exact = TRUE)
+  is.character(units) &&
+    length(units) == 1L &&
+    !is.na(units) &&
+    units %in% names(duration_unit_seconds) &&
+    is.numeric(unclass(x))
 }
 
 # I() on a plain atomic vector adds only the AsIs class. Removing it restores
@@ -177,6 +202,11 @@ col_sort_key.character <- function(x, collation = "C", ...) {
 dense_key <- function(x) {
   match(x, sort(unique(x), na.last = NA, method = "radix"))
 }
+
+#' @export
+col_values.difftime <- function(x, ...) as.double(unclass(x))
+#' @export
+col_sort_key.difftime <- function(x, collation = "C", ...) as.double(unclass(x))
 
 #' @export
 col_values.Date <- function(x, ...) {
@@ -593,6 +623,7 @@ column_extract <- function(
           boolean = "logical",
           integer = "integer",
           number = "double",
+          duration = "double",
           "character"
         )
         typeof(v) == expected && plain(v)
@@ -600,7 +631,7 @@ column_extract <- function(
       if (is.null(value)) {
         schema$filterable <- FALSE
       }
-      if (schema$type == "number" && !is.null(value)) {
+      if (schema$type %in% c("number", "duration") && !is.null(value)) {
         special <- rep(NA_character_, n)
         special[is.na(value)] <- "na"
         special[is.nan(value)] <- "nan"

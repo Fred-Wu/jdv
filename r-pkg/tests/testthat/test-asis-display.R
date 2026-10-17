@@ -73,9 +73,9 @@ test_that("AsIs does not unwrap classed or structural contents", {
   expect_identical(column_schema(I(Sys.Date()))$type, "date")
   expect_identical(
     column_schema(I(as.difftime(1, units = "secs")))$type,
-    "other"
+    "duration"
   )
-  expect_false(column_schema(I(as.difftime(1, units = "secs")))$filterable)
+  expect_true(column_schema(I(as.difftime(1, units = "secs")))$filterable)
   expect_identical(column_schema(I(matrix(1:4, 2L)))$type, "other")
   expect_false(column_schema(I(list(1, 2)))$filterable)
   expect_identical(column_schema(I(list(1, 2)))$type, "other")

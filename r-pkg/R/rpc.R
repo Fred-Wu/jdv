@@ -400,7 +400,7 @@ jdv_json_object <- function(x = list()) {
   }
   if (
     !is.null(data$sortKey) &&
-      !column$schema$type %in% c("boolean", "integer", "number")
+      !column$schema$type %in% c("boolean", "integer", "number", "duration")
   ) {
     out$sortKey <- .jdv_json_values(data$sortKey)
   }

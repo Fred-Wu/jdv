@@ -34,7 +34,7 @@ test_that("the reference type matrix has independent channels", {
       "factor",
       "date",
       "datetime",
-      "other",
+      "duration",
       "other",
       "other",
       "string",
@@ -71,7 +71,8 @@ test_that("the reference type matrix has independent channels", {
     results[[9L]]$data$values,
     c("2020-01-01T00:00:00+11:00", NA_character_)
   )
-  expect_null(results[[10L]]$data$values)
+  expect_identical(results[[10L]]$data$values, c(60, NA))
+  expect_identical(model$schema[[10L]]$units, "secs")
   for (i in 11:12) {
     expect_false(results[[i]]$schema$sortable)
     expect_false(results[[i]]$schema$filterable)
@@ -815,4 +816,42 @@ test_that("classed matrix and data.frame dispatch is unchanged", {
   })
   user <- structure(matrix(1:4, 2L), class = "user_matrix")
   expect_identical(source(user), "user matrix method")
+})
+
+test_that("difftime columns are durations only with a known unit", {
+  hms_like <- structure(
+    c(3661.5, NA),
+    units = "secs",
+    class = c("hms", "difftime")
+  )
+  expect_identical(column_schema(hms_like)$type, "duration")
+  expect_identical(column_schema(hms_like)$units, "secs")
+  expect_identical(
+    column_schema(as.difftime(c(1, 2), units = "weeks"))$units,
+    "weeks"
+  )
+  unknown <- structure(1, units = "fortnights", class = "difftime")
+  expect_identical(column_schema(unknown)$type, "other")
+  expect_false(column_schema(unknown)$filterable)
+  expect_identical(
+    column_extract(
+      as.difftime(c(1.5, NA), units = "mins"),
+      "values"
+    )$data$values,
+    c(1.5, NA)
+  )
+})
+
+test_that("a real hms vector is a duration column", {
+  skip_if_not_installed("hms")
+  x <- hms::as_hms(c(3661.5, NA))
+  expect_identical(column_schema(x)$type, "duration")
+  holder <- paged_table(data.frame(t = x))
+  expect_identical(
+    query_indices(
+      holder,
+      filter = list(op = "ge", col = 0L, value = "1:01:01.5")
+    ),
+    1L
+  )
 })

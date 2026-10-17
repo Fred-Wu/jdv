@@ -18,6 +18,7 @@ test_that(
         expect_identical(snapshot$schema, holder$schema)
         for (j in seq_along(case$columns)) {
           expect_identical(holder$schema[[j]]$type, case$columns[[j]]$type)
+          expect_identical(holder$schema[[j]]$units, case$columns[[j]]$units)
           expect_identical(
             holder$schema[[j]]$filterable,
             case$columns[[j]]$type != "other"

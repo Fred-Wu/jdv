@@ -27,9 +27,9 @@ column_from_fixture_values <- function(column) {
       integer(1L)
     ))
   }
-  if (type == "number") {
+  if (type %in% c("number", "duration")) {
     special <- column$special %||% rep(list(NULL), length(values))
-    return(vapply(
+    out <- vapply(
       seq_along(values),
       function(i) {
         token <- special[[i]]
@@ -48,7 +48,19 @@ column_from_fixture_values <- function(column) {
         as.numeric(values[[i]])
       },
       numeric(1L)
-    ))
+    )
+    if (type == "duration") {
+      # The hms class structure is built directly so the hms package is not
+      # needed.
+      return(
+        if (identical(column$r, "hms")) {
+          structure(out, units = column$units, class = c("hms", "difftime"))
+        } else {
+          as.difftime(out, units = column$units)
+        }
+      )
+    }
+    return(out)
   }
   if (type %in% c("string", "factor")) {
     out <- vapply(values, function(v) v %||% NA_character_, character(1L))
@@ -97,9 +109,6 @@ column_from_fixture_values <- function(column) {
     }
     if (kind == "s4_record") {
       return(methods::new("query_s4_record", values))
-    }
-    if (kind == "difftime") {
-      return(as.difftime(values, units = "secs"))
     }
     stop(sprintf("unsupported fixture class: %s", kind), call. = FALSE)
   }

@@ -1169,9 +1169,9 @@ callback.
 Column identity is its zero-based \code{position}; \code{name} is display metadata and
 may be empty, duplicated, or otherwise unusual. A schema entry includes
 \code{position}, \code{name}, \code{type}, \code{class}, \code{sortable}, and \code{filterable}. Factor
-schemas also include \code{levels} and \code{ordered}; datetime schemas include \code{tz}.
-Unknown optional schema fields must be ignored by clients so future schema
-extensions remain compatible.
+schemas also include \code{levels} and \code{ordered}; datetime schemas include \code{tz};
+duration schemas include \code{units}. Unknown optional schema fields must be
+ignored by clients so future schema extensions remain compatible.
 
 A Snapshot column payload is columnar. Channel arrays are omitted when
 absent:
@@ -1203,6 +1203,9 @@ the R side.
 The following encoding rules apply:
 \itemize{
 \item \code{boolean}, \code{integer}, and finite \code{number} values use JSON booleans or numbers.
+\code{duration} values are numbers in the schema's \code{units} (\code{secs}, \code{mins},
+\code{hours}, \code{days}, or \code{weeks}), with the same missing and non-finite rules as
+\code{number}; \code{display} carries the class's own formatted text.
 Missing values use JSON \code{null} and are identified by \code{na}.
 \item Non-finite doubles use JSON \code{null} in \code{values}; the parallel \code{special} entry
 distinguishes \code{na}, \code{nan}, \code{pos_inf}, and \code{neg_inf}. Numeric comparisons and
@@ -1223,7 +1226,7 @@ timestamp strings; the schema's \code{tz} records the source time-zone setting.
 \item Snapshot \code{sortKey} is present for sortable non-primitive types and encodes the
 R ordering semantics agreed in \link[=jdv_query_spec]{query specification}, including collation,
 factor level order, and \code{integer64} order. It may be omitted for plain
-boolean, integer, and number columns whose ordering is recovered from \code{values}
+boolean, integer, number, and duration columns whose ordering is recovered from \code{values}
 and \code{special}. A \code{null} sortKey is ordered after every non-null key,
 regardless of the \code{na} mask. Paged rows never include sort keys.
 \item \code{row_index} always reports original one-based R row numbers. Snapshot

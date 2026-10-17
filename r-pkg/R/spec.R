@@ -1177,9 +1177,9 @@
 #' Column identity is its zero-based `position`; `name` is display metadata and
 #' may be empty, duplicated, or otherwise unusual. A schema entry includes
 #' `position`, `name`, `type`, `class`, `sortable`, and `filterable`. Factor
-#' schemas also include `levels` and `ordered`; datetime schemas include `tz`.
-#' Unknown optional schema fields must be ignored by clients so future schema
-#' extensions remain compatible.
+#' schemas also include `levels` and `ordered`; datetime schemas include `tz`;
+#' duration schemas include `units`. Unknown optional schema fields must be
+#' ignored by clients so future schema extensions remain compatible.
 #'
 #' A Snapshot column payload is columnar. Channel arrays are omitted when
 #' absent:
@@ -1213,6 +1213,9 @@
 #' The following encoding rules apply:
 #'
 #' - `boolean`, `integer`, and finite `number` values use JSON booleans or numbers.
+#'   `duration` values are numbers in the schema's `units` (`secs`, `mins`,
+#'   `hours`, `days`, or `weeks`), with the same missing and non-finite rules as
+#'   `number`; `display` carries the class's own formatted text.
 #'   Missing values use JSON `null` and are identified by `na`.
 #' - Non-finite doubles use JSON `null` in `values`; the parallel `special` entry
 #'   distinguishes `na`, `nan`, `pos_inf`, and `neg_inf`. Numeric comparisons and
@@ -1233,7 +1236,7 @@
 #' - Snapshot `sortKey` is present for sortable non-primitive types and encodes the
 #'   R ordering semantics agreed in \link[=jdv_query_spec]{query specification}, including collation,
 #'   factor level order, and `integer64` order. It may be omitted for plain
-#'   boolean, integer, and number columns whose ordering is recovered from `values`
+#'   boolean, integer, number, and duration columns whose ordering is recovered from `values`
 #'   and `special`. A `null` sortKey is ordered after every non-null key,
 #'   regardless of the `na` mask. Paged rows never include sort keys.
 #' - `row_index` always reports original one-based R row numbers. Snapshot
