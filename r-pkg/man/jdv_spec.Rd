@@ -190,6 +190,7 @@ A view descriptor is sent as a notification:
     "view": "v-1",
     "generation": 1,
     "title": "example",
+    "reason": "register",
     "mode": "paged",
     "kind": "grid",
     "access": "random",
@@ -226,14 +227,15 @@ that \code{view/refresh} is accepted. Tree descriptors use \code{kind: "tree"},
 \code{children: true}, and \code{refresh: true}. Tree descriptors omit grid-only fields
 (\code{mode}, \code{nrow}, \code{ncol}, \code{row_names}, \code{columns}, and \code{data}). A tree
 descriptor includes an empty \code{path} at its root. A child descriptor may
-include \code{parent}, the parent view id. \code{title} is optional. A tree descriptor
-also has \code{class}, a string array that follows \code{\link[base:class]{base::class()}} semantics for
-the root object, and \code{type}, the string \code{\link[base:typeof]{base::typeof()}} returns for it (for
-example \code{"list"}, \code{"double"}, \code{"environment"}, or \code{"S4"}). A grid descriptor
-omits both.\tabular{lll}{
+include \code{parent}, the parent view id. \code{title} is optional. \code{reason} says why
+the descriptor was sent (see below). A tree descriptor also has \code{class}, a
+string array that follows \code{\link[base:class]{base::class()}} semantics for the root object, and
+\code{type}, the string \code{\link[base:typeof]{base::typeof()}} returns for it (for example \code{"list"},
+\code{"double"}, \code{"environment"}, or \code{"S4"}). A grid descriptor omits both.\tabular{lll}{
    Descriptor field \tab Grid \tab Tree \cr
    \code{view}, \code{generation}, \code{kind}, \code{access}, \code{encoding}, \code{capabilities} \tab Required \tab Required \cr
    \code{title} \tab Optional \tab Optional \cr
+   \code{reason} \tab Always sent by R; see below \tab Always sent by R; see below \cr
    \code{mode}, \code{collation}, \code{nrow}, \code{ncol}, \code{row_names}, \code{columns} \tab Required \tab Omitted \cr
    \code{data} \tab Required for Snapshot; omitted for Paged \tab Omitted \cr
    \code{path} \tab Omitted \tab Required; empty for the root \cr
@@ -241,6 +243,21 @@ omits both.\tabular{lll}{
    \code{parent} \tab Optional on child views \tab Optional on child views \cr
 }
 
+
+\code{reason} is a fixed token that tells the host why a \code{view/open} was sent, so
+it can tell an explicit request from an automatic update when a view id
+reappears with a higher \code{generation}. R always sends it. A host treats a
+missing or unknown value as \code{"register"}.\tabular{ll}{
+   \code{reason} \tab Sent when \cr
+   \code{"register"} \tab A view is registered with \code{\link[=jdv_register]{jdv_register()}} or \code{\link[=jdv_view]{jdv_view()}}, including a registration that replaces the view with the same title and Arrow sequential views. \cr
+   \code{"child"} \tab A child view is opened by \code{object/open}. \cr
+   \code{"tracked"} \tab A tracked view is rebuilt automatically because its variable changed (see \code{\link[=jdv_view]{jdv_view()}}). \cr
+   \code{"refresh"} \tab A view is rebuilt by \code{view/refresh}. \cr
+}
+
+
+A host can bring a view to the front for \code{"register"} and \code{"child"}, and
+update it quietly for \code{"tracked"} and \code{"refresh"}.
 
 Grid-level flags declare the operations available in protocol v1; each
 column's \code{sortable} field constrains sorting, and \code{filterable} constrains
@@ -261,6 +278,7 @@ A tree descriptor has no grid fields:
     "view": "v-2",
     "generation": 1,
     "title": "object",
+    "reason": "register",
     "path": [],
     "kind": "tree",
     "access": "random",
@@ -804,12 +822,25 @@ is the child's \code{view/open.params} descriptor, but the child is registered b
 the \code{view/open} notification that precedes the response (see the Notification
 delivery section); a host must not create or revive a view from the response,
 and may use it only to find the child. If building the response fails, the
-child is closed and no \code{view/open} for it is sent. A tree child starts a new
-root with an empty path; the descriptor may identify its parent with
-\code{parent}. The limit is 32 live descendant views total per root, counting
-nested tree and grid views across all levels. Closing a child releases its
-slot for a later child view. Closing, replacing, or evicting a parent closes
-its descendants; each cascaded child emits \code{view/closed} with
+child is closed and no \code{view/open} for it is sent. The child descriptor has
+\code{reason: "child"}. If the parent has a \code{title}, the child's \code{title} is an R
+expression built from the parent's \code{title} and the opened path; if the parent
+has none, the child has none either. A list element uses \code{x$name} when its
+name is nonempty and unique and \code{x$`a b`} when the name is not a
+syntactic name, and \code{x[[3]]} (one-based) otherwise. An element of a named
+atomic vector uses \code{x[["name"]]} under the same rule. An S4 slot is \code{x@slot},
+an environment binding is \code{x$name}, an attribute is \code{attr(x, "names")}, and a
+grid cell is \code{df[12, "col"]} with the original one-based \code{row_index}, or
+\code{df[12, 3]} with a one-based column position when the column name is missing,
+empty, or duplicated. A child of a child continues from the child's \code{title},
+for example \code{x$a[[2]]@data}. The \code{title} is truncated to 4,096 bytes. It is a
+display label only: it is not guaranteed to be valid R, a host must not
+evaluate it, and it does not identify the view or take a title slot. A tree
+child starts a new root with an empty path; the descriptor may identify its
+parent with \code{parent}. The limit is 32 live descendant views total per root,
+counting nested tree and grid views across all levels. Closing a child
+releases its slot for a later child view. Closing, replacing, or evicting a
+parent closes its descendants; each cascaded child emits \code{view/closed} with
 \code{reason: "parent_closed"}.
 
 The browser uses the same child-view navigation for tree and grid parents.

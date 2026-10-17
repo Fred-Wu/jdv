@@ -72,7 +72,10 @@
 .jdv_tree_resolve <- function(root, path, ancestry = list()) {
   value <- root
   seen <- c(list(root), ancestry)
+  # The value each step started from, so a caller can name the steps.
+  containers <- list()
   for (step in path) {
+    containers[[length(containers) + 1L]] <- value
     kind <- step$type
     index <- if (identical(kind, "index")) step$index else 0L
     name <- if (!identical(kind, "index")) step$name else ""
@@ -99,7 +102,108 @@
     }
     seen[[length(seen) + 1L]] <- value
   }
-  list(status = "value", value = value, seen = seen)
+  list(status = "value", value = value, seen = seen, containers = containers)
+}
+
+.jdv_title_limit <- 4096L
+
+# Display titles for child views. They only label a child for the user and are
+# never parsed back or evaluated.
+.jdv_title_symbol <- function(name) {
+  if (identical(make.names(name), name)) {
+    return(name)
+  }
+  paste0("`", gsub("`", "\\`", encodeString(name), fixed = TRUE), "`")
+}
+
+.jdv_title_string <- function(name) encodeString(name, quote = '"')
+
+# The name of element `index` when it is a usable key: present, nonempty, and
+# unique among `names`.
+.jdv_title_key_name <- function(names, index) {
+  if (is.null(names) || index > length(names)) {
+    return(NULL)
+  }
+  name <- names[[index]]
+  if (is.na(name) || !nzchar(name) || sum(names == name, na.rm = TRUE) != 1L) {
+    return(NULL)
+  }
+  name
+}
+
+.jdv_title_step <- function(title, step, container) {
+  type <- step$type
+  if (identical(type, "binding")) {
+    return(paste0(title, "$", .jdv_title_symbol(step$name)))
+  }
+  if (identical(type, "slot")) {
+    return(paste0(title, "@", .jdv_title_symbol(step$name)))
+  }
+  if (identical(type, "attr")) {
+    return(paste0("attr(", title, ", ", .jdv_title_string(step$name), ")"))
+  }
+  names <- tryCatch(
+    attr(container, "names", exact = TRUE),
+    error = function(error) NULL
+  )
+  if (!is.character(names)) {
+    names <- NULL
+  }
+  name <- .jdv_title_key_name(names, step$index)
+  if (is.null(name)) {
+    return(paste0(title, "[[", format(step$index, scientific = FALSE), "]]"))
+  }
+  atomic <- is.atomic(container)
+  if (atomic) {
+    return(paste0(title, "[[", .jdv_title_string(name), "]]"))
+  }
+  paste0(title, "$", .jdv_title_symbol(name))
+}
+
+# The title of the child opened at `path` below `entry`, or NULL when the
+# parent has no title. `resolved` is the .jdv_tree_resolve() result for the
+# steps after a leading cell step.
+.jdv_child_title <- function(entry, path, resolved) {
+  title <- entry$title
+  if (is.null(title)) {
+    return(NULL)
+  }
+  steps <- path
+  if (identical(path[[1L]]$kind, "cell")) {
+    cell <- path[[1L]]
+    steps <- path[-1L]
+    names <- vapply(
+      entry$schema,
+      function(column) as.character(column$name %||% ""),
+      character(1L)
+    )
+    key <- .jdv_title_key_name(names, cell$column + 1L)
+    column <- if (is.null(key)) {
+      format(cell$column + 1, scientific = FALSE)
+    } else {
+      .jdv_title_string(key)
+    }
+    title <- paste0(
+      title,
+      "[",
+      format(cell$row_index, scientific = FALSE),
+      ", ",
+      column,
+      "]"
+    )
+  }
+  for (i in seq_along(steps)) {
+    title <- .jdv_title_step(title, steps[[i]], resolved$containers[[i]])
+    if (nchar(title, type = "bytes") > 2L * .jdv_title_limit) {
+      break
+    }
+  }
+  # Truncate on characters, as other display text is, then fit the byte limit.
+  title <- substr(enc2utf8(title), 1L, .jdv_title_limit)
+  while (nchar(title, type = "bytes") > .jdv_title_limit) {
+    title <- substr(title, 1L, nchar(title) - 1L)
+  }
+  title
 }
 
 .jdv_tree_class <- function(info) {
@@ -571,7 +675,8 @@
   generation,
   title,
   parent = NULL,
-  value = NULL
+  value = NULL,
+  reason = "register"
 ) {
   capabilities <- stats::setNames(
     as.list(c(TRUE, FALSE, FALSE, TRUE, FALSE, TRUE, TRUE)),
@@ -585,6 +690,7 @@
     capabilities = jdv_json_object(capabilities),
     generation = generation,
     title = title,
+    reason = reason,
     path = jdv_json_array()
   )
   info <- .jdv_tree_info(value)
@@ -623,12 +729,22 @@
   entry
 }
 
-.jdv_tree_register <- function(x, title = NULL, parent = NULL) {
+.jdv_tree_register <- function(
+  x,
+  title = NULL,
+  parent = NULL,
+  reason = "register"
+) {
   .jdv_assert_active()
   if (!is.null(title)) {
     title <- query_string(title, 4096L)
   }
-  title_key <- if (is.null(title)) NULL else .jdv_title_key(title)
+  # A child's title is a display name only; it never takes a title slot.
+  title_key <- if (is.null(title) || !is.null(parent)) {
+    NULL
+  } else {
+    .jdv_title_key(title)
+  }
   previous <- if (
     !is.null(title_key) &&
       exists(title_key, envir = .jdv_state$titles, inherits = FALSE)
@@ -660,7 +776,7 @@
       )
     }
   }
-  descriptor <- .jdv_tree_descriptor(id, generation, title, parent, x)
+  descriptor <- .jdv_tree_descriptor(id, generation, title, parent, x, reason)
   open <- .jdv_json_encode(descriptor, .jdv_max_message_bytes())
   .jdv_assert_active()
 
@@ -742,7 +858,8 @@
   x,
   parent,
   mode = "auto",
-  collation = NULL
+  collation = NULL,
+  title = NULL
 ) {
   .jdv_assert_not_refreshing()
   if (!.jdv_tree_entry_is_current(parent)) {
@@ -759,7 +876,12 @@
   }
   source <- jdv_source(x)
   if (identical(source$kind, "tree")) {
-    return(.jdv_tree_register(source$data, parent = parent))
+    return(.jdv_tree_register(
+      source$data,
+      title = title,
+      parent = parent,
+      reason = "child"
+    ))
   }
 
   old_pins <- .jdv_state$eviction_pins
@@ -774,7 +896,8 @@
     title = NULL,
     mode = mode,
     collation = collation,
-    emit = FALSE
+    emit = FALSE,
+    reason = "child"
   )
   child <- get(registered$id, envir = .jdv_state$entries, inherits = FALSE)
   committed <- FALSE
@@ -797,10 +920,14 @@
   child$parent_generation <- parent$generation
   child$children <- character()
   child$path <- list()
+  child$title <- title
   parsed <- .jdv_json_parse(
     registered$open,
     limit = max(1024, .jdv_max_message_bytes())
   )
+  if (!is.null(title)) {
+    parsed$params$title <- title
+  }
   parsed$params$parent <- parent$id
   parsed$params$path <- jdv_json_array()
   registered$open <- .jdv_json_encode(parsed)

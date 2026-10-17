@@ -318,7 +318,8 @@
       candidate,
       entry$intent_mode,
       entry$intent_collation,
-      tracked = TRUE
+      tracked = TRUE,
+      reason = "tracked"
     ),
     error = function(error) {
       if (inherits(error, "jdv_notification_overflow")) {

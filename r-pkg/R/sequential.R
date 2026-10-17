@@ -54,13 +54,14 @@
   .jdv_sequential_flush()
 }
 
-.jdv_sequential_descriptor <- function(content, id, generation, title) {
+.jdv_sequential_descriptor <- function(content, id, generation, title, reason) {
   list(
     method = "view/open",
     params = list(
       view = id,
       generation = generation,
       title = title,
+      reason = reason,
       kind = "grid",
       access = "sequential",
       encoding = "arrow-ipc",
@@ -84,7 +85,7 @@
   )
 }
 
-.jdv_sequential_register <- function(x, title = NULL) {
+.jdv_sequential_register <- function(x, title = NULL, reason = "register") {
   .jdv_assert_active()
   if (!is.null(title)) {
     title <- query_string(title, 4096L)
@@ -167,7 +168,8 @@
       content,
       id,
       generation,
-      title
+      title,
+      reason
     ))
     .jdv_assert_active()
     if (!stable()) {

@@ -495,7 +495,7 @@ jdv_json_object <- function(x = list()) {
   }
 }
 
-.jdv_descriptor <- function(content, id, generation, title) {
+.jdv_descriptor <- function(content, id, generation, title, reason) {
   capabilities <- list(
     seek = TRUE,
     sort = TRUE,
@@ -518,6 +518,7 @@ jdv_json_object <- function(x = list()) {
     capabilities = capabilities,
     generation = generation,
     title = title,
+    reason = reason,
     mode = content$mode,
     collation = content$collation,
     nrow = content$nrow,
@@ -801,8 +802,16 @@ jdv_register <- function(
 
 # Register without sending. `emit = FALSE` leaves the view/open message out of
 # the queue; the caller owns it (see object/open, where it follows the
-# response). Returns the id, generation, open JSON, and descriptor if any.
-.jdv_register_internal <- function(x, title, mode, collation, emit = TRUE) {
+# response). `reason` is the view/open reason token. Returns the id,
+# generation, open JSON, and descriptor if any.
+.jdv_register_internal <- function(
+  x,
+  title,
+  mode,
+  collation,
+  emit = TRUE,
+  reason = "register"
+) {
   .jdv_assert_active()
   .jdv_assert_not_refreshing()
   collation_intent <- collation
@@ -816,11 +825,11 @@ jdv_register <- function(
   source <- jdv_source(x)
   x <- source$data
   registered <- if (identical(source$kind, "tree")) {
-    .jdv_tree_register(x, title = title)
+    .jdv_tree_register(x, title = title, reason = reason)
   } else if (identical(source$access, "sequential")) {
-    .jdv_sequential_register(x, title = title)
+    .jdv_sequential_register(x, title = title, reason = reason)
   } else {
-    .jdv_grid_register(x, title, mode, collation, collation_intent)
+    .jdv_grid_register(x, title, mode, collation, collation_intent, reason)
   }
   if (emit) {
     .jdv_notify(registered$open)
@@ -910,7 +919,8 @@ jdv_register <- function(
   title,
   mode,
   collation,
-  collation_intent = collation
+  collation_intent = collation,
+  reason = "register"
 ) {
   if (!is.null(title)) {
     title <- query_string(title, 4096L)
@@ -944,7 +954,7 @@ jdv_register <- function(
     )
   }
   generation <- if (is.null(previous)) 1 else previous$generation + 1
-  descriptor <- .jdv_descriptor(content, id, generation, title)
+  descriptor <- .jdv_descriptor(content, id, generation, title, reason)
   open <- tryCatch(
     .jdv_json_encode(
       descriptor,
@@ -981,7 +991,7 @@ jdv_register <- function(
           )
         }
         generation <<- if (is.null(previous)) 1 else previous$generation + 1
-        descriptor <<- .jdv_descriptor(content, id, generation, title)
+        descriptor <<- .jdv_descriptor(content, id, generation, title, reason)
         .jdv_json_encode(
           descriptor,
           max_message,
@@ -1334,7 +1344,8 @@ jdv_register <- function(
       resolved$value,
       parent,
       mode = child_mode,
-      collation = child_collation
+      collation = child_collation,
+      title = .jdv_child_title(entry, path, resolved)
     )
     committed <- FALSE
     on.exit(

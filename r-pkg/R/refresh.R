@@ -22,10 +22,11 @@
   id,
   generation,
   title,
-  parent
+  parent,
+  reason
 ) {
   describe <- function(content) {
-    descriptor <- .jdv_descriptor(content, id, generation, title)
+    descriptor <- .jdv_descriptor(content, id, generation, title, reason)
     if (!is.null(parent)) {
       descriptor$params$parent <- parent$id
       descriptor$params$path <- jdv_json_array()
@@ -70,7 +71,14 @@
 # entry, generation, and parent are re-checked. A close or disconnect issued
 # by a user method during construction is honored; the closed view is not
 # revived. Returns the view/refresh result.
-.jdv_update_view <- function(entry, value, mode, collation, tracked = FALSE) {
+.jdv_update_view <- function(
+  entry,
+  value,
+  mode,
+  collation,
+  tracked = FALSE,
+  reason = "refresh"
+) {
   .jdv_assert_active()
   .jdv_assert_not_refreshing()
   if (identical(entry$mode, "sequential")) {
@@ -134,7 +142,14 @@
     )
   }
   if (identical(source$kind, "tree")) {
-    descriptor <- .jdv_tree_descriptor(id, generation, title, parent, value)
+    descriptor <- .jdv_tree_descriptor(
+      id,
+      generation,
+      title,
+      parent,
+      value,
+      reason
+    )
     open <- .jdv_json_encode(descriptor, .jdv_max_message_bytes())
     replacement <- .jdv_tree_new_entry(value, id, generation, title, parent)
   } else {
@@ -155,7 +170,8 @@
       id,
       generation,
       title,
-      parent
+      parent,
+      reason
     )
     open <- prepared$open
     replacement <- .jdv_install(

@@ -11,7 +11,7 @@ test_that(
     )
     seen <- list()
     local_mocked_bindings(
-      .jdv_sequential_register = function(x, title = NULL) {
+      .jdv_sequential_register = function(x, title = NULL, reason) {
         seen[[length(seen) + 1L]] <<- x
         list(
           id = "sequential-adapter",

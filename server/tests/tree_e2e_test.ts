@@ -1087,7 +1087,7 @@ Deno.test({
         });
         assertEquals(kinds, [
           `view/closed:${childView}:${opened.generation}:parent_closed`,
-          `view/open:${root.view}:${Number(root.generation) + 1}:`,
+          `view/open:${root.view}:${Number(root.generation) + 1}:refresh`,
         ]);
 
         const stale = await request(

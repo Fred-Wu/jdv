@@ -95,6 +95,7 @@ test_that("registration returns snapshots and reuses titled generations", {
       "capabilities",
       "generation",
       "title",
+      "reason",
       "mode",
       "collation",
       "nrow",

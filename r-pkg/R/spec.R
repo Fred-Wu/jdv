@@ -187,6 +187,7 @@
 #'     "view": "v-1",
 #'     "generation": 1,
 #'     "title": "example",
+#'     "reason": "register",
 #'     "mode": "paged",
 #'     "kind": "grid",
 #'     "access": "random",
@@ -223,21 +224,37 @@
 #' `children: true`, and `refresh: true`. Tree descriptors omit grid-only fields
 #' (`mode`, `nrow`, `ncol`, `row_names`, `columns`, and `data`). A tree
 #' descriptor includes an empty `path` at its root. A child descriptor may
-#' include `parent`, the parent view id. `title` is optional. A tree descriptor
-#' also has `class`, a string array that follows [base::class()] semantics for
-#' the root object, and `type`, the string [base::typeof()] returns for it (for
-#' example `"list"`, `"double"`, `"environment"`, or `"S4"`). A grid descriptor
-#' omits both.
+#' include `parent`, the parent view id. `title` is optional. `reason` says why
+#' the descriptor was sent (see below). A tree descriptor also has `class`, a
+#' string array that follows [base::class()] semantics for the root object, and
+#' `type`, the string [base::typeof()] returns for it (for example `"list"`,
+#' `"double"`, `"environment"`, or `"S4"`). A grid descriptor omits both.
 #'
 #' | Descriptor field                                                   | Grid                                     | Tree                         |
 #' | ------------------------------------------------------------------ | ---------------------------------------- | ---------------------------- |
 #' | `view`, `generation`, `kind`, `access`, `encoding`, `capabilities` | Required                                 | Required                     |
 #' | `title`                                                            | Optional                                 | Optional                     |
+#' | `reason`                                                           | Always sent by R; see below              | Always sent by R; see below  |
 #' | `mode`, `collation`, `nrow`, `ncol`, `row_names`, `columns`        | Required                                 | Omitted                      |
 #' | `data`                                                             | Required for Snapshot; omitted for Paged | Omitted                      |
 #' | `path`                                                             | Omitted                                  | Required; empty for the root |
 #' | `class`, `type`                                                    | Omitted                                  | Required                     |
 #' | `parent`                                                           | Optional on child views                  | Optional on child views      |
+#'
+#' `reason` is a fixed token that tells the host why a `view/open` was sent, so
+#' it can tell an explicit request from an automatic update when a view id
+#' reappears with a higher `generation`. R always sends it. A host treats a
+#' missing or unknown value as `"register"`.
+#'
+#' | `reason`     | Sent when                                                                                                                                     |
+#' | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+#' | `"register"` | A view is registered with [jdv_register()] or [jdv_view()], including a registration that replaces the view with the same title and Arrow sequential views. |
+#' | `"child"`    | A child view is opened by `object/open`.                                                                                                      |
+#' | `"tracked"`  | A tracked view is rebuilt automatically because its variable changed (see [jdv_view()]).                                                      |
+#' | `"refresh"`  | A view is rebuilt by `view/refresh`.                                                                                                          |
+#'
+#' A host can bring a view to the front for `"register"` and `"child"`, and
+#' update it quietly for `"tracked"` and `"refresh"`.
 #'
 #' Grid-level flags declare the operations available in protocol v1; each
 #' column's `sortable` field constrains sorting, and `filterable` constrains
@@ -259,6 +276,7 @@
 #'     "view": "v-2",
 #'     "generation": 1,
 #'     "title": "object",
+#'     "reason": "register",
 #'     "path": [],
 #'     "kind": "tree",
 #'     "access": "random",
@@ -809,12 +827,25 @@
 #' the `view/open` notification that precedes the response (see the Notification
 #' delivery section); a host must not create or revive a view from the response,
 #' and may use it only to find the child. If building the response fails, the
-#' child is closed and no `view/open` for it is sent. A tree child starts a new
-#' root with an empty path; the descriptor may identify its parent with
-#' `parent`. The limit is 32 live descendant views total per root, counting
-#' nested tree and grid views across all levels. Closing a child releases its
-#' slot for a later child view. Closing, replacing, or evicting a parent closes
-#' its descendants; each cascaded child emits `view/closed` with
+#' child is closed and no `view/open` for it is sent. The child descriptor has
+#' `reason: "child"`. If the parent has a `title`, the child's `title` is an R
+#' expression built from the parent's `title` and the opened path; if the parent
+#' has none, the child has none either. A list element uses `x$name` when its
+#' name is nonempty and unique and `` x$`a b` `` when the name is not a
+#' syntactic name, and `x[[3]]` (one-based) otherwise. An element of a named
+#' atomic vector uses `x[["name"]]` under the same rule. An S4 slot is `x@slot`,
+#' an environment binding is `x$name`, an attribute is `attr(x, "names")`, and a
+#' grid cell is `df[12, "col"]` with the original one-based `row_index`, or
+#' `df[12, 3]` with a one-based column position when the column name is missing,
+#' empty, or duplicated. A child of a child continues from the child's `title`,
+#' for example `x$a[[2]]@data`. The `title` is truncated to 4,096 bytes. It is a
+#' display label only: it is not guaranteed to be valid R, a host must not
+#' evaluate it, and it does not identify the view or take a title slot. A tree
+#' child starts a new root with an empty path; the descriptor may identify its
+#' parent with `parent`. The limit is 32 live descendant views total per root,
+#' counting nested tree and grid views across all levels. Closing a child
+#' releases its slot for a later child view. Closing, replacing, or evicting a
+#' parent closes its descendants; each cascaded child emits `view/closed` with
 #' `reason: "parent_closed"`.
 #'
 #' The browser uses the same child-view navigation for tree and grid parents.

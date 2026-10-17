@@ -433,3 +433,10 @@ test_that(
     expect_identical(.jdv_json_parse(wide$open)$params$max_page_rows, 2000)
   }
 )
+
+test_that("a sequential view announces the register reason", {
+  sequential_fixture()
+  on.exit(.jdv_close_internal(notify = FALSE), add = TRUE)
+  registered <- .jdv_sequential_register(NULL)
+  expect_identical(.jdv_json_parse(registered$open)$params$reason, "register")
+})
