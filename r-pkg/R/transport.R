@@ -813,8 +813,12 @@ jdv_view <- function(
       found <- NULL
     }
   }
-  mode <- match.arg(mode)
-  collation <- if (missing(collation)) NULL else match.arg(collation)
+  mode <- .jdv_match_arg(mode, c("auto", "snapshot", "paged"), "'mode'")
+  collation <- if (missing(collation)) {
+    NULL
+  } else {
+    .jdv_match_arg(collation, c("C", "locale"), "'collation'")
+  }
   original <- x
   source <- jdv_source(x)
   x <- source$data

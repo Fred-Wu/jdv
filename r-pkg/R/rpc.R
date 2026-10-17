@@ -104,6 +104,24 @@ jdv_condition <- function(code, message, details = NULL, extra = character()) {
 
 jdv_abort <- function(code, message) stop(jdv_condition(code, message))
 
+# match.arg() for a public argument or option, failing with invalid_argument.
+.jdv_match_arg <- function(arg, choices, name) {
+  tryCatch(
+    match.arg(arg, choices),
+    error = function(error) {
+      jdv_abort(
+        "invalid_argument",
+        paste0(
+          name,
+          " must be one of ",
+          paste0('"', choices, '"', collapse = ", "),
+          "."
+        )
+      )
+    }
+  )
+}
+
 # The error codes of the wire protocol. Other jdv_error codes belong to the R
 # API only and are reported to a viewer as `r_error`.
 .jdv_protocol_codes <- c(
@@ -889,8 +907,12 @@ jdv_register <- function(
   binding = NULL
 ) {
   .jdv_assert_active()
-  mode <- match.arg(mode)
-  collation <- if (missing(collation)) NULL else match.arg(collation)
+  mode <- .jdv_match_arg(mode, c("auto", "snapshot", "paged"), "'mode'")
+  collation <- if (missing(collation)) {
+    NULL
+  } else {
+    .jdv_match_arg(collation, c("C", "locale"), "'collation'")
+  }
   tracking <- if (!is.null(binding)) .jdv_binding_verify(x, binding)
   registered <- .jdv_register_internal(
     x,
@@ -933,7 +955,11 @@ jdv_register <- function(
   if (is.null(collation)) {
     collation <- getOption("jdv.collation", "C")
   }
-  collation <- match.arg(collation, c("C", "locale"))
+  collation <- .jdv_match_arg(
+    collation,
+    c("C", "locale"),
+    "'collation' or option 'jdv.collation'"
+  )
   started <- .jdv_session_ensure()
   completed <- FALSE
   on.exit(if (started && !completed) .jdv_session_discard_empty(), add = TRUE)

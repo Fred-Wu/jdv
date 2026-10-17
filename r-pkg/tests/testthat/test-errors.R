@@ -17,6 +17,31 @@ test_that("argument errors carry jdv_error_invalid_argument", {
   expect_error(jdv_connect(), class = "jdv_error_invalid_argument")
 })
 
+test_that("unknown mode and collation values are invalid_argument", {
+  jdv_disconnect()
+  withr::defer(jdv_disconnect())
+  expect_error(
+    jdv_register(mtcars, mode = "bad"),
+    class = "jdv_error_invalid_argument"
+  )
+  expect_error(
+    jdv_register(mtcars, collation = "bad"),
+    class = "jdv_error_invalid_argument"
+  )
+  expect_error(
+    jdv_view(mtcars, mode = "bad", track = FALSE),
+    class = "jdv_error_invalid_argument"
+  )
+  expect_error(
+    jdv_view(mtcars, collation = "bad", track = FALSE),
+    class = "jdv_error_invalid_argument"
+  )
+  # Partial matching keeps working as with match.arg().
+  expect_type(jdv_register(mtcars, mode = "snap")$id, "character")
+  withr::local_options(jdv.collation = "bad")
+  expect_error(jdv_register(mtcars), class = "jdv_error_invalid_argument")
+})
+
 test_that("an unreachable viewer is connect_failed", {
   skip_on_os("windows")
   jdv_disconnect()

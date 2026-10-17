@@ -166,7 +166,11 @@
     if (is.null(collation)) {
       collation <- getOption("jdv.collation", "C")
     }
-    collation <- match.arg(collation, c("C", "locale"))
+    collation <- .jdv_match_arg(
+      collation,
+      c("C", "locale"),
+      "'collation' or option 'jdv.collation'"
+    )
     mode <- mode %||% "auto"
     built <- .jdv_grid_content(value, mode, collation)
     .jdv_assert_active()
