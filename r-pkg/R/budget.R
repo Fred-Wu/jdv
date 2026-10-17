@@ -123,12 +123,16 @@
     kind <- schema$type
     cost_kind <- kind
     widths <- numeric()
+    levels <- character()
     if (kind %in% c("string", "factor") && requested_rows > 0) {
       if (is.matrix(holder$source)) {
         positions <- candidate_rows + (j - 1L) * holder$nrow
+        # Matrix cells hold factor codes rather than level text, so a factor
+        # matrix is estimated like any other classed column.
         if (
-          kind == "string" &&
-            !identical(class(holder$source), c("matrix", "array"))
+          kind == "factor" ||
+            (kind == "string" &&
+              !identical(class(holder$source), c("matrix", "array")))
         ) {
           cost_kind <- "other"
         } else {
