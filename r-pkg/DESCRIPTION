@@ -46,6 +46,7 @@ Suggests:
     arrow,
     bit64,
     callr,
+    hms,
     jsonlite,
     methods,
     nanoarrow,
