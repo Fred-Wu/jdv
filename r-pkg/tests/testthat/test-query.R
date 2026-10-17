@@ -407,13 +407,12 @@ test_that("invalid queries carry stable error codes before cache access", {
     ),
     "limit_exceeded"
   )
-  expect_query_code(
-    query_page(paged_table(
-      matrix(1, 1L, 3L),
-      limits = list(page_columns = 2L)
-    )),
-    "limit_exceeded"
+  narrow_page_limit <- paged_table(
+    matrix(1, 1L, 3L),
+    limits = list(page_columns = 2L)
   )
+  expect_length(query_page(narrow_page_limit)$data$columns, 3L)
+  expect_query_code(query_page(narrow_page_limit, cols = 0:2), "limit_exceeded")
   expect_query_code(
     paged_table(matrix(1, 1L, 3L), limits = list(max_columns = 2L)),
     "invalid_request"

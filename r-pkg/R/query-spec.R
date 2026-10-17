@@ -163,13 +163,18 @@
 #' total-result computation still apply. A larger limit is clamped to
 #' `page_rows`.
 #'
-#' `cols = NULL` selects every column, preserving source order. It does not
-#' bypass `page_columns`: a table with more than 256 columns needs an explicit
-#' smaller selection or an appropriate internal limit override. Excess columns
-#' are never silently omitted. An empty explicit selection returns no data
-#' columns while still returning row indices and totals. Selected columns follow
-#' selector order. Table width is otherwise bounded by descriptor and response
-#' message budgets rather than a fixed registration column count.
+#' `cols = NULL` selects every column, preserving source order, and is not
+#' subject to `page_columns`. Before extracting page channels, jdv estimates a
+#' row count that fits the selected schemas, page work budget, and JSON message
+#' budget. It preserves every selected column and reduces the effective page
+#' `limit`; if the fixed schema or one row cannot fit, it returns
+#' `limit_exceeded`. Final JSON encoding can shorten the page further for
+#' unusually large values or custom formatters. Explicit `cols` arrays remain
+#' limited by `page_columns` (256 by default). An empty explicit selection
+#' returns no data columns while still returning row indices and totals.
+#' Selected columns follow selector order. Table width is otherwise bounded by
+#' descriptor and response message budgets rather than a fixed registration
+#' column count.
 #'
 #'
 #' @section Filter AST:

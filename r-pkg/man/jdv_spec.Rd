@@ -820,11 +820,16 @@ For an empty page, \code{row_index} and explicit \code{row_names} are empty arra
 with empty channel arrays. Only \verb{cols: []} produces an empty \code{columns} array.
 
 Column selectors are positions rather than names, so duplicate or unusual
-column names are safe. \verb{cols: []} requests only the row metadata. If the
-implicit all-column selection exceeds the page column limit, the request
-fails with \code{limit_exceeded}; columns are never silently dropped. Snapshot
-registrations reject row requests with \code{unsupported} because their payload is
-host-cached.
+column names are safe. \verb{cols: []} requests only the row metadata. An omitted
+or \code{null} \code{cols} selects every column and is not subject to the explicit
+\code{page_columns} limit. Before extracting page channels, jdv estimates a row
+count that fits the selected schemas, page work budget, and JSON message
+budget; it preserves every selected column and reduces the effective \code{limit}.
+Explicit \code{cols} arrays remain capped by \code{page_columns} (256 by default). If
+the fixed page schema or one row cannot fit, the request returns
+\code{limit_exceeded}. Final JSON encoding can still shorten the page to protect
+against unusually large values or custom formatters. Snapshot registrations
+reject row requests with \code{unsupported} because their payload is host-cached.
 }
 
 \section{\code{view/close} and \code{view/closed}}{

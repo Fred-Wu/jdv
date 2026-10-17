@@ -189,6 +189,9 @@ def main():
                     "limit": 2,
                 },
             }
+            if args.scenario == "large-response":
+                # Keep framing coverage independent of implicit page sizing.
+                request["params"]["cols"] = [0]
             payload = json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
             expected_ids = ["mock-rows-1"]
             queue_info = {}

@@ -530,7 +530,8 @@ query_page <- function(
   query_alive(holder)
   offset <- query_integer(offset, "offset")
   limit <- min(query_integer(limit, "limit"), holder$limits$page_rows)
-  js <- if (is.null(cols)) {
+  implicit_cols <- is.null(cols)
+  js <- if (implicit_cols) {
     seq_len(holder$ncol)
   } else {
     if (json_is_array(cols)) {
@@ -548,12 +549,13 @@ query_page <- function(
   if (anyDuplicated(js)) {
     query_error("invalid_request", "Duplicate page columns.")
   }
-  if (length(js) > holder$limits$page_columns) {
+  if (!implicit_cols && length(js) > holder$limits$page_columns) {
     query_error("limit_exceeded", "Too many page columns.")
   }
   budget <- budget %||% .jdv_budget(holder$limits$page_work_bytes)
   query_budget <- query_budget %||% .jdv_budget(holder$limits$work_bytes)
   has_query <- length(sort) > 0L || !is.null(filter)
+  page_limit <- limit
   if (has_query) {
     indices <- query_indices(holder, sort, filter, query_budget)
     if (is.finite(holder$limits$work_bytes)) {
@@ -564,13 +566,45 @@ query_page <- function(
     }
     total <- length(indices)
     count <- min(limit, max(0, total - offset))
-    rows <- if (count) indices[offset + seq_len(count)] else integer()
+    candidate_rows <- if (count) indices[offset + seq_len(count)] else integer()
+    requested_count <- count
+    if (implicit_cols) {
+      count <- .jdv_page_row_capacity(
+        holder,
+        js,
+        candidate_rows,
+        requested_count,
+        budget
+      )
+    }
+    if (count < requested_count) {
+      page_limit <- count
+    }
+    rows <- if (count) candidate_rows[seq_len(count)] else integer()
   } else {
     holder$recent_index_key <- NULL
     holder$recent_indices <- NULL
     total <- holder$nrow
     count <- min(limit, max(0, total - offset))
-    rows <- if (count) seq.int(offset + 1, length.out = count) else integer()
+    candidate_rows <- if (count) {
+      seq.int(offset + 1, length.out = count)
+    } else {
+      integer()
+    }
+    requested_count <- count
+    if (implicit_cols) {
+      count <- .jdv_page_row_capacity(
+        holder,
+        js,
+        candidate_rows,
+        requested_count,
+        budget
+      )
+    }
+    if (count < requested_count) {
+      page_limit <- count
+    }
+    rows <- if (count) candidate_rows[seq_len(count)] else integer()
   }
   .jdv_budget_charge(budget, 8 * length(rows), "page_rows")
   columns <- lapply(js, function(j) {
@@ -608,7 +642,7 @@ query_page <- function(
     total = total,
     total_unfiltered = holder$nrow,
     offset = offset,
-    limit = limit,
+    limit = page_limit,
     data = list(row_index = rows, row_names = row_names, columns = columns)
   )
   attr(result, "jdv_work_budget") <- budget

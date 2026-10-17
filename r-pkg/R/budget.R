@@ -40,6 +40,241 @@
   max(1, budget$limit - budget$used)
 }
 
+.jdv_page_row_capacity <- function(
+  holder,
+  columns,
+  candidate_rows,
+  requested_rows,
+  budget,
+  message_limit = .jdv_max_message_bytes()
+) {
+  column_count <- length(columns)
+  work_fixed <- 128 + 128 * column_count
+  remaining_work <- min(budget$limit - budget$used, .jdv_page_work_bytes())
+  if (remaining_work < work_fixed) {
+    .jdv_budget_error(
+      "The selected page columns exceed the fixed page work budget.",
+      "page_metadata"
+    )
+  }
+  wire_columns <- lapply(columns, function(j) {
+    schema <- holder$schema[[j]]
+    list(
+      schema = .jdv_schema_fields(schema),
+      data = list(
+        values = .jdv_json_values(numeric()),
+        display = .jdv_json_values(character()),
+        special = .jdv_json_values(character()),
+        na = .jdv_json_values(logical())
+      ),
+      errors = list()
+    )
+  })
+  skeleton <- list(
+    id = 1,
+    result = list(
+      view = "v-9007199254740992",
+      generation = 2^53,
+      total = 2^53,
+      total_unfiltered = 2^53,
+      offset = 2^53,
+      limit = 2^53,
+      data = list(
+        row_index = .jdv_json_values(numeric()),
+        row_names = if (holder$explicit_row_names) {
+          .jdv_json_values(character())
+        } else {
+          NULL
+        },
+        columns = wire_columns
+      )
+    ),
+    warnings = .jdv_json_values(character())
+  )
+  encoded <- tryCatch(
+    .jdv_json_encode(
+      skeleton,
+      limit = message_limit,
+      work_limit = remaining_work
+    ),
+    error = identity
+  )
+  if (inherits(encoded, "error")) {
+    .jdv_budget_error(
+      "The selected page columns cannot fit in the JSON output budget.",
+      "page_metadata"
+    )
+  }
+  wire_fixed <- nchar(encoded, type = "bytes") + 128 + 64 * column_count
+  work_rows <- rep(64, requested_rows)
+  wire_rows <- rep(32, requested_rows)
+  work_display_prefix <- rep(0, requested_rows)
+  wire_display_prefix <- rep(0, requested_rows)
+  string_widths <- function(x) {
+    if (!is.character(x) || !length(x)) {
+      return(numeric())
+    }
+    widths <- nchar(x, type = "bytes", allowNA = TRUE)
+    widths[is.na(widths)] <- 4L
+    as.double(widths)
+  }
+  for (j in columns) {
+    schema <- holder$schema[[j]]
+    kind <- schema$type
+    cost_kind <- kind
+    widths <- numeric()
+    if (kind %in% c("string", "factor") && requested_rows > 0) {
+      if (is.matrix(holder$source)) {
+        positions <- candidate_rows + (j - 1L) * holder$nrow
+        if (
+          kind == "string" &&
+            !identical(class(holder$source), c("matrix", "array"))
+        ) {
+          cost_kind <- "other"
+        } else {
+          widths <- string_widths(.subset(holder$source, positions))
+        }
+      } else {
+        source_column <- holder$source[[j]]
+        if (kind == "factor") {
+          if (
+            !identical(class(source_column), "factor") &&
+              !identical(class(source_column), c("ordered", "factor"))
+          ) {
+            cost_kind <- "other"
+          } else {
+            codes <- .subset(source_column, candidate_rows)
+            levels <- attr(source_column, "levels", exact = TRUE)
+            widths <- rep(0, requested_rows)
+            valid <- !is.na(codes)
+            widths[valid] <- string_widths(levels[codes[valid]])
+          }
+        } else if (is.object(source_column)) {
+          cost_kind <- "other"
+          widths <- rep(0, requested_rows)
+        } else {
+          widths <- string_widths(.subset(source_column, candidate_rows))
+        }
+      }
+    }
+    if (cost_kind == "string") {
+      work_rows <- work_rows + 64
+      wire_rows <- wire_rows + 64
+      if (length(widths)) {
+        positions <- seq_along(widths)
+        work_display_prefix <- work_display_prefix +
+          cumsum(32 + 6 * widths) +
+          6 * positions * cummax(widths)
+        wire_display_prefix <- wire_display_prefix +
+          cumsum(32 + 12 * widths) +
+          2 * positions * cummax(widths)
+      }
+    } else if (cost_kind == "factor") {
+      work_rows <- work_rows + 64
+      wire_rows <- wire_rows + 64
+      if (length(widths)) {
+        positions <- seq_along(widths)
+        level_width <- .jdv_max_string_bytes(
+          levels,
+          max(0, budget$limit - budget$used)
+        )
+        work_display_prefix <- work_display_prefix +
+          pmax(
+            32 * positions + 4 * positions * max(level_width, 1),
+            32 * positions + 12 * positions * cummax(widths)
+          )
+        wire_display_prefix <- wire_display_prefix +
+          cumsum(12 * widths) +
+          2 * positions * cummax(widths)
+      }
+    } else if (
+      is.data.frame(holder$source) &&
+        (is.matrix(holder$source[[j]]) || is.data.frame(holder$source[[j]]))
+    ) {
+      source_column <- holder$source[[j]]
+      row_cells <- if (nrow(source_column)) {
+        .jdv_packed_cells(source_column) / nrow(source_column)
+      } else {
+        0
+      }
+      work_rows <- work_rows + 6200 + 32 * row_cells + 16 * ncol(source_column)
+      wire_rows <- wire_rows + 512
+    } else if (cost_kind == "list") {
+      source_column <- holder$source[[j]]
+      cell_bytes <- vapply(
+        candidate_rows,
+        function(row) {
+          .jdv_preflight_cell(
+            .subset2(source_column, row),
+            max(0, budget$limit - budget$used)
+          )
+        },
+        numeric(1L)
+      )
+      work_rows <- work_rows + 6100 + cell_bytes
+      wire_rows <- wire_rows + 128 + cell_bytes
+    } else {
+      column_work <- switch(
+        cost_kind,
+        number = 256,
+        integer = 128,
+        boolean = 128,
+        date = 256,
+        datetime = 384,
+        int64 = 512,
+        other = 512,
+        512
+      )
+      column_wire <- switch(
+        cost_kind,
+        number = 80,
+        integer = 48,
+        boolean = 32,
+        date = 128,
+        datetime = 256,
+        int64 = 320,
+        other = 512,
+        512
+      )
+      work_rows <- work_rows + column_work
+      wire_rows <- wire_rows + column_wire
+    }
+  }
+  if (holder$explicit_row_names && requested_rows > 0) {
+    row_names <- if (is.matrix(holder$source)) {
+      rownames(holder$source)
+    } else {
+      attr(holder$source, "row.names", exact = TRUE)
+    }
+    selected_names <- as.character(row_names[candidate_rows])
+    work_rows <- work_rows + 16
+    wire_rows <- wire_rows + 16 + 6 * string_widths(selected_names)
+  }
+  available_work <- remaining_work - work_fixed
+  available_wire <- message_limit - wire_fixed
+  if (available_work < 0 || available_wire < 0) {
+    .jdv_budget_error(
+      "The selected page columns exceed their fixed work or JSON byte budget.",
+      "page_metadata"
+    )
+  }
+  if (requested_rows == 0) {
+    return(0L)
+  }
+  work_cumulative <- cumsum(work_rows) + work_display_prefix
+  wire_cumulative <- cumsum(wire_rows) + wire_display_prefix
+  fits <- which(
+    work_cumulative <= available_work & wire_cumulative <= available_wire
+  )
+  if (!length(fits)) {
+    .jdv_budget_error(
+      "Even one row of the selected page exceeds its work or JSON byte budget.",
+      "page_rows"
+    )
+  }
+  min(requested_rows, max(fits))
+}
+
 # Estimate JSON-safe text upper bounds without UTF-8 conversion. A control
 # byte can expand to six ASCII bytes; other encodings expand by less.
 .jdv_string_bytes <- function(x, cap = Inf) {

@@ -147,12 +147,22 @@ test_that(
       query_page(
         holder,
         limit = 100L,
-        sort = list(list(col = 0L, desc = TRUE))
+        sort = list(list(col = 0L, desc = TRUE)),
+        cols = 0L
       ),
       error = identity
     )
     expect_s3_class(reply, "jdv_query_error")
     expect_identical(reply$code, "limit_exceeded")
+
+    implicit <- query_page(
+      holder,
+      limit = 100L,
+      sort = list(list(col = 0L, desc = TRUE))
+    )
+    expect_lt(implicit$limit, 100L)
+    page_budget <- attr(implicit, "jdv_work_budget")
+    expect_lte(page_budget$used, page_budget$limit)
   }
 )
 
@@ -202,7 +212,7 @@ test_that("one-row wide double packed matrices return a shape summary", {
   expect_identical(column$na, list(FALSE))
 })
 
-test_that("snapshot and page guards precede packed matrix and frame slicing", {
+test_that("page sizing bounds packed matrix and frame row slicing", {
   skip_if_not_installed("jsonlite")
   .jdv_close_internal()
   on.exit(.jdv_close_internal(), add = TRUE)
@@ -248,8 +258,10 @@ test_that("snapshot and page guards precede packed matrix and frame slicing", {
         "table/rows",
         list(view = registered$id, generation = 1, offset = 0, limit = 64)
       )
-      expect_identical(reply$error$code, "limit_exceeded")
-      expect_identical(counter$slices, 0L)
+      expect_null(reply$error)
+      expect_gt(reply$result$limit, 0L)
+      expect_lt(reply$result$limit, 64L)
+      expect_lte(counter$slices, reply$result$limit)
     }
   })
 })
