@@ -43,3 +43,23 @@ test_that("classed and attributed columns are probed individually", {
   expect_identical(holder$schema[[1L]]$type, "factor")
   expect_identical(holder$schema[[2L]]$name, "gear")
 })
+
+test_that("shared plain probes respect methods of nested generics", {
+  counters <- new.env(parent = emptyenv())
+  counters$format <- 0L
+  table <- get(".__S3MethodsTable__.", envir = baseenv())
+  registerS3method(
+    "format",
+    "numeric",
+    function(x, ...) {
+      counters$format <- counters$format + 1L
+      format.default(x, ...)
+    },
+    envir = baseenv()
+  )
+  on.exit(rm(list = "format.numeric", envir = table))
+  expect_false(query_plain_dispatch("double"))
+  holder <- paged_table(mtcars[, c("cyl", "gear", "carb")])
+  expect_identical(counters$format, 3L)
+  expect_length(holder$schema, 3L)
+})

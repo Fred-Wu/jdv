@@ -148,6 +148,16 @@ query_plain_dispatch <- function(type) {
       return(FALSE)
     }
   }
+  # The default methods call these closure generics, which dispatch on the
+  # implicit class even for unclassed vectors. (is.na() is primitive and does
+  # not dispatch on non-objects.)
+  for (generic in c("xtfrm", "format")) {
+    for (class in classes) {
+      if (!is.null(utils::getS3method(generic, class, optional = TRUE))) {
+        return(FALSE)
+      }
+    }
+  }
   TRUE
 }
 
