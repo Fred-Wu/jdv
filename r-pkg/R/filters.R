@@ -363,7 +363,12 @@ query_fold <- function(x) {
 
 query_number_data <- function(holder, j, budget = NULL) {
   schema <- holder$schema[[j]]
-  if (schema$type %in% c("date", "datetime")) {
+  if (schema$type == "date") {
+    sort_key <- query_channel(holder, j, "sortKey", budget)$sortKey
+    .jdv_budget_charge(budget, as.double(holder$nrow) * 8, "date_filter_floor")
+    return(floor(sort_key))
+  }
+  if (schema$type == "datetime") {
     return(query_channel(holder, j, "sortKey", budget)$sortKey)
   }
   data <- query_channel(holder, j, "values", budget)

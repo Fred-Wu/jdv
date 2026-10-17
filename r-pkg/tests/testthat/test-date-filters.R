@@ -35,6 +35,63 @@ test_that("Date filters compare numeric day values without ISO values", {
   expect_false(any(grepl(":values$", names(holder$channel_cache))))
 })
 
+test_that("Date filters use displayed days for fractional Date values", {
+  x <- data.frame(
+    date = structure(c(18262, 18262.5, 18263, -0.5), class = "Date")
+  )
+  holder <- paged_table(x, limits = list(probe_rows = 1L))
+  snapshot <- snapshot_table(x)
+  filters <- list(
+    eq = list(op = "eq", col = 0L, value = "2020-01-01"),
+    ne = list(op = "ne", col = 0L, value = "2020-01-01"),
+    lt = list(op = "lt", col = 0L, value = "2020-01-01"),
+    le = list(op = "le", col = 0L, value = "2020-01-01"),
+    gt = list(op = "gt", col = 0L, value = "2020-01-01"),
+    ge = list(op = "ge", col = 0L, value = "2020-01-01"),
+    between = list(
+      op = "between",
+      col = 0L,
+      lower = "2020-01-01",
+      upper = "2020-01-02"
+    )
+  )
+  expected <- list(
+    eq = 1:2,
+    ne = c(3L, 4L),
+    lt = 4L,
+    le = c(1L, 2L, 4L),
+    gt = 3L,
+    ge = 1:3,
+    between = 1:3
+  )
+  for (op in names(filters)) {
+    actual <- query_indices(holder, filter = filters[[op]])
+    expect_identical(actual, expected[[op]], info = op)
+    expect_identical(
+      snapshot_indices(snapshot, filter = filters[[op]]),
+      actual,
+      info = paste("snapshot", op)
+    )
+  }
+  expect_identical(
+    query_indices(holder, list(list(col = 0L, desc = FALSE))),
+    c(4L, 1L, 2L, 3L)
+  )
+  expect_identical(
+    query_indices(holder, list(list(col = 0L, desc = TRUE))),
+    c(3L, 2L, 1L, 4L)
+  )
+  expect_identical(
+    holder$channel_cache[["1:sortKey"]]$sortKey,
+    c(18262, 18262.5, 18263, -0.5)
+  )
+  expect_false(any(grepl(":values$", names(holder$channel_cache))))
+
+  negative_date <- list(op = "eq", col = 0L, value = "1969-12-31")
+  expect_identical(query_indices(holder, filter = negative_date), 4L)
+  expect_identical(snapshot_indices(snapshot, filter = negative_date), 4L)
+})
+
 test_that(
   "POSIXct and POSIXlt filters compare instants and fractional seconds",
   {
