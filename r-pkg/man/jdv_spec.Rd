@@ -668,6 +668,7 @@ any output path detach the browser. Repeated close/detach is harmless.
    \code{view/refresh} \tab Host to R \tab Request \tab Rebuilds a view from its captured value as the next generation of the same id. \cr
    \code{view/close} \tab Host to R \tab Request \tab Closes one view generation. \cr
    \code{view/closed} \tab R to host \tab Notification \tab Removes a closed, replaced, or evicted generation from the host cache. \cr
+   \code{view/update_failed} \tab R to host \tab Notification \tab A tracked view could not be rebuilt; the previous generation stays. \cr
    \code{hello} \tab R to host \tab Notification \tab Announces protocol and runtime versions for a new connection. \cr
    \code{wake} \tab Host to R \tab Notification \tab No result; asks the event loop to check its execution gate again. \cr
    \code{cancel} \tab Host to R \tab Notification \tab Names pending work for the local queue to cancel. \cr
@@ -855,9 +856,12 @@ Parameters are \code{view} and \code{generation}; other fields are rejected with
 \verb{\{"view": "v-1", "previous_generation": 3, "generation": 4, "refreshed": true\}}.
 A view is refreshable when its descriptor says \code{capabilities.refresh: true}.
 
-The view is rebuilt from the value captured when it was registered, not from
-any variable that held that value, so the rebuild shows the same data unless
-the captured object is a reference object that changed in place. The rebuild
+The view is rebuilt from the value captured when it was registered, so the
+rebuild shows the same data unless the captured object is a reference object
+that changed in place. A tracked view (see Binding tracking) is instead
+rebuilt from the current value of its variable, read without evaluation; it
+fails with \code{unavailable} when tracking has ended (the reason is in the
+message) or the variable is a promise or active binding. The rebuild
 happens even if nothing changed and always advances the generation by one.
 The registration \code{mode} and \code{collation} are reused as they were requested: an
 \code{"auto"} mode is decided again (a grid may move between Snapshot and Paged,
@@ -904,6 +908,54 @@ only confirms the operation and must never move the display back to an older
 generation.
 }
 
+\section{Binding tracking and \code{view/update_failed}}{
+
+
+A view can follow the variable it was created from. \code{\link[=jdv_view]{jdv_view()}} does so by
+default when its argument is a single name, and \code{\link[=jdv_register]{jdv_register()}} accepts an
+explicit \code{binding = list(name = "x", env = env)} for embedding hosts. After
+each top-level R task, the R task callback reads every tracked variable
+without evaluating it, compares the object it holds by identity with the one
+the view was built from, and rebuilds every changed view through the same
+update as \code{view/refresh}: a new \code{view/open} with the next generation (and
+\code{parent_closed} closes of its children) is queued, and the baseline moves to
+the new object. Nothing is scheduled beyond the task callback; a check is
+skipped while a request or a refresh is running and made at the next
+opportunity. When the built-in connection owns the session the queue is sent
+right after the check.
+
+Only plain and already forced bindings are read (R 4.6.0 or later). Promise,
+active, and missing bindings are skipped and looked at again later. If the
+variable is removed or its environment is garbage collected, tracking ends,
+the last view stays, and a later \code{view/refresh} fails with \code{unavailable};
+a recreated variable is not picked up. Objects changed in place (environments,
+reference objects, \code{data.table} updates by reference) keep their identity and
+are not detected; a manual \code{view/refresh} covers them. The environment is held
+weakly, but a displayed object that refers to it, such as a closure, keeps it
+alive. Views opened from another view and sequential views are not tracked.
+
+\strong{Embedding hosts.} R runs task callbacks in registration order. A host
+whose own callback takes notifications before the callback of jdv would see
+an update only after the next command. Such a host calls \code{jdv_rpc(NULL)}
+first, which checks tracked variables once even without a viewer connection,
+and then \code{\link[=jdv_notifications]{jdv_notifications()}}.
+
+When an update cannot be built (a schema, conversion, or size limit, or an R
+error), the previous generation stays and one notification is queued:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"method": "view/update_failed",
+ "params": \{"view": "v-1", "generation": 3, "code": "limit_exceeded",
+            "message": "..."\}\}
+}\if{html}{\out{</div>}}
+
+\code{generation} is the generation still displayed and \code{code} is one of the
+usual error codes. The same object is not tried again, and so not reported
+again, until the variable holds a different object or \code{view/refresh} is
+requested. A host that forwards the notification ignores one for a generation
+it no longer shows. A notification queue overflow ends the session as
+described under Notification delivery.
+}
+
 \section{\code{view/close} and \code{view/closed}}{
 
 
@@ -933,8 +985,9 @@ Replacing or evicting a parent has the same descendant-close effect.
 
 
 Every notification R produces for a session (\code{hello}, \code{view/open},
-\code{view/closed}, including evictions, cascaded child closes, and the
-\code{view/open} of a child created by \code{object/open}) goes through one first-in,
+\code{view/closed}, including evictions, cascaded child closes, the
+\code{view/open} of a child created by \code{object/open}, and \code{view/update_failed})
+goes through one first-in,
 first-out queue. A session has exactly one owner of that queue, reported by
 the \code{owner} field of \code{\link[=jdv_connection]{jdv_connection()}}:
 \itemize{

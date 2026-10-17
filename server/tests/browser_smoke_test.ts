@@ -2959,6 +2959,43 @@ Deno.test({
         assertEquals(refreshes()[1].generation, 2);
         assertEquals(await count(page, "#tables article"), 2);
 
+        // A failed automatic update keeps the last display and says so.
+        await writeFrame(connection, {
+          method: "view/update_failed",
+          params: {
+            view: "refresh-grid",
+            generation: 4,
+            code: "limit_exceeded",
+            message: "The new value is too large.",
+          },
+        });
+        await waitFor(page, () => {
+          const document = (globalThis as unknown as {
+            document: BrowserDocument;
+          }).document;
+          const status = document.querySelector("#status");
+          return status?.getAttribute("data-state") === "error" &&
+            (status.textContent ?? "").includes("Could not update") &&
+            (status.textContent ?? "").includes("limit_exceeded");
+        });
+        assertEquals(await text(page, "#table-title"), "Refreshed 4");
+        assertEquals(await text(page, rowIndex), "4001");
+        // A report for a generation that is no longer current is ignored.
+        await writeFrame(connection, {
+          method: "view/update_failed",
+          params: {
+            view: "refresh-grid",
+            generation: 3,
+            code: "r_error",
+            message: "stale report",
+          },
+        });
+        await page.waitForTimeout(200);
+        assertEquals(
+          ((await text(page, "#status")) ?? "").includes("stale report"),
+          false,
+        );
+
         // A tree refreshed into a grid follows the new descriptor.
         await clickButton(
           page,

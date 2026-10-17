@@ -1010,6 +1010,31 @@ export class Hub {
       );
       return;
     }
+    if (message.method === "view/update_failed") {
+      // R keeps the previous view when a tracked update fails. Only a report
+      // for the generation the hub still holds reaches the browsers.
+      if (
+        !isObject(params) || typeof params.view !== "string" ||
+        !Number.isSafeInteger(params.generation) ||
+        typeof params.code !== "string" || typeof params.message !== "string"
+      ) return;
+      const view = session.views.get(params.view);
+      if (!view || view.generation !== Number(params.generation)) return;
+      this.#broadcast({
+        type: "notification",
+        session: session.id,
+        message: {
+          method: "view/update_failed",
+          params: {
+            view: params.view,
+            generation: Number(params.generation),
+            code: params.code.slice(0, 64),
+            message: params.message.slice(0, 1024),
+          },
+        },
+      });
+      return;
+    }
     this.#broadcast({ type: "notification", session: session.id, message });
   }
 

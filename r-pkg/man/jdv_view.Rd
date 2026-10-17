@@ -8,7 +8,8 @@ jdv_view(
   x,
   title = NULL,
   mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale")
+  collation = c("C", "locale"),
+  track = TRUE
 )
 }
 \arguments{
@@ -22,6 +23,8 @@ used; explicitly passing \code{NULL} creates an independent table slot.}
 \item{mode}{Grid view mode: \code{"auto"}, \code{"snapshot"}, or \code{"paged"}.}
 
 \item{collation}{Grid string ordering policy, \code{"C"} or \code{"locale"}.}
+
+\item{track}{Whether to follow the variable passed as \code{x}; see Details.}
 }
 \value{
 The view id, invisibly.
@@ -60,4 +63,42 @@ not hardened, and an explicitly selected TCP endpoint has no authentication.
 Registry entries created with \code{\link[=jdv_register]{jdv_register()}} share this process-wide
 registry and are also released if the viewer disconnects. Package unload
 stops the event source and pending work before releasing table references.
+
+\strong{Tracking.} With \code{track = TRUE} (the default), a call whose argument is a
+single variable name, such as \code{jdv_view(df)}, follows that variable. After
+each top-level R task jdv looks at the variable, and when it holds a
+different object (for example after \code{df <- transform(df, ...)}) every changed
+view is rebuilt as its next generation and the viewer updates by itself.
+Expressions such as \code{jdv_view(head(df))} are never re-evaluated and are not
+tracked; pass \code{track = FALSE} for a fixed view. The variable is looked up
+once, without evaluating anything, in the calling environment and then
+outward, and the view stays bound to the environment where the name was
+found: a later variable of the same name in an inner scope is ignored, and
+inside \code{f <- function(x) jdv_view(x)} the argument \code{x} of \code{f} is followed.
+
+Detection compares object identity. An object that is modified in place, such
+as an environment, a reference class or R6 object, or a \code{data.table} changed
+with \verb{:=}, keeps its identity and is not noticed; use the viewer's refresh.
+Assigning the same object again does nothing. Promise and active bindings are
+never evaluated by the check: they are skipped and looked at again after
+later tasks. When the variable is removed or its environment is garbage
+collected, tracking ends and the last view stays; the view can then no longer
+be refreshed, and re-running \code{jdv_view()} tracks again. The environment is
+only weakly referenced, but a displayed object that refers to it, for example
+a closure, keeps it alive. Views opened from a view, and sequential sources,
+are not tracked. If an update fails (for example the new object exceeds a
+limit) the previous view stays and one \code{view/update_failed} notification is
+sent; the same object is not retried until the variable changes or the view
+is refreshed manually.
+
+Tracking needs R 4.6.0 or later. Where it is not possible, including when the
+variable cannot be read safely, the view is still shown and a warning says it
+is not followed. A manual \code{view/refresh} request rebuilds from the current
+value of a tracked variable. Tracking is carried out by an R task callback
+that exists only while a tracked view does and is independent of the viewer
+connection. An embedding host that takes notifications with
+\code{\link[=jdv_notifications]{jdv_notifications()}} should call \code{jdv_rpc(NULL)} and then
+\code{\link[=jdv_notifications]{jdv_notifications()}} from its own task callback, because a callback that
+runs before the one of jdv would otherwise see updates only after the next
+command; see \code{\link[=jdv_rpc]{jdv_rpc()}}.
 }

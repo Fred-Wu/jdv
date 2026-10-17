@@ -3226,3 +3226,67 @@ Deno.test("an older refresh response never rolls the cached view back", async ()
     f.hub.close();
   }
 });
+
+Deno.test("view/update_failed reaches browsers only for the current generation", async () => {
+  const f = refreshFixture("r-9200-1");
+  try {
+    await f.browser.nextMessage((message) => message.type === "view/open");
+    const failed = (params: JsonRecord) =>
+      f.connection.inject(notification("view/update_failed", params));
+    const barrier = async (nonce: string) => {
+      f.connection.inject(notification("fixture/barrier", { nonce }));
+      await f.browser.nextMessage((message) =>
+        message.type === "notification" &&
+        ((message.message as JsonRecord)?.params as JsonRecord)?.nonce ===
+          nonce
+      );
+    };
+    const reports = () =>
+      f.browser.messages.filter((message) =>
+        (message.message as JsonRecord | undefined)?.method ===
+          "view/update_failed"
+      );
+
+    failed({
+      view: "table-1",
+      generation: 1,
+      code: "limit_exceeded",
+      message: "x".repeat(2000),
+      extra: "dropped",
+    });
+    await barrier("one");
+    assertEquals(reports().length, 1);
+    const delivered = (reports()[0].message as JsonRecord)
+      .params as JsonRecord;
+    assertEquals(Object.keys(delivered).sort(), [
+      "code",
+      "generation",
+      "message",
+      "view",
+    ]);
+    assertEquals(delivered.code, "limit_exceeded");
+    assertEquals((delivered.message as string).length, 1024);
+
+    // Unknown views, other generations, and malformed reports are dropped.
+    failed({ view: "other", generation: 1, code: "r_error", message: "m" });
+    failed({ view: "table-1", generation: 2, code: "r_error", message: "m" });
+    failed({ view: "table-1", generation: 1, code: 7, message: "m" });
+    failed({ view: "table-1", generation: 1, code: "r_error" });
+    failed("not an object" as unknown as JsonRecord);
+    await barrier("two");
+    assertEquals(reports().length, 1);
+
+    // After a newer view/open the old generation is stale.
+    openTable(f.connection, 2);
+    failed({ view: "table-1", generation: 1, code: "r_error", message: "m" });
+    failed({ view: "table-1", generation: 2, code: "r_error", message: "m" });
+    await barrier("three");
+    assertEquals(reports().length, 2);
+    assertEquals(
+      ((reports()[1].message as JsonRecord).params as JsonRecord).generation,
+      2,
+    );
+  } finally {
+    f.hub.close();
+  }
+});

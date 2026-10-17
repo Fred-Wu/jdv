@@ -232,6 +232,13 @@ a Refresh button for these views and reopens the selected view on the new
 generation with its sort, filter, selection, scroll position, and tree path
 reset.
 
+When R follows a variable, it rebuilds the view by itself and sends the usual
+`view/open` for the new generation. If that fails, it sends a
+`view/update_failed` notification (`view`, `generation`, `code`, `message`) and
+keeps the previous generation. The hub forwards it to browsers only while
+`generation` is the one it holds for that view. The bundled viewer keeps the
+last display and shows the failure in its status line.
+
 Browser WebSocket input frames are limited to 64 KiB. Incoming R JSONL frames
 are limited to 10 MiB.
 

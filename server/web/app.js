@@ -199,7 +199,18 @@ socket.addEventListener("message", (event) => {
     renderLists();
   } else if (message.type === "notification") {
     const method = message.message?.method;
-    if (method) setStatus(`R notification: ${method}`, "info");
+    if (method === "view/update_failed") {
+      // The last good display stays; only the status reports the failure.
+      const params = message.message.params;
+      const current = knownTables.get(`${message.session}\0${params?.view}`);
+      if (current?.descriptor.generation === params?.generation) {
+        const title = current.descriptor.title ?? params.view;
+        setStatus(
+          `Could not update "${title}" (${params.code}): ${params.message}`,
+          "error",
+        );
+      }
+    } else if (method) setStatus(`R notification: ${method}`, "info");
   }
 });
 

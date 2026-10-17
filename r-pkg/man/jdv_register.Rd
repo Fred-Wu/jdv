@@ -8,7 +8,8 @@ jdv_register(
   x,
   title = NULL,
   mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale")
+  collation = c("C", "locale"),
+  binding = NULL
 )
 }
 \arguments{
@@ -24,6 +25,17 @@ generation; NULL titles always create independent tables.}
 \item{collation}{Grid string ordering policy, \code{"C"} or \code{"locale"}. When
 omitted, \code{getOption("jdv.collation", "C")} supplies the default; an
 explicit argument takes precedence.}
+
+\item{binding}{Optional \code{list(name = "x", env = env)} naming a variable that
+holds \code{x}, for embedding hosts. The view then follows that variable as
+\code{\link[=jdv_view]{jdv_view()}} does with \code{track = TRUE}: when the variable is assigned a
+different object, the view is rebuilt as its next generation. The variable
+must currently hold exactly the object passed as \code{x}, and it must be
+readable without evaluation (a plain or already forced binding), or the
+call fails. Tracking needs R 4.6.0 or later; older versions fail with the
+\code{unsupported} error code. The environment is referenced weakly. Sequential
+sources cannot be tracked. See the Details of \code{\link[=jdv_view]{jdv_view()}} for what is
+detected.}
 }
 \value{
 A list with the view \code{id} and its \code{generation}. The \code{view/open} message, and

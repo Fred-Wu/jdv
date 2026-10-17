@@ -1745,6 +1745,142 @@ local({
     expect_false(file.exists(paste0(host$result, ".eof")))
   })
 
+  test_that("jdv_view follows a variable and sends the update", {
+    skip_if_not(.jdv_track_supported())
+    host <- lifecycle_host()
+    on.exit(host$cleanup(), add = TRUE)
+    expect_true(host$wait_ready())
+    df <- mtcars
+    expect_no_warning(id <- jdv_view(df))
+    entry <- get(id, envir = .jdv_state$entries, inherits = FALSE)
+    expect_identical(entry$title, "df")
+    expect_identical(entry$track_name, "df")
+    expect_identical(.Call(C_jdv_weakref_key, entry$track_ref), environment())
+    expect_true(
+      "jdv_track_pid" %in% sub("[0-9]+$", "pid", getTaskCallbackNames())
+    )
+    expect_identical(lifecycle_messages(host, 2L), c("hello", "view/open"))
+
+    df <- df[1:5, ]
+    # The embedding-style poll also sends the queue to the transport.
+    jdv_rpc(NULL)
+    expect_identical(
+      lifecycle_messages(host, 3L),
+      c("hello", "view/open", "view/open")
+    )
+    expect_identical(
+      get(id, envir = .jdv_state$entries, inherits = FALSE)$generation,
+      2
+    )
+
+    # The task callback does the same after a top-level task.
+    df <- df[1:3, ]
+    expect_true(.jdv_track_task_callback(NULL, NULL, TRUE, FALSE))
+    expect_identical(
+      lifecycle_messages(host, 4L),
+      c("hello", "view/open", "view/open", "view/open")
+    )
+  })
+
+  test_that("jdv_view tracks only a plain symbol and only on request", {
+    skip_if_not(.jdv_track_supported())
+    host <- lifecycle_host()
+    on.exit(host$cleanup(), add = TRUE)
+    expect_true(host$wait_ready())
+    df <- mtcars
+    expression_id <- jdv_view(head(df), title = "expression")
+    fixed_id <- jdv_view(df, title = "fixed", track = FALSE)
+    for (id in c(expression_id, fixed_id)) {
+      entry <- get(id, envir = .jdv_state$entries, inherits = FALSE)
+      expect_null(entry$track_ref)
+    }
+    expect_false(.jdv_track_active())
+    expect_error(jdv_view(df, track = NA), "'track'")
+    expect_error(jdv_view(df, track = "yes"), "'track'")
+    df <- df[1:2, ]
+    jdv_rpc(NULL)
+    expect_identical(
+      lifecycle_messages(host, 3L),
+      c("hello", "view/open", "view/open")
+    )
+  })
+
+  test_that("jdv_view fixes the owning environment of the symbol", {
+    skip_if_not(.jdv_track_supported())
+    host <- lifecycle_host()
+    on.exit(host$cleanup(), add = TRUE)
+    expect_true(host$wait_ready())
+    outer <- environment()
+    df <- mtcars
+    id <- local({
+      id <- jdv_view(df)
+      # An inner variable of the same name does not take over.
+      df <- mtcars[1:2, ]
+      id
+    })
+    entry <- get(id, envir = .jdv_state$entries, inherits = FALSE)
+    expect_identical(.Call(C_jdv_weakref_key, entry$track_ref), outer)
+    jdv_rpc(NULL)
+    expect_identical(entry$generation, 1)
+    df <- mtcars[1:4, ]
+    jdv_rpc(NULL)
+    expect_identical(
+      get(id, envir = .jdv_state$entries, inherits = FALSE)$generation,
+      2
+    )
+
+    # A formal argument is its own binding, not the caller's variable.
+    show <- function(x) jdv_view(x, title = "formal")
+    formal_id <- show(df)
+    formal <- get(formal_id, envir = .jdv_state$entries, inherits = FALSE)
+    expect_false(identical(.Call(C_jdv_weakref_key, formal$track_ref), outer))
+    expect_identical(formal$track_name, "x")
+    df <- mtcars[1:6, ]
+    jdv_rpc(NULL)
+    expect_identical(
+      get(formal_id, envir = .jdv_state$entries, inherits = FALSE)$generation,
+      1
+    )
+    expect_identical(
+      get(id, envir = .jdv_state$entries, inherits = FALSE)$generation,
+      3
+    )
+  })
+
+  test_that("jdv_view warns once when tracking is not possible", {
+    host <- lifecycle_host()
+    on.exit(host$cleanup(), add = TRUE)
+    expect_true(host$wait_ready())
+    df <- mtcars
+    testthat::local_mocked_bindings(.jdv_track_supported = function() FALSE)
+    warned <- .jdv_state$track_version_warned
+    on.exit(.jdv_state$track_version_warned <- warned, add = TRUE)
+    .jdv_state$track_version_warned <- FALSE
+    expect_warning(id <- jdv_view(df, title = "older"), "not tracked.*4\\.6")
+    expect_identical(lifecycle_messages(host, 2L), c("hello", "view/open"))
+    expect_null(get(id, envir = .jdv_state$entries, inherits = FALSE)$track_ref)
+    # The R version warning is given once per session.
+    expect_no_warning(jdv_view(df, title = "older again"))
+    # No warning for a call that is not tracked on purpose.
+    expect_no_warning(jdv_view(df, title = "fixed", track = FALSE))
+    expect_no_warning(jdv_view(head(df), title = "expression"))
+  })
+
+  test_that("jdv_view shows an unreadable binding and warns", {
+    skip_if_not(.jdv_track_supported())
+    host <- lifecycle_host()
+    on.exit(host$cleanup(), add = TRUE)
+    expect_true(host$wait_ready())
+    makeActiveBinding("live_table", function() mtcars, environment())
+    expect_warning(
+      id <- jdv_view(live_table),
+      "not tracked.*without evaluating"
+    )
+    expect_identical(lifecycle_messages(host, 2L), c("hello", "view/open"))
+    expect_null(get(id, envir = .jdv_state$entries, inherits = FALSE)$track_ref)
+    expect_false(.jdv_track_active())
+  })
+
   test_that("jdv_connect is idempotent and rejects another address", {
     host <- lifecycle_host()
     on.exit(host$cleanup(), add = TRUE)

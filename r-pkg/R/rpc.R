@@ -24,6 +24,8 @@
   state$last_disconnect_reason <- NULL
   state$session_counter <- 0L
   state$transport_task_callback <- NULL
+  state$track_task_callback <- NULL
+  state$tracking <- FALSE
   state$unloading <- FALSE
   state
 })
@@ -583,6 +585,8 @@ jdv_json_object <- function(x = list()) {
     entry$source <- NULL
     entry$tree_value <- NULL
     entry$captured <- NULL
+    entry$track_value <- NULL
+    entry$track_failed <- NULL
     entry$fingerprint <- NULL
     entry$close_pending <- FALSE
     if (identical(entry$mode, "sequential")) .jdv_sequential_release(entry)
@@ -709,6 +713,16 @@ jdv_json_object <- function(x = list()) {
 #' @param collation Grid string ordering policy, `"C"` or `"locale"`. When
 #'   omitted, `getOption("jdv.collation", "C")` supplies the default; an
 #'   explicit argument takes precedence.
+#' @param binding Optional `list(name = "x", env = env)` naming a variable that
+#'   holds `x`, for embedding hosts. The view then follows that variable as
+#'   [jdv_view()] does with `track = TRUE`: when the variable is assigned a
+#'   different object, the view is rebuilt as its next generation. The variable
+#'   must currently hold exactly the object passed as `x`, and it must be
+#'   readable without evaluation (a plain or already forced binding), or the
+#'   call fails. Tracking needs R 4.6.0 or later; older versions fail with the
+#'   `unsupported` error code. The environment is referenced weakly. Sequential
+#'   sources cannot be tracked. See the Details of [jdv_view()] for what is
+#'   detected.
 #' @details
 #' Sequential sources are exported through the optional nanoarrow package and
 #' moved into the viewer without fetching a record batch. Their total row count
@@ -764,12 +778,18 @@ jdv_register <- function(
   x,
   title = NULL,
   mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale")
+  collation = c("C", "locale"),
+  binding = NULL
 ) {
   .jdv_assert_active()
   mode <- match.arg(mode)
   collation <- if (missing(collation)) NULL else match.arg(collation)
+  tracking <- if (!is.null(binding)) .jdv_binding_verify(x, binding)
   registered <- .jdv_register_internal(x, title, mode, collation)
+  if (!is.null(tracking)) {
+    entry <- get(registered$id, envir = .jdv_state$entries, inherits = FALSE)
+    .jdv_track_attach(entry, tracking$ref, tracking$name, x)
+  }
   if (
     identical(.jdv_session_owner(), "transport") && .jdv_state$rpc_depth == 0L
   ) {
@@ -1460,11 +1480,17 @@ jdv_register <- function(
 #'
 #' With no argument or `NULL`, explicitly poll the active transport and process
 #' at most the configured drain batch. This recovery path bypasses the event
-#' gate and does not run reentrantly. A JSON request string is handled
-#' synchronously as an embedding API and remains independent of the transport.
-#' Notifications such as `wake` and `cancel` return `NULL`. The response never
-#' carries notifications: an embedding host takes them with
-#' [jdv_notifications()] and delivers them before the response.
+#' gate and does not run reentrantly. The same call checks the variables that
+#' tracked views follow and rebuilds the changed views once (see [jdv_view()]),
+#' with or without a transport. An embedding host that takes notifications with
+#' [jdv_notifications()] calls `jdv_rpc(NULL)` and then [jdv_notifications()]
+#' from its own task callback: R runs task callbacks in registration order, so a
+#' host callback that runs before the one of jdv would otherwise miss the update
+#' until the next command. A JSON request string is handled synchronously as an
+#' embedding API and remains independent of the transport. Notifications such as
+#' `wake` and `cancel` return `NULL`. The response never carries notifications:
+#' an embedding host takes them with [jdv_notifications()] and delivers them
+#' before the response.
 #'
 #' @param request One JSON request string, or `NULL` to poll the active viewer.
 #' @return A JSON response string or NULL for a notification.
@@ -1481,10 +1507,13 @@ jdv_rpc <- function(request = NULL) {
     }
     .jdv_transport_housekeeping()
     .jdv_assert_active()
-    if (is.null(.jdv_state$transport)) {
-      return(invisible(NULL))
+    if (!is.null(.jdv_state$transport)) {
+      .Call(C_jdv_transport_poll)
+      .jdv_assert_active()
     }
-    .Call(C_jdv_transport_poll)
+    # Tracked bindings are checked here too, so an embedding host that runs
+    # its own task callback can take the updates right after this call.
+    .jdv_track_poll()
     .jdv_assert_active()
     return(invisible(NULL))
   }

@@ -663,6 +663,7 @@ jdv_notifications <- function() {
 #'   used; explicitly passing `NULL` creates an independent table slot.
 #' @param mode Grid view mode: `"auto"`, `"snapshot"`, or `"paged"`.
 #' @param collation Grid string ordering policy, `"C"` or `"locale"`.
+#' @param track Whether to follow the variable passed as `x`; see Details.
 #' @return The view id, invisibly.
 #' @details
 #' The viewer connection is opened on the first call unless [jdv_connect()]
@@ -695,19 +696,81 @@ jdv_notifications <- function() {
 #' Registry entries created with [jdv_register()] share this process-wide
 #' registry and are also released if the viewer disconnects. Package unload
 #' stops the event source and pending work before releasing table references.
+#'
+#' **Tracking.** With `track = TRUE` (the default), a call whose argument is a
+#' single variable name, such as `jdv_view(df)`, follows that variable. After
+#' each top-level R task jdv looks at the variable, and when it holds a
+#' different object (for example after `df <- transform(df, ...)`) every changed
+#' view is rebuilt as its next generation and the viewer updates by itself.
+#' Expressions such as `jdv_view(head(df))` are never re-evaluated and are not
+#' tracked; pass `track = FALSE` for a fixed view. The variable is looked up
+#' once, without evaluating anything, in the calling environment and then
+#' outward, and the view stays bound to the environment where the name was
+#' found: a later variable of the same name in an inner scope is ignored, and
+#' inside `f <- function(x) jdv_view(x)` the argument `x` of `f` is followed.
+#'
+#' Detection compares object identity. An object that is modified in place, such
+#' as an environment, a reference class or R6 object, or a `data.table` changed
+#' with `:=`, keeps its identity and is not noticed; use the viewer's refresh.
+#' Assigning the same object again does nothing. Promise and active bindings are
+#' never evaluated by the check: they are skipped and looked at again after
+#' later tasks. When the variable is removed or its environment is garbage
+#' collected, tracking ends and the last view stays; the view can then no longer
+#' be refreshed, and re-running `jdv_view()` tracks again. The environment is
+#' only weakly referenced, but a displayed object that refers to it, for example
+#' a closure, keeps it alive. Views opened from a view, and sequential sources,
+#' are not tracked. If an update fails (for example the new object exceeds a
+#' limit) the previous view stays and one `view/update_failed` notification is
+#' sent; the same object is not retried until the variable changes or the view
+#' is refreshed manually.
+#'
+#' Tracking needs R 4.6.0 or later. Where it is not possible, including when the
+#' variable cannot be read safely, the view is still shown and a warning says it
+#' is not followed. A manual `view/refresh` request rebuilds from the current
+#' value of a tracked variable. Tracking is carried out by an R task callback
+#' that exists only while a tracked view does and is independent of the viewer
+#' connection. An embedding host that takes notifications with
+#' [jdv_notifications()] should call `jdv_rpc(NULL)` and then
+#' [jdv_notifications()] from its own task callback, because a callback that
+#' runs before the one of jdv would otherwise see updates only after the next
+#' command; see [jdv_rpc()].
 #' @export
 jdv_view <- function(
   x,
   title = NULL,
   mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale")
+  collation = c("C", "locale"),
+  track = TRUE
 ) {
   .jdv_assert_active()
+  expr <- substitute(x)
   if (missing(title)) {
-    title <- deparse1(substitute(x))
+    title <- deparse1(expr)
+  }
+  if (!is.logical(track) || length(track) != 1L || is.na(track)) {
+    stop("'track' must be TRUE or FALSE.", call. = FALSE)
+  }
+  # Find the binding before x is evaluated, and without evaluating anything.
+  untracked <- NULL
+  owner <- NULL
+  if (track && is.symbol(expr)) {
+    if (!.jdv_track_supported()) {
+      # Older R cannot track at all, so say so once per session rather than on
+      # every call.
+      if (!isTRUE(.jdv_state$track_version_warned)) {
+        .jdv_state$track_version_warned <- TRUE
+        untracked <- "tracking requires R 4.6.0 or later"
+      }
+    } else {
+      owner <- .jdv_binding_owner(as.character(expr), parent.frame())
+      if (is.null(owner)) {
+        untracked <- "no variable with that name was found"
+      }
+    }
   }
   mode <- match.arg(mode)
   collation <- if (missing(collation)) NULL else match.arg(collation)
+  original <- x
   source <- jdv_source(x)
   x <- source$data
   .jdv_transport_housekeeping()
@@ -751,6 +814,14 @@ jdv_view <- function(
     inherits = FALSE
   )
   .jdv_assert_active()
+  if (!is.null(owner) && !identical(registered_entry$mode, "sequential")) {
+    untracked <- .jdv_track_bind(
+      registered_entry,
+      owner,
+      as.character(expr),
+      original
+    )
+  }
   tryCatch(
     .jdv_transport_send(messages),
     error = function(error) {
@@ -767,6 +838,16 @@ jdv_view <- function(
     }
   )
   .jdv_state$transport_hello <- TRUE
+  if (!is.null(untracked)) {
+    warning(
+      "'",
+      deparse1(expr),
+      "' is shown but not tracked: ",
+      untracked,
+      ".",
+      call. = FALSE
+    )
+  }
   invisible(registered$id)
 }
 

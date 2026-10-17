@@ -350,3 +350,33 @@ SEXP C_jdv_tree_vector_names(SEXP x, SEXP start, SEXP count)
     UNPROTECT(1);
     return out;
 }
+
+/* Binding tracking helpers. The environment is held through a public weak
+ * reference so tracking never keeps a local frame alive by itself. */
+SEXP C_jdv_weakref_make(SEXP env)
+{
+    if (TYPEOF(env) != ENVSXP) Rf_error("expected an environment");
+    return R_MakeWeakRef(env, R_NilValue, R_NilValue, FALSE);
+}
+
+SEXP C_jdv_weakref_key(SEXP ref)
+{
+    if (TYPEOF(ref) != WEAKREFSXP) Rf_error("expected a weak reference");
+    return R_WeakRefKey(ref);
+}
+
+/* Read one binding without evaluating it. The result has the status of the
+ * binding ("gone" once the environment was collected) and, for Value and
+ * Forced bindings, the stored object itself. */
+SEXP C_jdv_binding_read(SEXP ref, SEXP name)
+{
+    if (TYPEOF(ref) != WEAKREFSXP) Rf_error("expected a weak reference");
+    SEXP env = PROTECT(R_WeakRefKey(ref));
+    if (TYPEOF(env) != ENVSXP) {
+        UNPROTECT(1);
+        return tree_child_result("gone", R_NilValue);
+    }
+    SEXP out = tree_binding_result(env, name);
+    UNPROTECT(1);
+    return out;
+}

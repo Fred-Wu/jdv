@@ -673,6 +673,7 @@
 #' | `view/refresh`    | Host to R        | Request      | Rebuilds a view from its captured value as the next generation of the same id.     |
 #' | `view/close`      | Host to R        | Request      | Closes one view generation.                                                        |
 #' | `view/closed`     | R to host        | Notification | Removes a closed, replaced, or evicted generation from the host cache.             |
+#' | `view/update_failed` | R to host     | Notification | A tracked view could not be rebuilt; the previous generation stays.                |
 #' | `hello`           | R to host        | Notification | Announces protocol and runtime versions for a new connection.                      |
 #' | `wake`            | Host to R        | Notification | No result; asks the event loop to check its execution gate again.                  |
 #' | `cancel`          | Host to R        | Notification | Names pending work for the local queue to cancel.                                  |
@@ -861,11 +862,14 @@
 #' `{"view": "v-1", "previous_generation": 3, "generation": 4, "refreshed": true}`.
 #' A view is refreshable when its descriptor says `capabilities.refresh: true`.
 #'
-#' The view is rebuilt from the value captured when it was registered, not from
-#' any variable that held that value, so the rebuild shows the same data unless
-#' the captured object is a reference object that changed in place. The rebuild
-#' happens even if nothing changed and always advances the generation by one.
-#' The registration `mode` and `collation` are reused as they were requested: an
+#' The view is rebuilt from the value captured when it was registered, so the
+#' rebuild shows the same data unless the captured object is a reference object
+#' that changed in place. A tracked view (see Binding tracking) is instead
+#' rebuilt from the current value of its variable, read without evaluation; it
+#' fails with `unavailable` when tracking has ended (the reason is in the
+#' message) or the variable is a promise or active binding. The rebuild happens
+#' even if nothing changed and always advances the generation by one. The
+#' registration `mode` and `collation` are reused as they were requested: an
 #' `"auto"` mode is decided again (a grid may move between Snapshot and Paged,
 #' and the effective mode is never frozen), an explicit mode is kept, and an
 #' omitted collation reads `jdv.collation` again. A refresh of a titled view
@@ -910,6 +914,56 @@
 #' generation.
 #'
 #'
+#' @section Binding tracking and `view/update_failed`:
+#'
+#'
+#' A view can follow the variable it was created from. [jdv_view()] does so by
+#' default when its argument is a single name, and [jdv_register()] accepts an
+#' explicit `binding = list(name = "x", env = env)` for embedding hosts. After
+#' each top-level R task, the R task callback reads every tracked variable
+#' without evaluating it, compares the object it holds by identity with the one
+#' the view was built from, and rebuilds every changed view through the same
+#' update as `view/refresh`: a new `view/open` with the next generation (and
+#' `parent_closed` closes of its children) is queued, and the baseline moves to
+#' the new object. Nothing is scheduled beyond the task callback; a check is
+#' skipped while a request or a refresh is running and made at the next
+#' opportunity. When the built-in connection owns the session the queue is sent
+#' right after the check.
+#'
+#' Only plain and already forced bindings are read (R 4.6.0 or later). Promise,
+#' active, and missing bindings are skipped and looked at again later. If the
+#' variable is removed or its environment is garbage collected, tracking ends,
+#' the last view stays, and a later `view/refresh` fails with `unavailable`; a
+#' recreated variable is not picked up. Objects changed in place (environments,
+#' reference objects, `data.table` updates by reference) keep their identity and
+#' are not detected; a manual `view/refresh` covers them. The environment is
+#' held weakly, but a displayed object that refers to it, such as a closure,
+#' keeps it alive. Views opened from another view and sequential views are not
+#' tracked.
+#'
+#' **Embedding hosts.** R runs task callbacks in registration order. A host
+#' whose own callback takes notifications before the callback of jdv would see
+#' an update only after the next command. Such a host calls `jdv_rpc(NULL)`
+#' first, which checks tracked variables once even without a viewer connection,
+#' and then [jdv_notifications()].
+#'
+#' When an update cannot be built (a schema, conversion, or size limit, or an R
+#' error), the previous generation stays and one notification is queued:
+#'
+#' ```json
+#' {"method": "view/update_failed",
+#'  "params": {"view": "v-1", "generation": 3, "code": "limit_exceeded",
+#'             "message": "..."}}
+#' ```
+#'
+#' `generation` is the generation still displayed and `code` is one of the usual
+#' error codes. The same object is not tried again, and so not reported again,
+#' until the variable holds a different object or `view/refresh` is requested. A
+#' host that forwards the notification ignores one for a generation it no longer
+#' shows. A notification queue overflow ends the session as described under
+#' Notification delivery.
+#'
+#'
 #' @section `view/close` and `view/closed`:
 #'
 #'
@@ -939,10 +993,10 @@
 #'
 #'
 #' Every notification R produces for a session (`hello`, `view/open`,
-#' `view/closed`, including evictions, cascaded child closes, and the
-#' `view/open` of a child created by `object/open`) goes through one first-in,
-#' first-out queue. A session has exactly one owner of that queue, reported by
-#' the `owner` field of [jdv_connection()]:
+#' `view/closed`, including evictions, cascaded child closes, the `view/open` of
+#' a child created by `object/open`, and `view/update_failed`) goes through one
+#' first-in, first-out queue. A session has exactly one owner of that queue,
+#' reported by the `owner` field of [jdv_connection()]:
 #'
 #' - `"transport"`: the built-in connection, whenever one is open. The
 #'   transport sends the queue itself, before the response of the request being

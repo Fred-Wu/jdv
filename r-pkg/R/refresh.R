@@ -62,13 +62,15 @@
 
 # Rebuild one view from `value` and publish it as the next generation of the
 # same id. This is the single update transaction: manual view/refresh uses it
-# with the captured value, and tracked updates can pass a current value.
+# with the captured value or the current binding value, and tracked updates
+# pass the new binding value. With `tracked`, `value` is the object read from
+# the binding and becomes the new baseline for change detection.
 #
 # Nothing in the registry changes until the replacement is complete and the
 # entry, generation, and parent are re-checked. A close or disconnect issued
 # by a user method during construction is honored; the closed view is not
 # revived. Returns the view/refresh result.
-.jdv_update_view <- function(entry, value, mode, collation) {
+.jdv_update_view <- function(entry, value, mode, collation, tracked = FALSE) {
   .jdv_assert_active()
   .jdv_assert_not_refreshing()
   if (identical(entry$mode, "sequential")) {
@@ -121,6 +123,7 @@
 
   .jdv_state$refreshing <- TRUE
   on.exit(.jdv_state$refreshing <- FALSE, add = TRUE)
+  original <- value
   source <- jdv_source(value)
   .jdv_assert_active()
   value <- source$data
@@ -173,6 +176,7 @@
   }
   committed <- FALSE
   on.exit(if (!committed) .jdv_close_entry(replacement), add = TRUE)
+  .jdv_track_carry(entry, replacement, if (tracked) original)
   result <- list(
     view = id,
     previous_generation = previous,
@@ -222,11 +226,33 @@
 }
 
 # Manual view/refresh: rebuild from the value captured at registration.
+# A tracked view rebuilds from the current value of its binding, read without
+# evaluation; a view whose tracking ended cannot be refreshed.
 .jdv_refresh_view <- function(entry) {
-  .jdv_update_view(
-    entry,
-    entry$captured,
-    entry$intent_mode,
-    entry$intent_collation
+  if (is.null(entry$track_ref)) {
+    return(.jdv_update_view(
+      entry,
+      entry$captured,
+      entry$intent_mode,
+      entry$intent_collation
+    ))
+  }
+  value <- .jdv_track_current(entry)
+  tryCatch(
+    .jdv_update_view(
+      entry,
+      value,
+      entry$intent_mode,
+      entry$intent_collation,
+      tracked = TRUE
+    ),
+    error = function(error) {
+      # The caller gets this failure, so the automatic path must not announce
+      # the same candidate again.
+      if (!isTRUE(entry$closed) && !is.null(entry$track_ref)) {
+        entry$track_failed <- list(value = value)
+      }
+      stop(error)
+    }
   )
 }

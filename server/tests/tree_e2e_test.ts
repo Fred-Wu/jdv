@@ -1103,3 +1103,119 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name: "top-level R tasks update a tracked view and report a failed update",
+  ignore: !testLibrary,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    assert(testLibrary, "JDV_TEST_R_LIB must select the scratch library.");
+    const server = new TestServer();
+    let browser: TestBrowser | undefined;
+    let directory: string | undefined;
+    let child: Deno.ChildProcess | undefined;
+    let primaryError: unknown;
+    try {
+      await phase("Tracking E2E server startup", () => server.start(), 30_000);
+      browser = await server.connectBrowser();
+      const welcome = await browser.read(10_000);
+      assertEquals(welcome.type, "welcome");
+      directory = await Deno.makeTempDir({ prefix: "jdv-track-" });
+      const release = join(directory, "release");
+      const script = join(directory, "track.R");
+      // Rscript evaluates a script file one top-level expression at a time,
+      // which is when jdv's task callback looks at the tracked variable.
+      await Deno.writeTextFile(
+        script,
+        [
+          `library(jdv, lib.loc = ${rQuote(testLibrary)})`,
+          "tracked_df <- mtcars[1:3, ]",
+          'jdv_view(tracked_df, mode = "snapshot")',
+          "tracked_df <- mtcars[1:5, ]",
+          "same <- tracked_df",
+          "tracked_df <- same",
+          "options(jdv.max_message_bytes = 2048)",
+          "tracked_df <- mtcars[rep(1:32, 20), ]",
+          "options(jdv.max_message_bytes = NULL)",
+          "tracked_df <- mtcars[1:4, ]",
+          `while (!file.exists(${rQuote(release)})) Sys.sleep(0.05)`,
+          "jdv_close()",
+        ].join("\n") + "\n",
+      );
+      child = new Deno.Command("Rscript", {
+        args: [script],
+        env: server.rEnv(testLibrary),
+        stdout: "piped",
+        stderr: "piped",
+      }).spawn();
+
+      const first = await openedView(browser, "tracked_df");
+      assertEquals(first.generation, 1);
+      assertEquals(first.nrow, 3);
+      const isViewOpen = (message: Record<string, unknown>) =>
+        message.type === "view/open" &&
+        asRecord(asRecord(message.message).params).view === first.view;
+      const second = await nextMessage(
+        browser,
+        isViewOpen,
+        "view/open for the reassigned variable",
+      );
+      const reopened = asRecord(asRecord(second.message).params);
+      assertEquals(reopened.generation, 2);
+      assertEquals(reopened.nrow, 5);
+
+      // The next notification is the failure: assigning the same object
+      // again changed nothing, and the failed candidate keeps generation 2.
+      const failed = await nextMessage(
+        browser,
+        (message) =>
+          message.type === "notification" ||
+          message.type === "view/open",
+        "view/update_failed",
+      );
+      assertEquals(failed.type, "notification");
+      assertEquals(asRecord(failed.message).method, "view/update_failed");
+      const params = asRecord(asRecord(failed.message).params);
+      assertEquals(params.view, first.view);
+      assertEquals(params.generation, 2);
+      assertEquals(params.code, "limit_exceeded");
+
+      const third = await nextMessage(
+        browser,
+        isViewOpen,
+        "view/open after the failed update",
+      );
+      const last = asRecord(asRecord(third.message).params);
+      assertEquals(last.generation, 3);
+      assertEquals(last.nrow, 4);
+    } catch (error) {
+      primaryError = error;
+      throw error;
+    } finally {
+      await finishIntegrationCleanup([
+        ...(directory
+          ? [async () => {
+            await Deno.writeTextFile(join(directory!, "release"), "");
+          }]
+          : []),
+        ...(child
+          ? [async () => {
+            const output = await phase(
+              "Tracking E2E R exit",
+              () => child!.output(),
+              30_000,
+            );
+            if (primaryError !== undefined) {
+              console.log(new TextDecoder().decode(output.stderr));
+            }
+          }]
+          : []),
+        ...(browser ? [() => Promise.resolve(browser!.close())] : []),
+        () =>
+          phase("Tracking E2E server cleanup", () => server.close(), 10_000),
+        ...(directory ? [() => removeCacheDirectory(directory!)] : []),
+      ], primaryError === undefined ? [] : [primaryError]);
+    }
+  },
+});
