@@ -363,15 +363,14 @@ query_fold <- function(x) {
 
 query_number_data <- function(holder, j, budget = NULL) {
   schema <- holder$schema[[j]]
+  if (schema$type %in% c("date", "datetime")) {
+    return(query_channel(holder, j, "sortKey", budget)$sortKey)
+  }
   data <- query_channel(holder, j, "values", budget)
   values <- data$values
   if (schema$type == "number" && !is.null(data$special)) {
     values[which(data$special == "pos_inf")] <- Inf
     values[which(data$special == "neg_inf")] <- -Inf
-  } else if (schema$type == "date") {
-    values <- as.numeric(as.Date(values))
-  } else if (schema$type == "datetime") {
-    values <- query_iso_time(values, schema$tz)
   }
   values
 }
