@@ -46,6 +46,20 @@ test_that("an embedded session queues hello before the first view/open", {
   expect_identical(notification_views(messages)[[2L]], registered$id)
   expect_false(any(grepl("\n", messages, fixed = TRUE)))
   expect_identical(jdv_notifications(), character())
+
+  limits <- .jdv_json_parse(messages[[1L]])$params$limits
+  expect_setequal(
+    names(limits),
+    c(
+      "max_receive_frames",
+      "max_receive_bytes",
+      "queue_messages",
+      "queue_bytes",
+      "max_request_bytes",
+      "max_message_bytes"
+    )
+  )
+  expect_true(all(vapply(limits, function(value) value > 0, logical(1))))
 })
 
 test_that("close and eviction notifications are taken without a registration", {

@@ -123,6 +123,23 @@
   ))
 }
 
+# An embedded hello advertises the same complete limits object as a transport
+# hello, computed from the options the transport would use, so hosts can
+# validate both kinds of session the same way.
+.jdv_embedded_hello_limits <- function() {
+  limits <- .jdv_transport_limits()
+  list(
+    max_receive_frames = as.integer(
+      limits$queue_messages + limits$max_drain_requests
+    ),
+    max_receive_bytes = limits$max_receive_bytes,
+    queue_messages = limits$queue_messages,
+    queue_bytes = limits$queue_bytes,
+    max_request_bytes = limits$max_request_bytes,
+    max_message_bytes = limits$max_message_bytes
+  )
+}
+
 # Start an embedded session when nothing owns notifications yet. Returns TRUE
 # when this call started one.
 .jdv_session_ensure <- function() {
@@ -132,10 +149,7 @@
   limits <- .jdv_notification_limits()
   .jdv_queue_reset(limits)
   .jdv_state$embedded <- TRUE
-  hello <- .jdv_hello(list(
-    max_message_bytes = as.integer(.jdv_max_message_bytes()),
-    max_request_bytes = as.integer(.jdv_max_request_bytes())
-  ))
+  hello <- .jdv_hello(.jdv_embedded_hello_limits())
   tryCatch(
     .jdv_notify(.jdv_json_encode(hello)),
     error = function(error) {
