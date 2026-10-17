@@ -1225,7 +1225,7 @@ function filterOperators(schema) {
   if (selected?.descriptor.capabilities.filter !== true) return [];
   const common = [["is_na", "Is missing"]];
   if (schema.filterable !== true) return common;
-  if (["string", "factor", "other"].includes(schema.type)) {
+  if (["string", "factor"].includes(schema.type)) {
     return common.concat([
       ["contains", "Contains"],
       ["starts_with", "Starts with"],
@@ -1285,7 +1285,7 @@ function updateFilterInputs() {
   if (schema?.type === "datetime") {
     filterHelp.textContent =
       "Use YYYY-MM-DDTHH:MM:SSZ or an explicit offset such as +05:30. R's local timezone is not inferred by the Snapshot viewer.";
-  } else if (["string", "factor", "other"].includes(schema?.type)) {
+  } else if (["string", "factor"].includes(schema?.type)) {
     filterHelp.textContent =
       "Text comparisons ignore ASCII letter case; non-ASCII case is preserved.";
   } else {
@@ -1376,7 +1376,7 @@ function buildFilterAst() {
 }
 
 function parseFilterValue(schema, value, label = "Value") {
-  if (["string", "factor", "other"].includes(schema.type)) return value;
+  if (["string", "factor"].includes(schema.type)) return value;
   if (schema.type === "boolean") {
     throw new Error("Choose a Boolean filter operation.");
   }

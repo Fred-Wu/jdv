@@ -283,7 +283,7 @@ query_filter_validate <- function(table, filter) {
       query_error("unsupported", "Column is not filterable.")
     }
     if (op %in% text_ops) {
-      if (!schema$type %in% c("string", "factor", "other")) {
+      if (!schema$type %in% c("string", "factor")) {
         query_error("unsupported", "Column has no text filter source.")
       }
       out$value <- string(node$value)

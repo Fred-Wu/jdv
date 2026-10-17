@@ -896,27 +896,6 @@
           ]
         },
         {
-          "name": "format-text",
-          "expected": [
-            2,
-            4
-          ],
-          "filter": {
-            "op": "text_equals",
-            "col": 0,
-            "value": "value:1"
-          }
-        },
-        {
-          "name": "format-na-excluded",
-          "expected": [],
-          "filter": {
-            "op": "contains",
-            "col": 0,
-            "value": "NA"
-          }
-        },
-        {
           "name": "missing",
           "expected": [
             3
@@ -924,6 +903,789 @@
           "filter": {
             "op": "is_na",
             "col": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "filterable-types",
+      "columns": [
+        {
+          "name": "lgl",
+          "type": "boolean",
+          "values": [
+            true,
+            false,
+            null,
+            true
+          ]
+        },
+        {
+          "name": "int",
+          "type": "integer",
+          "values": [
+            3,
+            1,
+            null,
+            2
+          ]
+        },
+        {
+          "name": "dbl",
+          "type": "number",
+          "values": [
+            1.5,
+            2.5,
+            null,
+            0.5
+          ]
+        },
+        {
+          "name": "chr",
+          "type": "string",
+          "values": [
+            "Apple",
+            "banana",
+            null,
+            "apple"
+          ]
+        },
+        {
+          "name": "fct",
+          "type": "factor",
+          "values": [
+            "low",
+            "high",
+            null,
+            "low"
+          ],
+          "levels": [
+            "low",
+            "high"
+          ],
+          "ordered": false
+        },
+        {
+          "name": "ord",
+          "type": "factor",
+          "values": [
+            "high",
+            "low",
+            "mid",
+            null
+          ],
+          "levels": [
+            "low",
+            "mid",
+            "high"
+          ],
+          "ordered": true
+        },
+        {
+          "name": "date",
+          "type": "date",
+          "values": [
+            "2020-01-02",
+            null,
+            "2020-01-01",
+            "2020-01-02"
+          ]
+        },
+        {
+          "name": "time",
+          "type": "datetime",
+          "values": [
+            "2020-01-01T00:00:00",
+            null,
+            "2020-01-01T00:00:01",
+            "2019-12-31T23:59:59"
+          ],
+          "tz": "UTC"
+        },
+        {
+          "name": "i64",
+          "type": "int64",
+          "values": [
+            "9007199254740993",
+            "9007199254740994",
+            null,
+            "1"
+          ]
+        },
+        {
+          "name": "s3",
+          "type": "other",
+          "values": [
+            2,
+            1,
+            null,
+            1
+          ],
+          "r": "query_record"
+        },
+        {
+          "name": "s4",
+          "type": "other",
+          "values": [
+            2,
+            1,
+            null,
+            1
+          ],
+          "r": "s4_record"
+        },
+        {
+          "name": "dur",
+          "type": "other",
+          "values": [
+            60,
+            30,
+            null,
+            30
+          ],
+          "r": "difftime"
+        },
+        {
+          "name": "asis_int",
+          "type": "integer",
+          "values": [
+            3,
+            1,
+            null,
+            2
+          ],
+          "asis": true
+        },
+        {
+          "name": "asis_chr",
+          "type": "string",
+          "values": [
+            "Apple",
+            "banana",
+            null,
+            "apple"
+          ],
+          "asis": true
+        },
+        {
+          "name": "asis_lgl",
+          "type": "boolean",
+          "values": [
+            true,
+            false,
+            null,
+            true
+          ],
+          "asis": true
+        },
+        {
+          "name": "asis_dbl",
+          "type": "number",
+          "values": [
+            1.5,
+            2.5,
+            null,
+            0.5
+          ],
+          "asis": true
+        }
+      ],
+      "queries": [
+        {
+          "name": "lgl-is-true",
+          "expected": [
+            1,
+            4
+          ],
+          "filter": {
+            "op": "is_true",
+            "col": 0
+          }
+        },
+        {
+          "name": "lgl-text",
+          "error": "unsupported",
+          "filter": {
+            "op": "contains",
+            "col": 0,
+            "value": "t"
+          }
+        },
+        {
+          "name": "lgl-compare",
+          "error": "unsupported",
+          "filter": {
+            "op": "eq",
+            "col": 0,
+            "value": 1
+          }
+        },
+        {
+          "name": "int-gt",
+          "expected": [
+            1,
+            4
+          ],
+          "filter": {
+            "op": "gt",
+            "col": 1,
+            "value": 1
+          }
+        },
+        {
+          "name": "int-text",
+          "error": "unsupported",
+          "filter": {
+            "op": "contains",
+            "col": 1,
+            "value": "1"
+          }
+        },
+        {
+          "name": "int-in",
+          "error": "unsupported",
+          "filter": {
+            "op": "in",
+            "col": 1,
+            "values": [
+              "1"
+            ]
+          }
+        },
+        {
+          "name": "dbl-between",
+          "expected": [
+            1
+          ],
+          "filter": {
+            "op": "between",
+            "col": 2,
+            "lower": 1,
+            "upper": 2
+          }
+        },
+        {
+          "name": "dbl-text",
+          "error": "unsupported",
+          "filter": {
+            "op": "contains",
+            "col": 2,
+            "value": "1"
+          }
+        },
+        {
+          "name": "chr-contains",
+          "expected": [
+            1,
+            4
+          ],
+          "filter": {
+            "op": "contains",
+            "col": 3,
+            "value": "APPLE"
+          }
+        },
+        {
+          "name": "chr-compare",
+          "error": "unsupported",
+          "filter": {
+            "op": "gt",
+            "col": 3,
+            "value": "a"
+          }
+        },
+        {
+          "name": "fct-in",
+          "expected": [
+            1,
+            4
+          ],
+          "filter": {
+            "op": "in",
+            "col": 4,
+            "values": [
+              "low"
+            ]
+          }
+        },
+        {
+          "name": "fct-text",
+          "expected": [
+            2
+          ],
+          "filter": {
+            "op": "text_equals",
+            "col": 4,
+            "value": "high"
+          }
+        },
+        {
+          "name": "fct-compare",
+          "error": "unsupported",
+          "filter": {
+            "op": "lt",
+            "col": 4,
+            "value": "low"
+          }
+        },
+        {
+          "name": "ord-in",
+          "expected": [
+            2,
+            3
+          ],
+          "filter": {
+            "op": "in",
+            "col": 5,
+            "values": [
+              "low",
+              "mid"
+            ]
+          }
+        },
+        {
+          "name": "ord-text",
+          "expected": [
+            1,
+            3
+          ],
+          "filter": {
+            "op": "contains",
+            "col": 5,
+            "value": "i"
+          }
+        },
+        {
+          "name": "ord-compare",
+          "error": "unsupported",
+          "filter": {
+            "op": "gt",
+            "col": 5,
+            "value": "low"
+          }
+        },
+        {
+          "name": "date-gt",
+          "expected": [
+            1,
+            4
+          ],
+          "filter": {
+            "op": "gt",
+            "col": 6,
+            "value": "2020-01-01"
+          }
+        },
+        {
+          "name": "date-text",
+          "error": "unsupported",
+          "filter": {
+            "op": "contains",
+            "col": 6,
+            "value": "2020"
+          }
+        },
+        {
+          "name": "time-ge",
+          "expected": [
+            1,
+            3
+          ],
+          "filter": {
+            "op": "ge",
+            "col": 7,
+            "value": "2020-01-01T00:00:00Z"
+          }
+        },
+        {
+          "name": "time-text",
+          "error": "unsupported",
+          "filter": {
+            "op": "contains",
+            "col": 7,
+            "value": "2020"
+          }
+        },
+        {
+          "name": "i64-eq",
+          "expected": [
+            1
+          ],
+          "filter": {
+            "op": "eq",
+            "col": 8,
+            "value": "9007199254740993"
+          }
+        },
+        {
+          "name": "i64-gt",
+          "error": "unsupported",
+          "filter": {
+            "op": "gt",
+            "col": 8,
+            "value": "1"
+          }
+        },
+        {
+          "name": "s3-sort",
+          "expected": [
+            2,
+            4,
+            1,
+            3
+          ],
+          "sort": [
+            {
+              "col": 9,
+              "desc": false
+            }
+          ]
+        },
+        {
+          "name": "s3-is-na",
+          "expected": [
+            3
+          ],
+          "filter": {
+            "op": "is_na",
+            "col": 9
+          }
+        },
+        {
+          "name": "s3-not-is-na",
+          "expected": [
+            1,
+            2,
+            4
+          ],
+          "filter": {
+            "op": "not",
+            "arg": {
+              "op": "is_na",
+              "col": 9
+            }
+          }
+        },
+        {
+          "name": "s3-text",
+          "error": "unsupported",
+          "filter": {
+            "op": "contains",
+            "col": 9,
+            "value": "1"
+          }
+        },
+        {
+          "name": "s3-text-equals",
+          "error": "unsupported",
+          "filter": {
+            "op": "text_equals",
+            "col": 9,
+            "value": ""
+          }
+        },
+        {
+          "name": "s3-compare",
+          "error": "unsupported",
+          "filter": {
+            "op": "eq",
+            "col": 9,
+            "value": 2
+          }
+        },
+        {
+          "name": "s3-between",
+          "error": "unsupported",
+          "filter": {
+            "op": "between",
+            "col": 9,
+            "lower": 0,
+            "upper": 100
+          }
+        },
+        {
+          "name": "s3-in",
+          "error": "unsupported",
+          "filter": {
+            "op": "in",
+            "col": 9,
+            "values": [
+              "1"
+            ]
+          }
+        },
+        {
+          "name": "s3-not-text",
+          "error": "unsupported",
+          "filter": {
+            "op": "not",
+            "arg": {
+              "op": "contains",
+              "col": 9,
+              "value": "1"
+            }
+          }
+        },
+        {
+          "name": "s4-sort",
+          "expected": [
+            2,
+            4,
+            1,
+            3
+          ],
+          "sort": [
+            {
+              "col": 10,
+              "desc": false
+            }
+          ]
+        },
+        {
+          "name": "s4-is-na",
+          "expected": [
+            3
+          ],
+          "filter": {
+            "op": "is_na",
+            "col": 10
+          }
+        },
+        {
+          "name": "s4-not-is-na",
+          "expected": [
+            1,
+            2,
+            4
+          ],
+          "filter": {
+            "op": "not",
+            "arg": {
+              "op": "is_na",
+              "col": 10
+            }
+          }
+        },
+        {
+          "name": "s4-text",
+          "error": "unsupported",
+          "filter": {
+            "op": "contains",
+            "col": 10,
+            "value": "1"
+          }
+        },
+        {
+          "name": "s4-text-equals",
+          "error": "unsupported",
+          "filter": {
+            "op": "text_equals",
+            "col": 10,
+            "value": ""
+          }
+        },
+        {
+          "name": "s4-compare",
+          "error": "unsupported",
+          "filter": {
+            "op": "eq",
+            "col": 10,
+            "value": 2
+          }
+        },
+        {
+          "name": "s4-between",
+          "error": "unsupported",
+          "filter": {
+            "op": "between",
+            "col": 10,
+            "lower": 0,
+            "upper": 100
+          }
+        },
+        {
+          "name": "s4-in",
+          "error": "unsupported",
+          "filter": {
+            "op": "in",
+            "col": 10,
+            "values": [
+              "1"
+            ]
+          }
+        },
+        {
+          "name": "s4-not-text",
+          "error": "unsupported",
+          "filter": {
+            "op": "not",
+            "arg": {
+              "op": "contains",
+              "col": 10,
+              "value": "1"
+            }
+          }
+        },
+        {
+          "name": "dur-sort",
+          "expected": [
+            2,
+            4,
+            1,
+            3
+          ],
+          "sort": [
+            {
+              "col": 11,
+              "desc": false
+            }
+          ]
+        },
+        {
+          "name": "dur-is-na",
+          "expected": [
+            3
+          ],
+          "filter": {
+            "op": "is_na",
+            "col": 11
+          }
+        },
+        {
+          "name": "dur-not-is-na",
+          "expected": [
+            1,
+            2,
+            4
+          ],
+          "filter": {
+            "op": "not",
+            "arg": {
+              "op": "is_na",
+              "col": 11
+            }
+          }
+        },
+        {
+          "name": "dur-text",
+          "error": "unsupported",
+          "filter": {
+            "op": "contains",
+            "col": 11,
+            "value": "1"
+          }
+        },
+        {
+          "name": "dur-text-equals",
+          "error": "unsupported",
+          "filter": {
+            "op": "text_equals",
+            "col": 11,
+            "value": ""
+          }
+        },
+        {
+          "name": "dur-compare",
+          "error": "unsupported",
+          "filter": {
+            "op": "eq",
+            "col": 11,
+            "value": 60
+          }
+        },
+        {
+          "name": "dur-between",
+          "error": "unsupported",
+          "filter": {
+            "op": "between",
+            "col": 11,
+            "lower": 0,
+            "upper": 100
+          }
+        },
+        {
+          "name": "dur-in",
+          "error": "unsupported",
+          "filter": {
+            "op": "in",
+            "col": 11,
+            "values": [
+              "1"
+            ]
+          }
+        },
+        {
+          "name": "dur-not-text",
+          "error": "unsupported",
+          "filter": {
+            "op": "not",
+            "arg": {
+              "op": "contains",
+              "col": 11,
+              "value": "1"
+            }
+          }
+        },
+        {
+          "name": "asis-int-gt",
+          "expected": [
+            1,
+            4
+          ],
+          "filter": {
+            "op": "gt",
+            "col": 12,
+            "value": 1
+          }
+        },
+        {
+          "name": "asis-int-sort",
+          "expected": [
+            2,
+            4,
+            1,
+            3
+          ],
+          "sort": [
+            {
+              "col": 12,
+              "desc": false
+            }
+          ]
+        },
+        {
+          "name": "asis-chr-contains",
+          "expected": [
+            1,
+            4
+          ],
+          "filter": {
+            "op": "contains",
+            "col": 13,
+            "value": "APPLE"
+          }
+        },
+        {
+          "name": "asis-lgl-is-true",
+          "expected": [
+            1,
+            4
+          ],
+          "filter": {
+            "op": "is_true",
+            "col": 14
+          }
+        },
+        {
+          "name": "asis-dbl-between",
+          "expected": [
+            1
+          ],
+          "filter": {
+            "op": "between",
+            "col": 15,
+            "lower": 1,
+            "upper": 2
           }
         }
       ]

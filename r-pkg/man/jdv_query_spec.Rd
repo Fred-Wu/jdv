@@ -94,12 +94,11 @@ for a matrix, or a class-preserving slice of a data-frame column. Display is
 formatted for that slice, independently of full-column filter text.
 
 A filter or sort retrieves only its referenced full source columns and
-required channels. An \code{other} text filter requests the full column's
-\code{\link[base:format]{base::format()}} output at that point. It never substitutes a page's display
-text. Custom subsetting must preserve the column class and requested row
-count. Atomic S3 classes without a subset method retain their metadata;
-classes with row-dependent attributes must supply suitable subsetting
-behavior.
+required channels. A text filter requests the full column's text at that
+point and never substitutes a page's display text. Custom subsetting must
+preserve the column class and requested row count. Atomic S3 classes without
+a subset method retain their metadata; classes with row-dependent attributes
+must supply suitable subsetting behavior.
 
 Three least-recently-used caches have separate entry limits:\tabular{lrl}{
    Cache \tab Default entries \tab Contents \cr
@@ -192,7 +191,7 @@ Filter objects use these exact fields:\tabular{lll}{
    \code{and}, \code{or} \tab \code{op}, \code{args} (array of child objects) \tab Any valid children. \cr
    \code{not} \tab \code{op}, \code{arg} (one child object) \tab Any valid child. \cr
    \code{is_na} \tab \code{op}, \code{col} \tab Any column with a valid missingness channel. \cr
-   \code{contains}, \code{starts_with}, \code{ends_with}, \code{text_equals} \tab \code{op}, \code{col}, \code{value} \tab String, factor, filterable other. \cr
+   \code{contains}, \code{starts_with}, \code{ends_with}, \code{text_equals} \tab \code{op}, \code{col}, \code{value} \tab String, factor. \cr
    \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge} \tab \code{op}, \code{col}, \code{value} \tab Integer, number, date, datetime; integer64 supports only \code{eq}. \cr
    \code{between} \tab \code{op}, \code{col}, \code{lower}, \code{upper} \tab Integer, number, date, datetime, integer64. \cr
    \code{is_true}, \code{is_false} \tab \code{op}, \code{col} \tab Boolean. \cr
@@ -223,6 +222,18 @@ unwanted.
 allowed even when \code{filterable} is false, provided extraction yields a valid
 mask. Missing meaning never comes from display labels such as the literal
 string \code{"NA"}.
+
+Being displayable and being filterable are separate. Value-based filters are
+limited to an explicit list of column types: logical, integer, double, and
+character vectors without a class, factors, \code{Date}, \code{POSIXct} and \code{POSIXlt},
+and \code{integer64}. A vector wrapped only by \code{\link[base:I]{base::I()}} is classified by its
+contents, so \code{I(1:3)} is an integer column. \code{I()} around a classed vector
+keeps the classification of that class, so an \code{I()} factor is a factor column
+and an \code{I()} \code{difftime} is \code{other}. Any other S3 or S4 class (including
+\code{difftime}) has schema \code{type} \code{other} and \code{filterable} false. It is still
+displayed and sorted through \code{\link[base:format]{base::format()}} and \code{\link[base:xtfrm]{base::xtfrm()}}, and
+answers \code{is_na}, but every other operator fails with \code{unsupported} ("Column
+is not filterable.").
 }
 
 \section{Text}{
@@ -239,23 +250,22 @@ Text sources are:
 \itemize{
 \item String: the original, untruncated character value.
 \item Factor: its label.
-\item Other: \code{\link[base:format]{base::format()}} over the complete column, computed and cached on request.
 }
 
 Number, integer, Boolean, date, datetime, and integer64 columns do not
-support text operators. List, matrix, and packed data-frame columns have
-previews but no text-filter capability. Page display truncation or formatting
-does not alter the filter source. Factor \verb{in} is exact, case-sensitive label
-membership and does not use text folding; duplicate labels are harmless and
-an empty label array matches no rows.
+support text operators, and neither do \code{other} columns. List, matrix, and
+packed data-frame columns have previews but no text-filter capability. Page
+display truncation or formatting does not alter the filter source. Factor
+\verb{in} is exact, case-sensitive label membership and does not use text folding;
+duplicate labels are harmless and an empty label array matches no rows.
 }
 
 \section{Blank and non-blank filters}{
 
 
 There is no dedicated blank operator; clients combine existing ones. A
-text-filterable column has a schema \code{type} of \code{string}, \code{factor}, or \code{other}
-and \code{filterable} true. For such a column, blank (missing or empty string) is
+text-filterable column has a schema \code{type} of \code{string} or \code{factor} and
+\code{filterable} true. For such a column, blank (missing or empty string) is
 
 \if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"op": "or", "args": [
   \{"op": "is_na", "col": 2\},
@@ -442,7 +452,9 @@ becoming R missing data. Its \code{\link[base:format]{base::format()}} method re
 \code{paste0("value:", as.numeric(x))}, \code{\link[base:xtfrm]{base::xtfrm()}} returns \code{as.numeric(x)},
 and missingness follows \code{is.na(x)}. The class's runtime \code{values} channel is
 absent (\code{NULL}). The JSON fixture's numeric factory input is therefore not an
-\code{other} column's wire values or a numeric-filter capability.
+\code{other} column's wire values or a numeric-filter capability. Because \code{other}
+columns are not filterable, the fixture exercises only display, sorting, and
+\code{is_na} for it.
 
 Locate it with:
 

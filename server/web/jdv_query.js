@@ -374,6 +374,9 @@ function validateFilter(columns, node, context, depth) {
     );
   }
   if (op === "is_na") return { op, col };
+  if (!schema.filterable) {
+    throw queryError("unsupported", "Column is not filterable.");
+  }
   if (op === "is_true" || op === "is_false") {
     if (schema.type !== "boolean") {
       throw queryError("unsupported", "Boolean filter is unavailable.");
@@ -381,9 +384,7 @@ function validateFilter(columns, node, context, depth) {
     return { op, col };
   }
   if (stringOps.includes(op)) {
-    if (
-      !["string", "factor", "other"].includes(schema.type) || !schema.filterable
-    ) {
+    if (!["string", "factor"].includes(schema.type)) {
       throw queryError("unsupported", "Text filter is unavailable.");
     }
     if (typeof node.value !== "string") {
@@ -394,8 +395,7 @@ function validateFilter(columns, node, context, depth) {
   }
   if (op === "in") {
     if (
-      schema.type !== "factor" || !schema.filterable ||
-      !Array.isArray(node.values)
+      schema.type !== "factor" || !Array.isArray(node.values)
     ) {
       throw queryError(
         "unsupported",
@@ -694,9 +694,7 @@ function testFilter(columns, node, row) {
   if (
     ["contains", "starts_with", "ends_with", "text_equals"].includes(node.op)
   ) {
-    const source = schema.type === "other"
-      ? data.display?.[row]
-      : data.values?.[row];
+    const source = data.values?.[row];
     if (typeof source !== "string") return false;
     const folded = asciiFold(source);
     if (node.op === "contains") return folded.includes(node.value);

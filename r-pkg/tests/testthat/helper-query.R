@@ -7,21 +7,26 @@ with_query_methods <- function(code) {
       structure(unclass(x)[i], class = class(x))
     }
   )
+  query_define_s4_record()
+  on.exit(query_remove_s4_record(), add = TRUE)
   previous <- lapply(
     names(methods),
     function(name) {
       if (exists(name, table, inherits = FALSE)) get(name, table) else NULL
     }
   )
-  on.exit({
-    for (i in seq_along(methods)) {
-      if (is.null(previous[[i]])) {
-        rm(list = names(methods)[i], envir = table)
-      } else {
-        assign(names(methods)[i], previous[[i]], table)
+  on.exit(
+    {
+      for (i in seq_along(methods)) {
+        if (is.null(previous[[i]])) {
+          rm(list = names(methods)[i], envir = table)
+        } else {
+          assign(names(methods)[i], previous[[i]], table)
+        }
       }
-    }
-  })
+    },
+    add = TRUE
+  )
   for (name in names(methods)) {
     pieces <- strsplit(name, ".", fixed = TRUE)[[1L]]
     registerS3method(
@@ -32,6 +37,41 @@ with_query_methods <- function(code) {
     )
   }
   eval(substitute(code), parent.frame())
+}
+
+# A synthetic S4 numeric vector class with display and sort methods, defined
+# in the global environment as S4 methods need a package-independent home.
+query_define_s4_record <- function() {
+  name <- "query_s4_record"
+  methods::setClass(name, contains = "numeric", where = .GlobalEnv)
+  methods::setMethod(
+    "[",
+    name,
+    function(x, i, j, ..., drop = TRUE) {
+      methods::new("query_s4_record", as.numeric(x)[i])
+    },
+    where = .GlobalEnv
+  )
+  methods::setMethod(
+    "format",
+    name,
+    function(x, ...) paste0("s4:", as.numeric(x)),
+    where = .GlobalEnv
+  )
+  methods::setMethod(
+    "xtfrm",
+    name,
+    function(x) as.numeric(x),
+    where = .GlobalEnv
+  )
+}
+
+query_remove_s4_record <- function() {
+  name <- "query_s4_record"
+  for (generic in c("[", "format", "xtfrm")) {
+    methods::removeMethod(generic, name, where = .GlobalEnv)
+  }
+  methods::removeClass(name, where = .GlobalEnv)
 }
 
 query_fixture_table <- function(columns) {
@@ -87,15 +127,24 @@ query_fixture_table <- function(columns) {
         ordered = isTRUE(column$ordered)
       ),
       date = as.Date(values),
-      datetime = as.POSIXlt(
+      datetime = as.POSIXct(as.POSIXlt(
         values,
         format = "%Y-%m-%dT%H:%M:%OS",
         tz = column$tz
-      ),
+      )),
       int64 = int64_fixture(values),
-      other = structure(values, class = "query_record"),
+      other = switch(
+        column$r %||% "query_record",
+        query_record = structure(values, class = "query_record"),
+        s4_record = methods::new("query_s4_record", values),
+        difftime = as.difftime(values, units = "secs"),
+        stop("Unknown fixture class: ", column$r, call. = FALSE)
+      ),
       values
     )
+    if (isTRUE(column$asis)) {
+      values <- I(values)
+    }
     x[[column$name]] <- values
   }
   x

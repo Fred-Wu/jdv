@@ -1,6 +1,8 @@
 # Column classification is deliberately independent of channel computation.
 column_schema <- function(x, name = "", position = 0L) {
   structural <- is.matrix(x) || is.data.frame(x)
+  # An atomic vector wrapped only by I() is classified by its contents.
+  bare <- column_unwrap_asis(x)
   type <- if (structural) {
     "other"
   } else if (inherits(x, "integer64")) {
@@ -11,9 +13,9 @@ column_schema <- function(x, name = "", position = 0L) {
     "date"
   } else if (inherits(x, "POSIXt")) {
     "datetime"
-  } else if (!is.object(x)) {
+  } else if (!is.object(bare)) {
     switch(
-      typeof(x),
+      typeof(bare),
       logical = "boolean",
       integer = "integer",
       double = "number",
@@ -27,8 +29,10 @@ column_schema <- function(x, name = "", position = 0L) {
   sortable <- !structural &&
     type != "list" &&
     !typeof(x) %in% c("complex", "raw")
+  # Only the listed types are filterable. Other classes can be shown and
+  # sorted, and still answer is_na.
   filterable <- !structural &&
-    type != "list" &&
+    !type %in% c("list", "other") &&
     !typeof(x) %in% c("complex", "raw")
   schema <- list(
     position = as.integer(position),
@@ -45,6 +49,15 @@ column_schema <- function(x, name = "", position = 0L) {
   }
   if (type == "datetime") schema$tz <- column_tz(x)
   schema
+}
+
+# I() on a plain atomic vector adds only the AsIs class. Removing it restores
+# the underlying basic type; any other class leaves the value untouched.
+column_unwrap_asis <- function(x) {
+  if (identical(class(x), "AsIs") && is.atomic(x) && is.null(dim(x))) {
+    oldClass(x) <- NULL
+  }
+  x
 }
 
 column_tz <- function(x) {
@@ -485,6 +498,8 @@ column_extract <- function(
     several.ok = TRUE
   )
   collation <- match.arg(collation, c("C", "locale"))
+  force(schema)
+  x <- column_unwrap_asis(x)
   n <- if (is.null(rows)) column_size(x) else length(rows)
   data <- list()
   errors <- list()
@@ -616,13 +631,10 @@ column_extract <- function(
       }
       data$sortKey <- value
     } else if (channel == "text" && !structural) {
-      if (
-        schema$type %in% c("string", "factor", "other") && schema$filterable
-      ) {
-        text_fun <- if (schema$type == "other") col_display else col_values
+      if (schema$type %in% c("string", "factor") && schema$filterable) {
         data$text <- compute(
           channel,
-          function() text_fun(x),
+          function() col_values(x),
           function(v) is.character(v) && plain(v)
         )
         if (is.null(data$text)) schema$filterable <- FALSE

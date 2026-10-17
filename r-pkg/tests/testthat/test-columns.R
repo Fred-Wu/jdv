@@ -435,29 +435,26 @@ test_that(
   }
 )
 
-test_that(
-  "text channels use source strings, factor labels and whole-column format",
-  {
-    x <- paste(rep("a", 2000L), collapse = "")
-    expect_identical(column_extract(x, "text")$data$text, x)
-    x <- factor(c("low", "high", NA), levels = c("high", "low"))
-    expect_identical(column_extract(x, "text")$data$text, as.character(x))
-    x <- structure(c(1, 1e10), class = "jdv_text")
-    with_column_method(
-      "format",
-      "jdv_text",
-      function(x, ...) format(unclass(x), ...),
-      {
-        expect_identical(
-          column_extract(x, "text")$data$text,
-          format(unclass(x), trim = TRUE, justify = "none")
-        )
-      }
-    )
-    expect_null(column_extract(1:3, "text")$data$text)
-    expect_null(column_extract(list(1, 2), "text")$data$text)
-  }
-)
+test_that("text channels use source strings and factor labels only", {
+  x <- paste(rep("a", 2000L), collapse = "")
+  expect_identical(column_extract(x, "text")$data$text, x)
+  x <- factor(c("low", "high", NA), levels = c("high", "low"))
+  expect_identical(column_extract(x, "text")$data$text, as.character(x))
+  x <- structure(c(1, 1e10), class = "jdv_text")
+  with_column_method(
+    "format",
+    "jdv_text",
+    function(x, ...) format(unclass(x), ...),
+    {
+      out <- column_extract(x, "text")
+      expect_null(out$data$text)
+      expect_false(out$schema$filterable)
+      expect_identical(out$schema$type, "other")
+    }
+  )
+  expect_null(column_extract(1:3, "text")$data$text)
+  expect_null(column_extract(list(1, 2), "text")$data$text)
+})
 
 test_that("malformed methods degrade only their own channels", {
   x <- structure(c(1, 2, NA_real_), class = "jdv_broken")

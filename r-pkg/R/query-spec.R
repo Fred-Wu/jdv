@@ -92,12 +92,11 @@
 #' formatted for that slice, independently of full-column filter text.
 #'
 #' A filter or sort retrieves only its referenced full source columns and
-#' required channels. An `other` text filter requests the full column's
-#' [base::format()] output at that point. It never substitutes a page's display
-#' text. Custom subsetting must preserve the column class and requested row
-#' count. Atomic S3 classes without a subset method retain their metadata;
-#' classes with row-dependent attributes must supply suitable subsetting
-#' behavior.
+#' required channels. A text filter requests the full column's text at that
+#' point and never substitutes a page's display text. Custom subsetting must
+#' preserve the column class and requested row count. Atomic S3 classes without
+#' a subset method retain their metadata; classes with row-dependent attributes
+#' must supply suitable subsetting behavior.
 #'
 #' Three least-recently-used caches have separate entry limits:
 #'
@@ -192,7 +191,7 @@
 #' | `and`, `or` | `op`, `args` (array of child objects) | Any valid children. |
 #' | `not` | `op`, `arg` (one child object) | Any valid child. |
 #' | `is_na` | `op`, `col` | Any column with a valid missingness channel. |
-#' | `contains`, `starts_with`, `ends_with`, `text_equals` | `op`, `col`, `value` | String, factor, filterable other. |
+#' | `contains`, `starts_with`, `ends_with`, `text_equals` | `op`, `col`, `value` | String, factor. |
 #' | `eq`, `ne`, `lt`, `le`, `gt`, `ge` | `op`, `col`, `value` | Integer, number, date, datetime; integer64 supports only `eq`. |
 #' | `between` | `op`, `col`, `lower`, `upper` | Integer, number, date, datetime, integer64. |
 #' | `is_true`, `is_false` | `op`, `col` | Boolean. |
@@ -223,6 +222,18 @@
 #' mask. Missing meaning never comes from display labels such as the literal
 #' string `"NA"`.
 #'
+#' Being displayable and being filterable are separate. Value-based filters are
+#' limited to an explicit list of column types: logical, integer, double, and
+#' character vectors without a class, factors, `Date`, `POSIXct` and `POSIXlt`,
+#' and `integer64`. A vector wrapped only by [base::I()] is classified by its
+#' contents, so `I(1:3)` is an integer column. `I()` around a classed vector
+#' keeps the classification of that class, so an `I()` factor is a factor column
+#' and an `I()` `difftime` is `other`. Any other S3 or S4 class (including
+#' `difftime`) has schema `type` `other` and `filterable` false. It is still
+#' displayed and sorted through [base::format()] and [base::xtfrm()], and
+#' answers `is_na`, but every other operator fails with `unsupported` ("Column
+#' is not filterable.").
+#'
 #'
 #' @section Text:
 #'
@@ -238,22 +249,21 @@
 #'
 #' - String: the original, untruncated character value.
 #' - Factor: its label.
-#' - Other: [base::format()] over the complete column, computed and cached on request.
 #'
 #' Number, integer, Boolean, date, datetime, and integer64 columns do not
-#' support text operators. List, matrix, and packed data-frame columns have
-#' previews but no text-filter capability. Page display truncation or formatting
-#' does not alter the filter source. Factor `in` is exact, case-sensitive label
-#' membership and does not use text folding; duplicate labels are harmless and
-#' an empty label array matches no rows.
+#' support text operators, and neither do `other` columns. List, matrix, and
+#' packed data-frame columns have previews but no text-filter capability. Page
+#' display truncation or formatting does not alter the filter source. Factor
+#' `in` is exact, case-sensitive label membership and does not use text folding;
+#' duplicate labels are harmless and an empty label array matches no rows.
 #'
 #'
 #' @section Blank and non-blank filters:
 #'
 #'
 #' There is no dedicated blank operator; clients combine existing ones. A
-#' text-filterable column has a schema `type` of `string`, `factor`, or `other`
-#' and `filterable` true. For such a column, blank (missing or empty string) is
+#' text-filterable column has a schema `type` of `string` or `factor` and
+#' `filterable` true. For such a column, blank (missing or empty string) is
 #'
 #' ```json
 #' {"op": "or", "args": [
@@ -444,7 +454,9 @@
 #' `paste0("value:", as.numeric(x))`, [base::xtfrm()] returns `as.numeric(x)`,
 #' and missingness follows `is.na(x)`. The class's runtime `values` channel is
 #' absent (`NULL`). The JSON fixture's numeric factory input is therefore not an
-#' `other` column's wire values or a numeric-filter capability.
+#' `other` column's wire values or a numeric-filter capability. Because `other`
+#' columns are not filterable, the fixture exercises only display, sorting, and
+#' `is_na` for it.
 #'
 #' Locate it with:
 #'

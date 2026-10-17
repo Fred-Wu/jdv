@@ -10,6 +10,11 @@ register <- getFromNamespace("jdv_register", "jdv")
 notifications <- getFromNamespace("jdv_notifications", "jdv")
 
 column_from_fixture <- function(column) {
+  out <- column_from_fixture_values(column)
+  if (isTRUE(column$asis)) I(out) else out
+}
+
+column_from_fixture_values <- function(column) {
   values <- column$values
   type <- column$type
   if (type == "boolean") {
@@ -86,7 +91,17 @@ column_from_fixture <- function(column) {
       function(v) as.numeric(v %||% NA_real_),
       numeric(1L)
     )
-    return(structure(values, class = "query_record"))
+    kind <- column$r %||% "query_record"
+    if (kind == "query_record") {
+      return(structure(values, class = "query_record"))
+    }
+    if (kind == "s4_record") {
+      return(methods::new("query_s4_record", values))
+    }
+    if (kind == "difftime") {
+      return(as.difftime(values, units = "secs"))
+    }
+    stop(sprintf("unsupported fixture class: %s", kind), call. = FALSE)
   }
   stop(sprintf("unsupported fixture type: %s", type), call. = FALSE)
 }
@@ -94,6 +109,20 @@ column_from_fixture <- function(column) {
 `%||%` <- function(lhs, rhs) if (is.null(lhs)) rhs else lhs
 format.query_record <- function(x, ...) paste0("value:", as.numeric(x))
 xtfrm.query_record <- function(x, ...) as.numeric(x)
+methods::setClass("query_s4_record", contains = "numeric")
+methods::setMethod(
+  "[",
+  "query_s4_record",
+  function(x, i, j, ..., drop = TRUE) {
+    methods::new("query_s4_record", as.numeric(x)[i])
+  }
+)
+methods::setMethod(
+  "format",
+  "query_s4_record",
+  function(x, ...) paste0("s4:", as.numeric(x))
+)
+methods::setMethod("xtfrm", "query_s4_record", function(x) as.numeric(x))
 xtfrm.query_reverse_numeric <- function(x, ...) -as.numeric(unclass(x))
 
 export_table <- function(x) {
@@ -105,8 +134,11 @@ export_table <- function(x) {
 snapshots <- lapply(fixture$cases, function(case) {
   columns <- lapply(case$columns, column_from_fixture)
   names(columns) <- vapply(case$columns, `[[`, character(1L), "name")
-  frame <- as.data.frame(columns, optional = TRUE, check.names = FALSE)
-  names(frame) <- vapply(case$columns, `[[`, character(1L), "name")
+  frame <- structure(
+    columns,
+    class = "data.frame",
+    row.names = seq_along(columns[[1L]])
+  )
   export_table(frame)
 })
 names(snapshots) <- vapply(fixture$cases, `[[`, character(1L), "name")

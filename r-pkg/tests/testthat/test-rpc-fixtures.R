@@ -142,6 +142,23 @@ test_that("public RPC round-trips every shared query fixture", {
         wire_snapshot <- rpc_fixture_snapshot(open_message, snapshot_table(x))
 
         for (query in case$queries) {
+          if (!is.null(query$error)) {
+            paged_response <- rpc_fixture_page(paged$id, query)
+            expect_identical(
+              paged_response$error$code,
+              query$error,
+              info = paste("paged", case$name, query$name)
+            )
+            expect_query_code(
+              snapshot_indices(
+                wire_snapshot,
+                sort = if (is.null(query$sort)) list() else query$sort,
+                filter = query$filter
+              ),
+              query$error
+            )
+            next
+          }
           expected <- as.integer(unlist(query$expected, use.names = FALSE))
           paged_response <- rpc_fixture_page(paged$id, query)
           expect_null(paged_response$error, info = paste(case$name, query$name))

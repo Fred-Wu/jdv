@@ -244,12 +244,14 @@ omits both.\tabular{lll}{
 
 Grid-level flags declare the operations available in protocol v1; each
 column's \code{sortable} field constrains sorting, and \code{filterable} constrains
-value-based filter operators. \code{is_na} remains valid when a valid missingness
-mask is available, even when \code{filterable} is false. Clients must accept
-\code{nrow: null} when a grid row count is unknown; the protocol does not define
-\code{total_rows}. The descriptor's \code{encoding} field does not change the
-envelope's \code{encoding: "json"} setting. Snapshot mode's \code{params.data} contains
-the full data payload as described under the Column payloads section below.
+value-based filter operators. \code{filterable} is false for columns of type
+\code{other} (S3 and S4 classes that have no explicit filter support), and \code{is_na}
+remains valid when a valid missingness mask is available, even when
+\code{filterable} is false. Clients must accept \code{nrow: null} when a grid row count
+is unknown; the protocol does not define \code{total_rows}. The descriptor's
+\code{encoding} field does not change the envelope's \code{encoding: "json"} setting.
+Snapshot mode's \code{params.data} contains the full data payload as described
+under the Column payloads section below.
 
 A tree descriptor has no grid fields:
 

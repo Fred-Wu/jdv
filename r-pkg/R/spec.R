@@ -241,12 +241,14 @@
 #'
 #' Grid-level flags declare the operations available in protocol v1; each
 #' column's `sortable` field constrains sorting, and `filterable` constrains
-#' value-based filter operators. `is_na` remains valid when a valid missingness
-#' mask is available, even when `filterable` is false. Clients must accept
-#' `nrow: null` when a grid row count is unknown; the protocol does not define
-#' `total_rows`. The descriptor's `encoding` field does not change the
-#' envelope's `encoding: "json"` setting. Snapshot mode's `params.data` contains
-#' the full data payload as described under the Column payloads section below.
+#' value-based filter operators. `filterable` is false for columns of type
+#' `other` (S3 and S4 classes that have no explicit filter support), and `is_na`
+#' remains valid when a valid missingness mask is available, even when
+#' `filterable` is false. Clients must accept `nrow: null` when a grid row count
+#' is unknown; the protocol does not define `total_rows`. The descriptor's
+#' `encoding` field does not change the envelope's `encoding: "json"` setting.
+#' Snapshot mode's `params.data` contains the full data payload as described
+#' under the Column payloads section below.
 #'
 #' A tree descriptor has no grid fields:
 #'

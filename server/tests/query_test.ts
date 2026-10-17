@@ -40,11 +40,32 @@ Deno.test("Snapshot consumer matches independent expected rows for every shared 
   for (const testCase of fixture.cases) {
     const snapshot = exported.cases[testCase.name];
     assert(snapshot, `Missing actual R snapshot for ${testCase.name}.`);
+    testCase.columns.forEach(
+      (column: Record<string, unknown>, index: number) => {
+        const schema = snapshot.params.columns[index];
+        assertEquals(schema.type, column.type);
+        assertEquals(schema.filterable, column.type !== "other");
+      },
+    );
     for (const query of testCase.queries) {
-      const result = querySnapshot(snapshot, {
+      const request = {
         sort: query.sort ?? [],
         filter: query.filter ?? null,
-      });
+      };
+      if (query.error) {
+        let code = "";
+        try {
+          querySnapshot(snapshot, request);
+        } catch (error) {
+          code = (error as Error & { code?: string }).code ?? "";
+        }
+        assert(
+          code === query.error,
+          `${testCase.name} ${query.name}: got "${code}"`,
+        );
+        continue;
+      }
+      const result = querySnapshot(snapshot, request);
       assertEquals(result.data.row_index, query.expected);
       assertEquals(result.total, query.expected.length);
     }

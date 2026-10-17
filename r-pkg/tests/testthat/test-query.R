@@ -16,8 +16,31 @@ test_that(
         holder <- paged_table(x)
         snapshot <- query_wire_snapshot(snapshot_table(x))
         expect_identical(snapshot$schema, holder$schema)
+        for (j in seq_along(case$columns)) {
+          expect_identical(holder$schema[[j]]$type, case$columns[[j]]$type)
+          expect_identical(
+            holder$schema[[j]]$filterable,
+            case$columns[[j]]$type != "other"
+          )
+        }
         for (request in case$queries) {
           sort <- if (is.null(request$sort)) list() else request$sort
+          if (!is.null(request$error)) {
+            info <- paste(case$name, request$name)
+            expect_query_code(
+              query_indices(holder, sort, request$filter),
+              request$error
+            )
+            expect_query_code(
+              snapshot_indices(snapshot, sort, request$filter),
+              request$error
+            )
+            expect_query_code(
+              query_page(holder, sort = sort, filter = request$filter),
+              request$error
+            )
+            next
+          }
           expected <- as.integer(unlist(request$expected))
           if (!length(expected)) {
             expected <- integer()
@@ -161,13 +184,11 @@ test_that("registration is lazy and requested channels are cached", {
         query_indices(holder, list(list(col = 1L, desc = TRUE)))
         expect_identical(counters$xtfrm, c(3L, 100L))
         filter <- list(op = "text_equals", col = 1L, value = "value:2")
-        expect_identical(query_indices(holder, filter = filter), 99L)
-        query_indices(
-          holder,
-          filter = list(op = "contains", col = 1L, value = "value:")
-        )
-        expect_identical(counters$format, c(3L, 2L, 100L))
-        query_indices(holder, sort, filter)
+        expect_query_code(query_indices(holder, filter = filter), "unsupported")
+        expect_identical(counters$format, c(3L, 2L))
+        missing <- list(op = "is_na", col = 1L)
+        expect_identical(query_indices(holder, sort, missing), integer())
+        expect_identical(counters$format, c(3L, 2L))
         expect_identical(counters$xtfrm, c(3L, 100L))
         expect_setequal(names(holder$column_cache), "2")
       }
@@ -217,7 +238,7 @@ test_that(
   }
 )
 
-test_that("page displays never become filter text", {
+test_that("page displays are never a filter source for unknown classes", {
   with_column_method(
     "format",
     "query_page_text",
@@ -226,22 +247,19 @@ test_that("page displays never become filter text", {
       x <- data.frame(id = 1:5)
       x$value <- structure(as.double(1:5), class = "query_page_text")
       holder <- paged_table(x)
+      snapshot <- snapshot_table(x)
       page <- query_page(holder, offset = 1L, limit = 1L)
       expect_identical(page$data$columns[[2L]]$data$display, "n=1:2")
-      expect_identical(
-        query_indices(
-          holder,
-          filter = list(op = "text_equals", col = 1L, value = "n=5:2")
-        ),
-        2L
-      )
-      expect_identical(
-        query_indices(
-          holder,
-          filter = list(op = "text_equals", col = 1L, value = "n=1:2")
-        ),
-        integer()
-      )
+      expect_false(holder$schema[[2L]]$filterable)
+      for (value in c("n=5:2", "n=1:2")) {
+        filter <- list(op = "text_equals", col = 1L, value = value)
+        expect_query_code(query_indices(holder, filter = filter), "unsupported")
+        expect_query_code(
+          snapshot_indices(snapshot, filter = filter),
+          "unsupported"
+        )
+      }
+      expect_null(snapshot$columns[[2L]]$data$text)
     }
   )
 })
@@ -585,12 +603,13 @@ test_that("bad full methods expose channel details and can recover", {
       x <- data.frame(id = 1:5)
       x$bad <- structure(as.double(1:5), class = "query_throw")
       holder <- paged_table(x, limits = list(probe_rows = 2L))
+      # The failing whole-column format() is never a filter source.
       expect_query_code(
         query_indices(
           holder,
           filter = list(op = "contains", col = 1L, value = "ok")
         ),
-        "r_error"
+        "unsupported"
       )
       expect_identical(
         query_indices(holder, filter = list(op = "eq", col = 0L, value = 3)),
@@ -760,8 +779,11 @@ test_that("S4 and vctrs subsetting preserves row size and query semantics", {
   expect_identical(query_indices(holder, sort), c(1L, 2L, 4L, 3L))
   expect_identical(snapshot_indices(snapshot, sort), c(1L, 2L, 4L, 3L))
   filter <- list(op = "text_equals", col = 1L, value = "s4:1")
-  expect_identical(query_indices(holder, filter = filter), c(2L, 4L))
-  expect_identical(snapshot_indices(snapshot, filter = filter), c(2L, 4L))
+  expect_query_code(query_indices(holder, filter = filter), "unsupported")
+  expect_query_code(snapshot_indices(snapshot, filter = filter), "unsupported")
+  missing <- list(op = "is_na", col = 1L)
+  expect_identical(query_indices(holder, filter = missing), 3L)
+  expect_identical(snapshot_indices(snapshot, filter = missing), 3L)
   skip_if_not_installed("vctrs")
   x$value <- vctrs::new_rcrd(
     list(a = c(2, 1, NA_real_, 1)),
@@ -783,8 +805,14 @@ test_that("S4 and vctrs subsetting preserves row size and query semantics", {
         expect_identical(query_indices(holder, sort), c(2L, 4L, 1L, 3L))
         expect_identical(snapshot_indices(snapshot, sort), c(2L, 4L, 1L, 3L))
         filter <- list(op = "text_equals", col = 1L, value = "record:1")
-        expect_identical(query_indices(holder, filter = filter), c(2L, 4L))
-        expect_identical(snapshot_indices(snapshot, filter = filter), c(2L, 4L))
+        expect_query_code(query_indices(holder, filter = filter), "unsupported")
+        expect_query_code(
+          snapshot_indices(snapshot, filter = filter),
+          "unsupported"
+        )
+        missing <- list(op = "is_na", col = 1L)
+        expect_identical(query_indices(holder, filter = missing), 3L)
+        expect_identical(snapshot_indices(snapshot, filter = missing), 3L)
       }
     )
   )
