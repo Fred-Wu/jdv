@@ -718,14 +718,25 @@ request.
 \section{\code{object/open}}{
 
 
-Parameters are \code{view}, \code{generation}, and a non-empty \code{path}. On a tree view,
-every step uses the \code{type} discriminant from the table above. On a grid view,
-the first step must select a drillable cell:
+Parameters are \code{view}, \code{generation}, a non-empty \code{path}, and optional \code{mode}
+and \code{collation}. \code{mode} must be exactly \code{"auto"}, \code{"snapshot"}, or \code{"paged"};
+when omitted, it defaults to \code{"auto"}. \code{collation} must be exactly \code{"C"} or
+\code{"locale"}; when omitted, it uses the same \code{getOption("jdv.collation", "C")}
+default as \code{jdv_register()}. These options apply when the selected value
+opens as a grid and do not inherit from the parent view. If the selected
+value opens as a tree, valid \code{mode} and \code{collation} values are ignored.
+Invalid values, including explicit \code{null}, return \code{invalid_request}.
+\code{object/children} does not accept these options.
+
+On a tree view, every path step uses the \code{type} discriminant from the table
+above. On a grid view, the first step must select a drillable cell:
 
 \if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
   "view": "v-1",
   "generation": 1,
-  "path": [\{ "kind": "cell", "row_index": 205, "column": 2 \}]
+  "path": [\{ "kind": "cell", "row_index": 205, "column": 2 \}],
+  "mode": "paged",
+  "collation": "C"
 \}
 }\if{html}{\out{</div>}}
 

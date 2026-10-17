@@ -797,10 +797,14 @@ Deno.test("object/open caches and broadcasts a child even after browser detach",
       view: "tree-root",
       generation: 1,
       path: [{ type: "index", index: 2 }],
+      mode: "snapshot",
+      collation: "locale",
     },
   });
   const request = await connection.nextWrite(0);
   assertEquals(request.method, "object/open");
+  assertEquals((request.params as JsonRecord).mode, "snapshot");
+  assertEquals((request.params as JsonRecord).collation, "locale");
   hub.detach(browser);
   connection.inject({
     id: request.id,

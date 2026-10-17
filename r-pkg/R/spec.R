@@ -722,15 +722,26 @@
 #' @section `object/open`:
 #'
 #'
-#' Parameters are `view`, `generation`, and a non-empty `path`. On a tree view,
-#' every step uses the `type` discriminant from the table above. On a grid view,
-#' the first step must select a drillable cell:
+#' Parameters are `view`, `generation`, a non-empty `path`, and optional `mode`
+#' and `collation`. `mode` must be exactly `"auto"`, `"snapshot"`, or `"paged"`;
+#' when omitted, it defaults to `"auto"`. `collation` must be exactly `"C"` or
+#' `"locale"`; when omitted, it uses the same `getOption("jdv.collation", "C")`
+#' default as `jdv_register()`. These options apply when the selected value
+#' opens as a grid and do not inherit from the parent view. If the selected
+#' value opens as a tree, valid `mode` and `collation` values are ignored.
+#' Invalid values, including explicit `null`, return `invalid_request`.
+#' `object/children` does not accept these options.
+#'
+#' On a tree view, every path step uses the `type` discriminant from the table
+#' above. On a grid view, the first step must select a drillable cell:
 #'
 #' ```json
 #' {
 #'   "view": "v-1",
 #'   "generation": 1,
-#'   "path": [{ "kind": "cell", "row_index": 205, "column": 2 }]
+#'   "path": [{ "kind": "cell", "row_index": 205, "column": 2 }],
+#'   "mode": "paged",
+#'   "collation": "C"
 #' }
 #' ```
 #'

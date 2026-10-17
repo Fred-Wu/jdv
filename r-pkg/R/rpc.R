@@ -976,11 +976,34 @@ jdv_register <- function(
     return(.jdv_sequential_next(entry, params))
   }
   if (method %in% c("object/children", "object/open")) {
-    .jdv_fields(
-      params,
-      c("view", "generation", "path", "offset", "limit"),
-      c("view", "generation", "path")
-    )
+    allowed <- c("view", "generation", "path", "offset", "limit")
+    if (method == "object/open") {
+      allowed <- c(allowed, "mode", "collation")
+    }
+    .jdv_fields(params, allowed, c("view", "generation", "path"))
+    if (
+      method == "object/children" &&
+        any(names(params) %in% c("mode", "collation"))
+    ) {
+      query_error(
+        "invalid_request",
+        "object/children does not accept grid registration options."
+      )
+    }
+    child_mode <- "auto"
+    if ("mode" %in% names(params)) {
+      child_mode <- query_string(params$mode, Inf)
+      if (!child_mode %in% c("auto", "snapshot", "paged")) {
+        query_error("invalid_request", "Invalid child view mode.")
+      }
+    }
+    child_collation <- NULL
+    if ("collation" %in% names(params)) {
+      child_collation <- query_string(params$collation, Inf)
+      if (!child_collation %in% c("C", "locale")) {
+        query_error("invalid_request", "Invalid child view collation.")
+      }
+    }
     entry <- .jdv_rpc_entry(params$view, params$generation)
     on.exit(.jdv_release_entry(entry), add = TRUE)
     if (identical(entry$mode, "tree")) {
@@ -1048,7 +1071,12 @@ jdv_register <- function(
     if (!.jdv_tree_entry_is_current(parent)) {
       query_error("view_not_found", "Parent view is no longer active.")
     }
-    registered <- .jdv_tree_register_child(resolved$value, parent)
+    registered <- .jdv_tree_register_child(
+      resolved$value,
+      parent,
+      mode = child_mode,
+      collation = child_collation
+    )
     committed <- FALSE
     on.exit(
       if (!committed) {

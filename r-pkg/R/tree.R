@@ -631,7 +631,12 @@
   )
 }
 
-.jdv_tree_register_child <- function(x, parent) {
+.jdv_tree_register_child <- function(
+  x,
+  parent,
+  mode = "auto",
+  collation = NULL
+) {
   if (!.jdv_tree_entry_is_current(parent)) {
     query_error("view_not_found", "Parent view is no longer active.")
   }
@@ -657,7 +662,12 @@
     cursor <- cursor$parent_entry
   }
   on.exit(.jdv_state$eviction_pins <- old_pins, add = TRUE)
-  registered <- .jdv_tree_restore_notifications(jdv_register(x))
+  registered <- if (is.null(collation)) {
+    jdv_register(x, mode = mode)
+  } else {
+    jdv_register(x, mode = mode, collation = collation)
+  }
+  registered <- .jdv_tree_restore_notifications(registered)
   child <- get(registered$id, envir = .jdv_state$entries, inherits = FALSE)
   committed <- FALSE
   on.exit(
