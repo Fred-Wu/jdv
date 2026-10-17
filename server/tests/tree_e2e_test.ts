@@ -792,6 +792,12 @@ Deno.test({
             missingCode === "view_not_found",
           `Unexpected error after closing the root: ${missingCode}`,
         );
+        await nextMessage(
+          browser,
+          (message) =>
+            message.type === "session/closed" && message.session === session,
+          "implicit session close after the last view",
+        );
 
         {
           const ownedBrowser = await launchOwnedBrowser({
