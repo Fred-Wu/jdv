@@ -168,7 +168,7 @@ Deno.test("protocol peer rejects invalid and oversized binary transfer descripto
     },
     {
       id: "r-1",
-      method: "table/rows",
+      method: "grid/rows",
       result: { view: "v-1", generation: 1, transfer: validTransfer },
     },
     {

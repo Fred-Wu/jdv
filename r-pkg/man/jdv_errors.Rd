@@ -41,10 +41,10 @@ signals \code{invalid_argument}; malformed request params or typed paths signal
 \code{invalid_request}. A closed handle, including a child closed by its parent,
 signals \code{view_not_found}. Table fingerprint changes signal \code{schema_changed}.
 Sequential sources and unsupported operations on a handle's mode signal
-\code{unsupported}. Methods other than \code{table/rows} and \code{object/children} passed
-to \code{\link[=jdv_handle_request]{jdv_handle_request()}} signal \code{method_not_found}; use \code{\link[=jdv_handle_open]{jdv_handle_open()}}
-to open a child. A descriptor or single page item that cannot fit its byte
-limit signals \code{limit_exceeded}.
+\code{unsupported}. Methods other than \code{grid/rows} and \code{object/children} passed to
+\code{\link[=jdv_handle_request]{jdv_handle_request()}} signal \code{method_not_found}; use \code{\link[=jdv_handle_open]{jdv_handle_open()}} to
+open a child. A descriptor or single page item that cannot fit its byte limit
+signals \code{limit_exceeded}.
 }
 \examples{
 library(jdv)

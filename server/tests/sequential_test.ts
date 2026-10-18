@@ -126,7 +126,7 @@ Deno.test("IPC mapping preserves duplicate names, int64/uint64, binary, nested s
   );
   assertEquals(decoded.rows, [
     {
-      row_index: 6,
+      source_row: 5,
       c0: "18446744073709551615",
       c1: "-9223372036854775807",
       c2: "000aff",
@@ -134,7 +134,7 @@ Deno.test("IPC mapping preserves duplicate names, int64/uint64, binary, nested s
       c4: "Unsupported: union is unsupported",
     },
     {
-      row_index: 7,
+      source_row: 6,
       c0: "0",
       c1: "NA",
       c2: "NA",
@@ -146,11 +146,14 @@ Deno.test("IPC mapping preserves duplicate names, int64/uint64, binary, nested s
 
 Deno.test("display cache is bounded and progress survives eviction and selection changes", () => {
   const cache = createSequentialCache(220, 2);
-  cache.append([{ row_index: 1, c0: "first" }, { row_index: 2, c0: "second" }]);
+  cache.append([{ source_row: 0, c0: "first" }, {
+    source_row: 1,
+    c0: "second",
+  }]);
   assert(cache.bytes <= 220);
-  cache.append([{ row_index: 3, c0: "third" }]);
+  cache.append([{ source_row: 2, c0: "third" }]);
   assert(cache.bytes <= 220);
-  assert(cache.evictedThrough >= 1);
+  assert(cache.evictedThrough >= 0);
   const progress = { watermark: 0, received: 0, done: false, gap: null };
   assertEquals(
     recordSequentialProgress(progress, {
@@ -205,20 +208,26 @@ Deno.test("display cache is bounded and progress survives eviction and selection
   );
 });
 
+Deno.test("evicting source row zero records a real eviction", () => {
+  const cache = createSequentialCache(100, 1);
+  cache.setPage(0, [{ source_row: 0, c0: "x".repeat(100) }]);
+  assertEquals(cache.evictedThrough, 0);
+});
+
 Deno.test("display cache inserts host pages in order and replaces a cached page", () => {
   const cache = createSequentialCache(4096, 3);
-  cache.setPage(4, [{ row_index: 5, c0: "five" }]);
-  cache.setPage(2, [{ row_index: 3, c0: "three" }]);
-  cache.setPage(3, [{ row_index: 4, c0: "four" }]);
+  cache.setPage(4, [{ source_row: 4, c0: "five" }]);
+  cache.setPage(2, [{ source_row: 2, c0: "three" }]);
+  cache.setPage(3, [{ source_row: 3, c0: "four" }]);
   assertEquals(cache.pageIds(), [2, 3, 4]);
-  assertEquals(cache.rows().map((row) => row.row_index), [3, 4, 5]);
-  cache.setPage(3, [{ row_index: 4, c0: "replaced" }]);
+  assertEquals(cache.rows().map((row) => row.source_row), [2, 3, 4]);
+  cache.setPage(3, [{ source_row: 3, c0: "replaced" }]);
   assertEquals(cache.rows().map((row) => row.c0), [
     "three",
     "replaced",
     "five",
   ]);
-  cache.setPage(5, [{ row_index: 6, c0: "six" }]);
+  cache.setPage(5, [{ source_row: 5, c0: "six" }]);
   assertEquals(cache.pageIds(), [3, 4, 5]);
   assertEquals(cache.evictOldestPage(), true);
   assertEquals(cache.pageIds(), [4, 5]);
@@ -231,7 +240,7 @@ Deno.test("aggregate display budget trims caches even when host caching is disab
     cacheUse,
   }));
   for (const record of records) {
-    record.cache.setPage(0, [{ row_index: 0, c0: "x".repeat(100) }]);
+    record.cache.setPage(0, [{ source_row: 0, c0: "x".repeat(100) }]);
   }
   const bytes = trimSequentialCaches(records, 500);
   assert(bytes <= 500);

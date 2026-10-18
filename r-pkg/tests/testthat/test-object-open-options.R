@@ -9,7 +9,7 @@ local({
       list(
         view = parent$id,
         generation = parent$generation %||% 1,
-        path = list(list(kind = "cell", row_index = row, column = 0L))
+        path = list(list(kind = "cell", source_row = row - 1L, column = 0L))
       ),
       extra
     )
@@ -88,7 +88,7 @@ local({
     base <- list(
       view = parent$id,
       generation = parent$generation %||% 1,
-      path = list(list(kind = "cell", row_index = 1L, column = 0L))
+      path = list(list(kind = "cell", source_row = 0L, column = 0L))
     )
     invalid <- list(
       list(mode = NULL),

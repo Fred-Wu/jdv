@@ -143,8 +143,7 @@ Deno.test({
         generation: 1,
         kind: "grid",
         access: "random",
-        encoding: "r-json",
-        mode: "paged",
+        encoding: "jdv-json",
         title: "Browser smoke",
         nrow: 249,
         ncol: columns.length,
@@ -159,7 +158,7 @@ Deno.test({
         generation: 1,
         kind: "tree",
         access: "random",
-        encoding: "r-json",
+        encoding: "jdv-json",
         title: "Object smoke",
         class: ["list"],
         capabilities: {
@@ -278,7 +277,7 @@ Deno.test({
             document: BrowserDocument;
           }).document;
           return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
+            '.tabulator-row [tabulator-field="source_row"]',
           )?.textContent === "1";
         });
         await waitFor(page, () => {
@@ -332,7 +331,7 @@ Deno.test({
             document: BrowserDocument;
           }).document;
           return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
+            '.tabulator-row [tabulator-field="source_row"]',
           )?.textContent === "249";
         });
         assert(
@@ -349,7 +348,7 @@ Deno.test({
             document: BrowserDocument;
           }).document;
           return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
+            '.tabulator-row [tabulator-field="source_row"]',
           )?.textContent === "49";
         });
         const pagedRequestsBeforeHorizontalScroll = requests.length;
@@ -361,10 +360,10 @@ Deno.test({
           const viewport = document.querySelector("#column-viewport");
           if (!viewport) throw new Error("The column viewport was not found.");
           const initialRowHeader = viewport.querySelector(
-            '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+            '.tabulator-header .tabulator-col[tabulator-field="source_row"]',
           );
           const initialRowCell = viewport.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
+            '.tabulator-row [tabulator-field="source_row"]',
           );
           const table = viewport.querySelector("#column-window");
           if (!initialRowHeader || !initialRowCell || !table) {
@@ -391,10 +390,10 @@ Deno.test({
           });
           await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
           const rowHeader = viewport.querySelector(
-            '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+            '.tabulator-header .tabulator-col[tabulator-field="source_row"]',
           );
           const rowCell = viewport.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
+            '.tabulator-row [tabulator-field="source_row"]',
           );
           const viewportRect = viewport.getBoundingClientRect();
           const headerRect = rowHeader?.getBoundingClientRect();
@@ -460,7 +459,7 @@ Deno.test({
             ".tabulator-header .tabulator-col",
           )];
           const tabulatorRowIndexes = [...viewport.querySelectorAll(
-            '.tabulator-row [tabulator-field="row_index"]',
+            '.tabulator-row [tabulator-field="source_row"]',
           )];
           const scrollWidth = viewport.scrollWidth;
           const clientWidth = viewport.clientWidth;
@@ -622,10 +621,10 @@ Deno.test({
           );
           const beforeViewport = viewport.getBoundingClientRect();
           const beforeHeader = viewport.querySelector(
-            '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+            '.tabulator-header .tabulator-col[tabulator-field="source_row"]',
           );
           const beforeCell = viewport.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
+            '.tabulator-row [tabulator-field="source_row"]',
           );
           if (!beforeHeader || !beforeCell) {
             throw new Error("The row index column was not rendered.");
@@ -677,10 +676,10 @@ Deno.test({
             scheduledPageRequest();
 
             const header = viewport.querySelector(
-              '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+              '.tabulator-header .tabulator-col[tabulator-field="source_row"]',
             );
             const cell = viewport.querySelector(
-              '.tabulator-row [tabulator-field="row_index"]',
+              '.tabulator-row [tabulator-field="source_row"]',
             );
             const viewportRect = viewport.getBoundingClientRect();
             const headerRect = header?.getBoundingClientRect();
@@ -791,10 +790,10 @@ Deno.test({
               const columns = [...element.querySelectorAll(".tabulator-col")];
               const runtime = globalThis as unknown as BrowserRuntime;
               const rowHeader = element.querySelector(
-                '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+                '.tabulator-header .tabulator-col[tabulator-field="source_row"]',
               );
               const rowCell = element.querySelector(
-                '.tabulator-row [tabulator-field="row_index"]',
+                '.tabulator-row [tabulator-field="source_row"]',
               );
               const describe = (node: BrowserElement | null) => {
                 if (!node) return null;
@@ -850,10 +849,10 @@ Deno.test({
           (viewport: BrowserElement) => {
             const viewportRect = viewport.getBoundingClientRect();
             const header = viewport.querySelector(
-              '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+              '.tabulator-header .tabulator-col[tabulator-field="source_row"]',
             );
             const cell = viewport.querySelector(
-              '.tabulator-row [tabulator-field="row_index"]',
+              '.tabulator-row [tabulator-field="source_row"]',
             );
             const headerRect = header?.getBoundingClientRect();
             const cellRect = cell?.getBoundingClientRect();
@@ -923,7 +922,7 @@ Deno.test({
           }).document;
           const cells = [
             ...document.querySelectorAll(
-              '.tabulator-row [tabulator-field="row_index"]',
+              '.tabulator-row [tabulator-field="source_row"]',
             ),
           ];
           return cells.length === 2 && cells[0].textContent === "249" &&
@@ -941,12 +940,12 @@ Deno.test({
           }).document;
           return document.querySelector("#table-meta")?.textContent
             ?.startsWith(
-              "2 of 249 rows · 300 columns · paged · ",
+              "2 of 249 rows · 300 columns · ",
             ) === true;
         });
         assert(
           (await text(page, "#table-meta"))?.startsWith(
-            "2 of 249 rows · 300 columns · paged · ",
+            "2 of 249 rows · 300 columns · ",
           ),
           "The Paged heading should show the filtered and unfiltered totals.",
         );
@@ -961,7 +960,7 @@ Deno.test({
             document: BrowserDocument;
           }).document;
           return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
+            '.tabulator-row [tabulator-field="source_row"]',
           )?.textContent === "249";
         });
         await selectOption(page, "#filter-column", "0");
@@ -985,7 +984,7 @@ Deno.test({
             document: BrowserDocument;
           }).document;
           return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
+            '.tabulator-row [tabulator-field="source_row"]',
           )?.textContent === "249";
         });
         await evaluate(page, () => {
@@ -1048,7 +1047,7 @@ Deno.test({
           (element: BrowserElement) => {
             const viewportRect = element.getBoundingClientRect();
             const row = element.querySelector(
-              '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+              '.tabulator-header .tabulator-col[tabulator-field="source_row"]',
             );
             const rowRight = row?.getBoundingClientRect().right ?? Number.NaN;
             const firstVisible = [
@@ -1129,7 +1128,7 @@ Deno.test({
             document: BrowserDocument;
           }).document;
           return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
+            '.tabulator-row [tabulator-field="source_row"]',
           )?.textContent === "49";
         });
         console.log(
@@ -1285,10 +1284,10 @@ Deno.test({
           (viewport: BrowserElement) => {
             const viewportLeft = viewport.getBoundingClientRect().left;
             const header = viewport.querySelector(
-              '.tabulator-header .tabulator-col[tabulator-field="row_index"]',
+              '.tabulator-header .tabulator-col[tabulator-field="source_row"]',
             );
             const cell = viewport.querySelector(
-              '.tabulator-row [tabulator-field="row_index"]',
+              '.tabulator-row [tabulator-field="source_row"]',
             );
             const headerRect = header?.getBoundingClientRect();
             const cellRect = cell?.getBoundingClientRect();
@@ -1347,7 +1346,7 @@ Deno.test({
           (viewport: BrowserElement) => {
             const rows = [...viewport.querySelectorAll(".tabulator-row")];
             const targetRow = rows.find((row) =>
-              row.querySelector('[tabulator-field="row_index"]')
+              row.querySelector('[tabulator-field="source_row"]')
                 ?.textContent ===
                 "24"
             );
@@ -1440,7 +1439,7 @@ Deno.test({
           return document.querySelector("#table-title")?.textContent ===
               "Snapshot smoke" &&
             document.querySelector(
-                '.tabulator-row [tabulator-field="row_index"]',
+                '.tabulator-row [tabulator-field="source_row"]',
               )?.textContent === "1";
         });
         await waitFor(page, () => {
@@ -1449,7 +1448,7 @@ Deno.test({
           }).document;
           return document.querySelector("#table-meta")?.textContent
             ?.startsWith(
-              "249 of 249 rows · 3 columns · snapshot · ",
+              "249 of 249 rows · 3 columns · ",
             ) === true;
         });
         await selectOption(page, "#filter-column", "2");
@@ -1466,7 +1465,7 @@ Deno.test({
             document: BrowserDocument;
           }).document;
           return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
+            '.tabulator-row [tabulator-field="source_row"]',
           )?.textContent === "249";
         });
         await clickNextPage(page);
@@ -1475,7 +1474,7 @@ Deno.test({
             document: BrowserDocument;
           }).document;
           return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
+            '.tabulator-row [tabulator-field="source_row"]',
           )?.textContent === "49";
         });
         await selectOption(page, "#filter-column", "0");
@@ -1488,7 +1487,7 @@ Deno.test({
           }).document;
           const cells = [
             ...document.querySelectorAll(
-              '.tabulator-row [tabulator-field="row_index"]',
+              '.tabulator-row [tabulator-field="source_row"]',
             ),
           ];
           return cells.length === 2 && cells[0].textContent === "249" &&
@@ -1496,13 +1495,13 @@ Deno.test({
         });
         assert(
           (await text(page, "#table-meta"))?.startsWith(
-            "2 of 249 rows · 3 columns · snapshot · ",
+            "2 of 249 rows · 3 columns · ",
           ),
           "Snapshot local filtering should update both row totals.",
         );
         assertEquals(requests.length, pagedRequestsBeforeSnapshot);
 
-        // Duration columns offer comparisons and accept numbers or H:MM:SS.
+        // Duration placeholders are derived from the column's units.
         const durationValues = [3661.5, 59, -30];
         await writeFrame(rConnection, {
           method: "view/open",
@@ -1511,8 +1510,7 @@ Deno.test({
             generation: 1,
             kind: "grid",
             access: "snapshot",
-            encoding: "r-json",
-            mode: "snapshot",
+            encoding: "jdv-json",
             title: "Duration smoke",
             nrow: durationValues.length,
             ncol: 2,
@@ -1521,7 +1519,7 @@ Deno.test({
                 position: 0,
                 name: "clock",
                 type: "duration",
-                class: ["hms", "difftime"],
+                native_type: ["hms", "difftime"],
                 units: "secs",
                 sortable: true,
                 filterable: true,
@@ -1530,7 +1528,7 @@ Deno.test({
                 position: 1,
                 name: "elapsed",
                 type: "duration",
-                class: "difftime",
+                native_type: ["difftime"],
                 units: "mins",
                 sortable: true,
                 filterable: true,
@@ -1538,7 +1536,7 @@ Deno.test({
             ],
             capabilities: gridCapabilities(),
             data: {
-              row_index: [1, 2, 3],
+              source_row: [0, 1, 2],
               columns: [0, 1].map(() => ({
                 values: durationValues,
                 display: durationValues.map(String),
@@ -1583,7 +1581,7 @@ Deno.test({
             (element: BrowserElement & { placeholder: string }) =>
               element.placeholder,
           );
-        assertEquals(await placeholder("#filter-value"), "H:MM:SS");
+        assertEquals(await placeholder("#filter-value"), "secs");
         await fillInput(page, "#filter-value", "0:01:00");
         await clickButton(page, "Apply filter");
         await waitFor(page, () => {
@@ -1592,7 +1590,7 @@ Deno.test({
           }).document;
           const cells = [
             ...document.querySelectorAll(
-              '.tabulator-row [tabulator-field="row_index"]',
+              '.tabulator-row [tabulator-field="source_row"]',
             ),
           ];
           return cells.length === 1 && cells[0].textContent === "1";
@@ -1618,7 +1616,7 @@ Deno.test({
           return document.querySelector("#table-title")?.textContent ===
               "Browser smoke" &&
             document.querySelector(
-                '.tabulator-row [tabulator-field="row_index"]',
+                '.tabulator-row [tabulator-field="source_row"]',
               )?.textContent === "1";
         });
         await writeFrame(rConnection, {
@@ -1628,8 +1626,7 @@ Deno.test({
             generation: 2,
             kind: "grid",
             access: "random",
-            encoding: "r-json",
-            mode: "paged",
+            encoding: "jdv-json",
             title: "Generation 2",
             nrow: 3,
             ncol: 2,
@@ -1644,7 +1641,7 @@ Deno.test({
           return document.querySelector("#table-title")?.textContent ===
               "Generation 2" &&
             document.querySelector(
-                '.tabulator-row [tabulator-field="row_index"]',
+                '.tabulator-row [tabulator-field="source_row"]',
               )?.textContent === "1001";
         });
         await writeFrame(rConnection, {
@@ -1665,7 +1662,7 @@ Deno.test({
           "Generation 2",
         );
         assertEquals(
-          await text(page, '.tabulator-row [tabulator-field="row_index"]'),
+          await text(page, '.tabulator-row [tabulator-field="source_row"]'),
           "1001",
         );
 
@@ -1730,8 +1727,7 @@ Deno.test({
             generation: 1,
             kind: "grid",
             access: "random",
-            encoding: "r-json",
-            mode: "paged",
+            encoding: "jdv-json",
             title: "Binary response probe",
             nrow: 1,
             ncol: 1,
@@ -1832,7 +1828,7 @@ Deno.test({
       "original <- get('.jdv_process_request', envir = ns)",
       "unlockBinding('.jdv_process_request', ns)",
       "assign('.jdv_process_request', function(request, request_id) {",
-      "  if (identical(request$method, 'table/rows')) {",
+      "  if (identical(request$method, 'grid/rows')) {",
       "    return(jdv:::.jdv_binary_result(",
       "      list(view = request$params$view, generation = request$params$generation),",
       "      as.raw(c(0L, 10L, 255L))",
@@ -2094,7 +2090,7 @@ async function respondToR(
     if (typeof request.id !== "string") continue;
     const params = request.params as Record<string, unknown>;
     if (
-      request.method === "table/rows" &&
+      request.method === "grid/rows" &&
       params.view === "binary-app-probe"
     ) {
       requests.push(params);
@@ -2177,7 +2173,7 @@ async function respondToR(
           generation: 1,
           kind: "tree",
           access: "random",
-          encoding: "r-json",
+          encoding: "jdv-json",
           title: "Nested object",
           class: ["list"],
           path: [],
@@ -2198,8 +2194,7 @@ async function respondToR(
         generation: 1,
         kind: "grid",
         access: "snapshot",
-        encoding: "r-json",
-        mode: "snapshot",
+        encoding: "jdv-json",
         title: "Child table",
         parent: "tree-root",
         nrow: 1,
@@ -2228,7 +2223,7 @@ async function respondToR(
       });
       continue;
     }
-    if (request.method !== "table/rows") {
+    if (request.method !== "grid/rows") {
       await writeFrame(connection, {
         id: request.id,
         error: { code: "unsupported", message: "Unexpected smoke request." },
@@ -2255,7 +2250,7 @@ async function respondToR(
     }
     const sorted = Array.from(
       { length: rowCount },
-      (_, index) => rowBase + index + 1,
+      (_, index) => rowBase + index,
     );
     const sort = Array.isArray(params.sort)
       ? params.sort as Array<Record<string, unknown>>
@@ -2263,7 +2258,7 @@ async function respondToR(
     const selected = filter
       ? sorted.filter((rowIndex) => {
         if (filter.col !== 0 || typeof filter.value !== "number") return true;
-        const value = rowIndex - rowBase;
+        const value = rowIndex - rowBase + 1;
         switch (filter.op) {
           case "gt":
             return value > filter.value;
@@ -2306,17 +2301,17 @@ async function respondToR(
         offset,
         limit: rowIndices.length,
         data: {
-          row_index: rowIndices,
-          row_names: rowIndices.map((rowIndex) => `row-${rowIndex}`),
+          source_row: rowIndices,
+          row_labels: rowIndices.map((rowIndex) => `row-${rowIndex + 1}`),
           columns: positions.map((position) => ({
             schema: columns[position],
             data: {
               display: rowIndices.map((rowIndex) =>
                 position === 0
-                  ? String(rowIndex)
-                  : position === 1 && rowIndex === 1
+                  ? String(rowIndex - rowBase + 1)
+                  : position === 1 && rowIndex === 0
                   ? "<img src=x onerror=alert(1)>"
-                  : `value-${position}-${rowIndex}`
+                  : `value-${position}-${rowIndex + 1}`
               ),
               na: rowIndices.map(() => false),
             },
@@ -2346,22 +2341,21 @@ function snapshotDescriptor(
     generation: 1,
     kind: "grid",
     access: "snapshot",
-    encoding: "r-json",
-    mode: "snapshot",
+    encoding: "jdv-json",
     title: "Snapshot smoke",
     nrow: values.length,
     ncol: columns.length,
     columns,
     capabilities: gridCapabilities(),
-    row_names: values.map((value) => `row-${value}`),
+    row_labels: values.map((value) => `row-${value}`),
     data: {
-      row_index: values,
-      row_names: values.map((value) => `row-${value}`),
+      source_row: values.map((value) => value - 1),
+      row_labels: values.map((value) => `row-${value}`),
       columns: [
         {
           values,
           display: values.map(String),
-          sortKey: values,
+          sort_key: values,
           na: values.map(() => false),
         },
         {
@@ -2439,15 +2433,14 @@ Deno.test({
         generation: 1,
         kind: "grid",
         access: "snapshot",
-        encoding: "r-json",
-        mode: "snapshot",
+        encoding: "jdv-json",
         title: "Cell parent",
         nrow: values.length,
         ncol: columns.length,
         columns,
         capabilities: { ...gridCapabilities(), children: true },
         data: {
-          row_index: values,
+          source_row: values.map((value) => value - 1),
           columns: columns.map((schema) => ({
             ...(schema.type === "integer" ? { values } : {}),
             display: values.map((value) =>
@@ -2455,7 +2448,7 @@ Deno.test({
                 ? `<img src=x> cell-${value}`
                 : String(value)
             ),
-            ...(schema.sortable ? { sortKey: values } : {}),
+            ...(schema.sortable ? { sort_key: values } : {}),
             na: values.map(() => false),
           })),
         },
@@ -2532,7 +2525,7 @@ Deno.test({
         await clickButton(page, "Open view");
         await waitForSelector(
           page,
-          '[data-action="open-cell"][data-row-index="1"][data-column="2"]',
+          '[data-action="open-cell"][data-row-index="0"][data-column="2"]',
         );
         assertEquals(
           await count(page, '[data-action="open-cell"][data-column="3"]'),
@@ -2541,12 +2534,12 @@ Deno.test({
         assertEquals(await count(page, "#viewer img"), 0);
         await click(
           page,
-          '[data-action="open-cell"][data-row-index="1"][data-column="2"]',
+          '[data-action="open-cell"][data-row-index="0"][data-column="2"]',
         );
         const open = await opened;
         assertEquals((open.params as Record<string, unknown>).path, [{
           kind: "cell",
-          row_index: 1,
+          source_row: 0,
           column: 2,
         }]);
         await waitForSelector(
@@ -2560,7 +2553,7 @@ Deno.test({
           page,
           () =>
             (globalThis as unknown as { document: BrowserDocument }).document
-              .querySelector('.tabulator-row [tabulator-field="row_index"]')
+              .querySelector('.tabulator-row [tabulator-field="source_row"]')
               ?.textContent === "449",
         );
         await selectOption(page, "#filter-column", "0");
@@ -2580,7 +2573,7 @@ Deno.test({
           page,
           () =>
             (globalThis as unknown as { document: BrowserDocument }).document
-              .querySelector('.tabulator-row [tabulator-field="row_index"]')
+              .querySelector('.tabulator-row [tabulator-field="source_row"]')
               ?.textContent === "249",
         );
         await evaluateElement(
@@ -2610,7 +2603,7 @@ Deno.test({
           1,
         );
         assertEquals(
-          frames.filter((frame) => frame.method === "table/rows").length,
+          frames.filter((frame) => frame.method === "grid/rows").length,
           0,
         );
         assertEquals(
@@ -2623,7 +2616,7 @@ Deno.test({
           parent: "cell-parent",
           kind: "tree",
           access: "random",
-          encoding: "r-json",
+          encoding: "jdv-json",
           title: "Captured row 1",
           path: [],
           capabilities: {
@@ -2656,7 +2649,7 @@ Deno.test({
           page,
           () =>
             (globalThis as unknown as { document: BrowserDocument }).document
-              .querySelector('.tabulator-row [tabulator-field="row_index"]')
+              .querySelector('.tabulator-row [tabulator-field="source_row"]')
               ?.textContent === "249",
         );
         assertEquals(await inputValue(page, "#filter-value"), "10");
@@ -2677,7 +2670,7 @@ Deno.test({
           1,
         );
         assertEquals(
-          frames.filter((frame) => frame.method === "table/rows").length,
+          frames.filter((frame) => frame.method === "grid/rows").length,
           0,
         );
         const sortedOpen = new Promise<Record<string, unknown>>((resolve) =>
@@ -2692,16 +2685,16 @@ Deno.test({
         );
         await waitForSelector(
           page,
-          '[data-action="open-cell"][data-row-index="249"][data-column="2"]',
+          '[data-action="open-cell"][data-row-index="248"][data-column="2"]',
         );
         await click(
           page,
-          '[data-action="open-cell"][data-row-index="249"][data-column="2"]',
+          '[data-action="open-cell"][data-row-index="248"][data-column="2"]',
         );
         const secondOpen = await sortedOpen;
         assertEquals((secondOpen.params as Record<string, unknown>).path, [{
           kind: "cell",
-          row_index: 249,
+          source_row: 248,
           column: 2,
         }]);
         await writeFrame(connection, {
@@ -2777,17 +2770,16 @@ async function respondToRefresh(
             generation,
             kind: "grid",
             access: "snapshot",
-            encoding: "r-json",
-            mode: "snapshot",
+            encoding: "jdv-json",
             title: "Tree became grid",
             nrow: 1,
             ncol: 1,
             columns: [columns[0]],
             capabilities: refreshCapabilities(),
-            row_names: null,
+            row_labels: null,
             data: {
-              row_index: [1],
-              row_names: null,
+              source_row: [0],
+              row_labels: null,
               columns: [{ values: [7], display: ["7"], na: [false] }],
             },
           },
@@ -2800,8 +2792,7 @@ async function respondToRefresh(
             generation,
             kind: "grid",
             access: "random",
-            encoding: "r-json",
-            mode: "paged",
+            encoding: "jdv-json",
             title: `Refreshed ${generation}`,
             nrow: 3,
             ncol: columns.length,
@@ -2818,8 +2809,7 @@ async function respondToRefresh(
               generation: 4,
               kind: "grid",
               access: "random",
-              encoding: "r-json",
-              mode: "paged",
+              encoding: "jdv-json",
               title: "Refreshed 4",
               nrow: 3,
               ncol: columns.length,
@@ -2841,13 +2831,13 @@ async function respondToRefresh(
       });
       continue;
     }
-    if (request.method === "table/rows") {
+    if (request.method === "grid/rows") {
       const generation = Number(params.generation);
       const base = generation * 1000;
       const sort = Array.isArray(params.sort)
         ? params.sort as Array<Record<string, unknown>>
         : [];
-      const rows = [base + 1, base + 2, base + 3];
+      const rows = [base, base + 1, base + 2];
       if (sort[0]?.desc === true) rows.reverse();
       await writeFrame(connection, {
         id: request.id,
@@ -2859,12 +2849,12 @@ async function respondToRefresh(
           offset: 0,
           limit: 3,
           data: {
-            row_index: rows,
-            row_names: null,
+            source_row: rows,
+            row_labels: null,
             columns: [{
               schema: columns[0],
               data: {
-                display: rows.map(String),
+                display: rows.map((row) => String(row + 1)),
                 na: rows.map(() => false),
               },
             }],
@@ -2926,8 +2916,7 @@ Deno.test({
         generation: 1,
         kind: "grid",
         access: "random",
-        encoding: "r-json",
-        mode: "paged",
+        encoding: "jdv-json",
         title: "Refresh grid",
         nrow: 3,
         ncol: 1,
@@ -2942,7 +2931,7 @@ Deno.test({
         generation: 1,
         kind: "tree",
         access: "random",
-        encoding: "r-json",
+        encoding: "jdv-json",
         title: "Refresh tree",
         class: ["list"],
         capabilities: {
@@ -2962,7 +2951,7 @@ Deno.test({
     void responder.catch((error) => console.error("[mock R responder]", error));
     let owned: Awaited<ReturnType<typeof launchOwnedBrowser>> | undefined;
     const originalFailure: unknown[] = [];
-    const rowIndex = '.tabulator-row [tabulator-field="row_index"]';
+    const rowIndex = '.tabulator-row [tabulator-field="source_row"]';
     const refreshes = () =>
       requests.filter((request) => request.method === "view/refresh");
 
@@ -3010,7 +2999,7 @@ Deno.test({
             document: BrowserDocument;
           }).document;
           return document.querySelector(
-            '.tabulator-row [tabulator-field="row_index"]',
+            '.tabulator-row [tabulator-field="source_row"]',
           )?.textContent === "1003";
         });
         assertEquals(await count(page, "#sort-list li"), 1);
@@ -3023,7 +3012,7 @@ Deno.test({
           return document.querySelector("#table-title")?.textContent ===
               "Refreshed 2" &&
             document.querySelector(
-                '.tabulator-row [tabulator-field="row_index"]',
+                '.tabulator-row [tabulator-field="source_row"]',
               )?.textContent === "2001";
         });
         assertEquals(refreshes().length, 1);
@@ -3033,7 +3022,7 @@ Deno.test({
         assertEquals(await count(page, "#sort-list li"), 0);
         assertEquals(
           requests.filter((request) =>
-            request.method === "table/rows" && request.generation === 2 &&
+            request.method === "grid/rows" && request.generation === 2 &&
             Array.isArray(request.sort) && request.sort.length > 0
           ).length,
           0,
@@ -3063,7 +3052,7 @@ Deno.test({
           return document.querySelector("#table-title")?.textContent ===
               "Refreshed 4" &&
             document.querySelector(
-                '.tabulator-row [tabulator-field="row_index"]',
+                '.tabulator-row [tabulator-field="source_row"]',
               )?.textContent === "4001";
         });
         await page.waitForTimeout(200);
@@ -3183,8 +3172,7 @@ async function respondToTrack(
           reason: "tracked",
           kind: "grid",
           access: "random",
-          encoding: "r-json",
-          mode: "paged",
+          encoding: "jdv-json",
           title: `Tracked ${generation}`,
           nrow: 3,
           ncol: columns.length,
@@ -3255,8 +3243,7 @@ Deno.test({
         generation: 2,
         kind: "grid",
         access: "random",
-        encoding: "r-json",
-        mode: "paged",
+        encoding: "jdv-json",
         title: "Track grid",
         nrow: 3,
         ncol: 1,
@@ -3272,8 +3259,7 @@ Deno.test({
         generation: 1,
         kind: "grid",
         access: "random",
-        encoding: "r-json",
-        mode: "paged",
+        encoding: "jdv-json",
         title: "Plain grid",
         nrow: 3,
         ncol: 1,

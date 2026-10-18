@@ -47,7 +47,7 @@ def main():
             params = parent["params"]
             send({"id": "open", "method": "object/open", "params": {
                 "view": params["view"], "generation": params["generation"],
-                "path": [{"kind": "cell", "row_index": 1, "column": 0}]}})
+                "path": [{"kind": "cell", "source_row": 0, "column": 0}]}})
             assert until_ack(1, "open")
             open(args.control + ".stage", "w").close()
             deadline = time.monotonic() + 15

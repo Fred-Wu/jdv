@@ -38,7 +38,10 @@ test_that(
     value[[hidden]] <- strrep("z", 1024^2)
 
     registered <- register_view(data.frame(value = value), mode = "auto")
-    expect_identical(mode_safety_rpc_json(registered$open)$params$mode, "paged")
+    expect_identical(
+      mode_safety_rpc_json(registered$open)$params$access,
+      "random"
+    )
   }
 )
 
@@ -51,14 +54,17 @@ test_that("auto row estimates include compact zero-column row indices", {
     row.names = c(NA_integer_, -800000000L)
   )
   registered <- register_view(x, mode = "auto")
-  expect_identical(mode_safety_rpc_json(registered$open)$params$mode, "paged")
+  expect_identical(
+    mode_safety_rpc_json(registered$open)$params$access,
+    "random"
+  )
   reply <- mode_safety_rpc_call(
-    "table/rows",
+    "grid/rows",
     list(view = registered$id, generation = 1, offset = 799999997, limit = 3)
   )
   expect_identical(
-    reply$result$data$row_index,
-    list(799999998L, 799999999L, 800000000L)
+    reply$result$data$source_row,
+    list(799999997L, 799999998L, 799999999L)
   )
 })
 
@@ -74,8 +80,8 @@ test_that("auto falls back when only snapshot row names exceed the budget", {
 
   registered <- register_view(x, mode = "auto")
   descriptor <- mode_safety_rpc_json(registered$open)$params
-  expect_identical(descriptor$mode, "paged")
-  expect_null(descriptor$row_names)
+  expect_null(descriptor$mode)
+  expect_null(descriptor$row_labels)
 })
 
 test_that(
@@ -114,7 +120,7 @@ test_that("oversized user channel results fail the request without downgrade", {
     {
       registered <- register_view(x, mode = "paged")
       reply <- mode_safety_rpc_call(
-        "table/rows",
+        "grid/rows",
         list(view = registered$id, generation = 1, offset = 0, limit = 2)
       )
       expect_identical(reply$error$code, "limit_exceeded")

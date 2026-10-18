@@ -12,8 +12,8 @@ fixtures for later server and browser consumers.
 \details{
 The engine operates on data frames and matrices. Columns are identified by
 their \strong{zero-based positions}, so duplicate or unusual column names are
-valid. Returned \code{row_index} values are the
-\strong{original one-based R row numbers}.
+valid. Returned \code{source_row} values are \strong{zero-based positions in the
+original source order}. Internal R subscripts remain one-based.
 }
 \section{Source slicing contract}{
 
@@ -87,7 +87,7 @@ user-defined column method are always probed individually. Probe extraction
 includes display, missingness, values, and sort keys; it does not compute
 full-column filter text.
 
-Registration does not create automatic row names or a full \code{row_index}
+Registration does not create automatic row names or a full \code{source_row}
 vector. Without a sort or filter, original row order is generated when
 requested. Page display extracts actual requested row slices: \code{x[rows, j]}
 for a matrix, or a class-preserving slice of a data-frame column. Display is
@@ -191,11 +191,11 @@ Filter objects use these exact fields:\tabular{lll}{
    \code{and}, \code{or} \tab \code{op}, \code{args} (array of child objects) \tab Any valid children. \cr
    \code{not} \tab \code{op}, \code{arg} (one child object) \tab Any valid child. \cr
    \code{is_na} \tab \code{op}, \code{col} \tab Any column with a valid missingness channel. \cr
-   \code{contains}, \code{starts_with}, \code{ends_with}, \code{text_equals} \tab \code{op}, \code{col}, \code{value} \tab \code{string}, \code{factor}. \cr
+   \code{contains}, \code{starts_with}, \code{ends_with}, \code{text_equals} \tab \code{op}, \code{col}, \code{value} \tab \code{string}, \code{categorical}. \cr
    \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge} \tab \code{op}, \code{col}, \code{value} \tab \code{integer}, \code{number}, \code{duration}, \code{date}, \code{datetime}; \code{int64} supports only \code{eq}. \cr
    \code{between} \tab \code{op}, \code{col}, \code{lower}, \code{upper} \tab \code{integer}, \code{number}, \code{duration}, \code{date}, \code{datetime}, \code{int64}. \cr
    \code{is_true}, \code{is_false} \tab \code{op}, \code{col} \tab \code{boolean}. \cr
-   \verb{in} \tab \code{op}, \code{col}, \code{values} (array of labels) \tab \code{factor}. \cr
+   \verb{in} \tab \code{op}, \code{col}, \code{values} (array of labels) \tab \code{categorical}. \cr
 }
 
 
@@ -236,17 +236,17 @@ below.
 \section{Text}{
 
 
-Text comparison folds \strong{ASCII A-Z only} to a-z with \code{\link[base:chartr]{base::chartr()}} after
-UTF-8 conversion. Non-ASCII characters retain their case: \code{Ä} and \code{ä} remain
-distinct. Matching uses fixed literal strings, not regular expressions.
-Brackets, dots, and asterisks have no pattern meaning. An empty needle
-matches every nonmissing text for contains/prefix/suffix operations;
-\code{text_equals} with an empty value matches only an empty source string.
+Text comparison folds \strong{ASCII A-Z only} to a-z. Non-ASCII characters retain
+their case: \code{Ä} and \code{ä} remain distinct. Matching uses fixed literal strings,
+not regular expressions. Brackets, dots, and asterisks have no pattern
+meaning. An empty needle matches every nonmissing text for
+contains/prefix/suffix operations; \code{text_equals} with an empty value matches
+only an empty source string.
 
 Text sources are:
 \itemize{
 \item String: the original, untruncated character value.
-\item Factor: its label.
+\item Categorical: its label.
 }
 
 Number, integer, Boolean, duration, date, datetime, and integer64 columns do
@@ -261,7 +261,7 @@ duplicate labels are harmless and an empty label array matches no rows.
 
 
 There is no dedicated blank operator; clients combine existing ones. A
-text-filterable column has a schema \code{type} of \code{string} or \code{factor} and
+text-filterable column has a schema \code{type} of \code{string} or \code{categorical} and
 \code{filterable} true. For such a column, blank (missing or empty string) is
 
 \if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"op": "or", "args": [
@@ -374,14 +374,14 @@ This section is informative. It describes how the current R implementation
 (the jdv package) assigns a schema \code{type} to a column, and it is not part of
 the protocol. Which R classes and vectors map to which \code{type} can change from
 release to release without a protocol version change. Clients decide behavior
-from \code{type}, \code{filterable}, and \code{sortable}, never from the R class names in
-the schema's \code{class} field; see the Column types section of \link{jdv_spec}.\tabular{lll}{
+from \code{type}, \code{filterable}, and \code{sortable}, never from the producer-defined
+\code{native_type} display strings; see the Column types section of \link{jdv_spec}.\tabular{lll}{
    R column \tab Schema \code{type} \tab Notes \cr
    Logical vector without a class \tab \code{boolean} \tab  \cr
    Integer vector without a class \tab \code{integer} \tab  \cr
    Double vector without a class \tab \code{number} \tab  \cr
    Character vector without a class \tab \code{string} \tab  \cr
-   Factor, including ordered factors \tab \code{factor} \tab \code{levels} and \code{ordered} come from the factor. \cr
+   Factor, including ordered factors \tab \code{categorical} \tab \code{levels} and \code{ordered} come from the factor. \cr
    \code{Date} \tab \code{date} \tab  \cr
    \code{POSIXct} and \code{POSIXlt} \tab \code{datetime} \tab \code{tz} is the time-zone setting of the vector. \cr
    \code{\link[base:difftime]{base::difftime()}}, including classes that extend it such as \code{hms} \tab \code{duration} \tab \code{units} is the \code{units} attribute (always \code{secs} for \code{hms}). \cr
@@ -394,10 +394,15 @@ the schema's \code{class} field; see the Column types section of \link{jdv_spec}
 }
 
 
+The current R producer fills \code{native_type} with the character vector returned
+by \code{\link[base:class]{base::class()}}. This mapping is informative only; clients treat each
+string as display text and infer no behavior from it. The R producer maps
+explicit row names to \code{row_labels} and sends \code{null} for automatic row names.
+
 An atomic vector wrapped only by \code{\link[base:I]{base::I()}} is classified by its contents,
 so \code{I(1:3)} is an \code{integer} column. An \code{I()} list is an \code{other} column that
 is sortable and drillable but not filterable. \code{I()} around a classed vector
-keeps the classification of that class, so an \code{I()} factor is a \code{factor}
+keeps the classification of that class, so an \code{I()} factor is \code{categorical}
 column and an \code{I()} \code{difftime} is a \code{duration} column.
 
 The \code{drillable} field of the schema is true for unclassed list, \code{AsIs} list,
@@ -450,8 +455,8 @@ The page result has these fields:\tabular{ll}{
    \code{total_unfiltered} \tab Original row count. \cr
    \code{offset} \tab Validated requested offset. \cr
    \code{limit} \tab Effective row limit after clamping. \cr
-   \code{data$row_index} \tab Original one-based row numbers for this page. \cr
-   \code{data$row_names} \tab Selected explicit row-name strings, or \code{NULL} for automatic/absent row names. \cr
+   \code{data$source_row} \tab Zero-based original source positions for this page. \cr
+   \code{data$row_labels} \tab Selected explicit row-name strings, or \code{NULL} for automatic/absent row names. \cr
    \code{data$columns} \tab Selected columns in requested order; each is an extraction result containing \code{schema}, \code{data}, and \code{errors}. \cr
 }
 
@@ -471,10 +476,10 @@ typed query error. Their condition's \code{details} can contain the extraction's
 \code{schema}, \code{data}, and \code{errors}; no failed channel result enters the cache.
 The initial holder schema is not overwritten by a later extraction result.
 
-Snapshot wire encoding may omit \code{display} for string, factor, and integer64
-columns only when every nonmissing display value equals its semantic value
-and every missing display value is the standard string \code{"NA"}. The
-missingness mask then reconstructs the omitted missing labels. A
+Snapshot wire encoding may omit \code{display} for string, categorical, and
+integer64 columns only when every nonmissing display value equals its
+semantic value and every missing display value is the standard string \code{"NA"}.
+The missingness mask then reconstructs the omitted missing labels. A
 class-specific formatter that uses another missing label keeps its \code{display}
 channel, including when all rows are missing. Zero-row columns use the same
 equality checks, with empty comparisons treated as equal.
@@ -505,17 +510,19 @@ decimal strings by sign, digit count, and digits rather than converting them
 to double.
 
 For supported inputs with valid required channels, Paged and Snapshot must
-return identical original row indices for every sort/filter request. Display
-strings may differ because R format methods can inspect the whole vector or
-the requested page when choosing a format.
+return identical original source-row positions for every sort/filter request.
+Display strings may differ because R format methods can inspect the whole
+vector or the requested page when choosing a format.
 
-The version 1 query fixture ships with the package. Its \code{fold} entries record
-ASCII folding. Each \code{cases} entry describes typed source columns and
-\code{queries} with expected original one-based row indices. Number \code{special}
-entries reconstruct nonfinite source values; JSON null means missing data.
-Factor columns include levels and orderedness; datetime columns include
-timezone metadata; duration columns include \code{units}, and an \code{r} of \code{hms}
-marks a vector with the \code{c("hms", "difftime")} class structure.
+The version 1 query fixture ships with the package as shared conformance data
+for query semantics. Its \code{fold} entries record ASCII folding. Each \code{cases}
+entry describes typed source columns and \code{queries} with expected zero-based
+positions in original source order. An \code{r} member is only an R test-harness
+construction hint, not a wire field. Number \code{special} entries reconstruct
+nonfinite source values; JSON null means missing data. Factor columns include
+levels and orderedness; datetime columns include timezone metadata; duration
+columns include \code{units}, and an \code{r} of \code{hms} marks a vector with the
+\code{c("hms", "difftime")} class structure.
 
 \code{example-other} uses a synthetic \code{query_record} class factory: its fixture
 \code{values} array supplies the numeric constructor input, with JSON null

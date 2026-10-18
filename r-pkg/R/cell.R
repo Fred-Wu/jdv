@@ -32,18 +32,18 @@ column_drillable <- function(x) {
   first <- path[[1L]]
   .jdv_fields(
     first,
-    c("kind", "row_index", "column"),
-    c("kind", "row_index", "column")
+    c("kind", "source_row", "column"),
+    c("kind", "source_row", "column")
   )
   if (
     !identical(first$kind, "cell") ||
-      any(!names(first) %in% c("kind", "row_index", "column"))
+      any(!names(first) %in% c("kind", "source_row", "column"))
   ) {
     query_error("invalid_request", "Grid paths must begin with a cell step.")
   }
   cell <- list(
     kind = "cell",
-    row_index = query_integer(first$row_index, "row_index", 1),
+    row_index = query_integer(first$source_row, "source_row") + 1,
     column = query_integer(first$column, "column")
   )
   c(list(cell), lapply(path[-1L], .jdv_tree_step))

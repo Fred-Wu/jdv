@@ -16,8 +16,8 @@ local({
     )
     .jdv_json_parse(jdv_rpc(.jdv_json_encode(request)))
   }
-  cell <- function(row = 1, column = 0) {
-    list(kind = "cell", row_index = row, column = column)
+  cell <- function(source_row = 0, column = 0) {
+    list(kind = "cell", source_row = source_row, column = column)
   }
   index <- function(i = 1) list(type = "index", index = i)
   frame <- function(column) {
@@ -91,7 +91,7 @@ local({
     expect_null(entry$holder)
     expect_identical(entry$fingerprint, .jdv_fingerprint(source))
     expect_null(rpc(root, list(), "view/schema")$error)
-    opened <- rpc(root, list(cell(2)))$result
+    opened <- rpc(root, list(cell(1)))$result
     expect_identical(opened$parent, root$id)
     expect_identical(get(opened$view, state$entries)$tree_value, list(b = 2))
     expect_length(opened$path, 0)
@@ -112,7 +112,7 @@ local({
       if (mode == "paged") {
         response <- jdv_rpc(.jdv_json_encode(list(
           id = 2,
-          method = "table/rows",
+          method = "grid/rows",
           params = list(
             view = root$id,
             generation = 1,
@@ -131,18 +131,58 @@ local({
           c(2, 3, 1)
         )
       }
-      opened <- rpc(root, list(cell(1, 1), index()))$result
+      opened <- rpc(root, list(cell(0, 1), index()))$result
       expect_identical(get(opened$view, state$entries)$tree_value, 30L)
     }
     for (column in list(data.frame(a = 1:2, b = 3:4), matrix(1:6, 2))) {
       root <- register_view(frame(column), mode = "snapshot")
       on.exit(close(root), add = TRUE)
-      opened <- rpc(root, list(cell(2)))$result
+      opened <- rpc(root, list(cell(1)))$result
       expect_identical(opened$kind, "grid")
-      expect_equal(opened$data$row_index, list(1))
+      expect_equal(opened$data$source_row, list(0))
       child <- get(opened$view, state$entries)
       expect_equal(child$nrow, 1)
       expect_equal(child$ncol, ncol(column))
+    }
+  })
+
+  test_that("cell source rows are zero-based source positions", {
+    source <- data.frame(key = c(30L, 10L, 20L, 40L))
+    source$payload <- I(lapply(
+      seq_len(nrow(source)),
+      function(i) list(row = 100L + i)
+    ))
+    root <- register_view(source, mode = "paged")
+    on.exit(close(root), add = TRUE)
+
+    page <- as.integer(unlist(
+      .jdv_json_parse(jdv_rpc(.jdv_json_encode(list(
+        id = 3,
+        method = "grid/rows",
+        params = list(
+          view = root$id,
+          generation = 1,
+          sort = list(list(col = 0, desc = TRUE)),
+          filter = list(op = "ge", col = 0, value = 20),
+          limit = 3
+        )
+      ))))$result$data$source_row,
+      use.names = FALSE
+    ))
+    expect_identical(page, c(3L, 0L, 2L))
+
+    for (source_row in c(0L, 3L, 2L)) {
+      opened <- rpc(root, list(cell(source_row, 1L)))$result
+      expect_identical(
+        get(opened$view, state$entries)$tree_value,
+        list(row = 101L + source_row)
+      )
+    }
+    for (source_row in c(-1L, 4L)) {
+      expect_identical(
+        rpc(root, list(cell(source_row, 1L)))$error$code,
+        "invalid_request"
+      )
     }
   })
 
@@ -153,7 +193,7 @@ local({
       on.exit(close(root), add = TRUE)
       bad <- list(
         list(),
-        list(cell(0)),
+        list(cell(-1)),
         list(cell(2)),
         list(cell(1, 1)),
         list(cell(1.5)),

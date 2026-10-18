@@ -27,9 +27,10 @@ opaque binary body as described below.
 \item The only supported envelope encoding is \code{json}; the only supported compression
 is \code{none}. Both fields may be omitted to select those defaults. Unknown values
 produce an \code{unsupported} error.
-\item A view id is a string. Column positions and sequential \code{first_row} offsets are
-zero-based. \code{row_index} is the original one-based R row number, including
-after filtering and sorting.
+\item A view id is a string. Column positions, \code{source_row} values, and sequential
+\code{first_row} offsets are zero-based. \code{source_row} is the original source-row
+position, including after filtering and sorting. Browser row labels display
+that position plus one.
 \item Request ids are either strings of at most 128 UTF-8 bytes or JSON integer
 literal tokens from 0 through \code{2^53 - 1}. Fractional and exponent-form numeric
 ids are rejected, even when their mathematical value is integral. The same
@@ -40,7 +41,7 @@ value is preserved.
 compatibility. Filter, sort, and \code{stream/next} parameter objects remain
 strict. Duplicate object keys are rejected. Unknown methods return
 \code{method_not_found}.
-\item The page request method remains \code{table/rows} and identifies its owner with
+\item The page request method is \code{grid/rows} and identifies its owner with
 \code{params.view}. Lifecycle methods use the view names listed below; the former
 \code{table/open}, \code{table/closed}, \code{table/schema}, and \code{table/close} names are not
 aliases.
@@ -137,7 +138,7 @@ message. After successful message construction, a Snapshot with drillable
 columns retains its source and registration fingerprint in R for cell
 inspection. Other Snapshots retain only table metadata. The host is
 responsible for caching the snapshot data in both cases, and neither has a
-\code{table/rows} endpoint. Paged registration retains the source and its initial
+\code{grid/rows} endpoint. Paged registration retains the source and its initial
 schema in R and returns schema and dimensions in \code{open}; rows are computed on
 demand.
 
@@ -171,7 +172,7 @@ remains the budget for the LRU caches, including older result indices.
 \code{mode = "auto"} selects Snapshot only when both the cell estimate
 \code{nrow * max(1, ncol)} and a deterministic byte estimate fit their thresholds.
 The byte threshold is \code{min(jdv.snapshot_max_bytes, jdv.max_message_bytes)}.
-The cell estimate counts \code{row_index} even for a zero-column table. Byte
+The cell estimate counts \code{source_row} even for a zero-column table. Byte
 estimation samples at most 256 evenly spaced rows; snapshot construction then
 checks actual source string lengths and generated channel sizes. A sampled
 estimate can therefore miss a large value, in which case automatic mode
@@ -191,10 +192,9 @@ A view descriptor is sent as a notification:
     "generation": 1,
     "title": "example",
     "reason": "register",
-    "mode": "paged",
     "kind": "grid",
     "access": "random",
-    "encoding": "r-json",
+    "encoding": "jdv-json",
     "capabilities": \{
       "seek": true,
       "sort": true,
@@ -208,7 +208,7 @@ A view descriptor is sent as a notification:
     "collation": "C",
     "nrow": 100,
     "ncol": 2,
-    "row_names": null,
+    "row_labels": null,
     "columns": []
   \}
 \}
@@ -218,17 +218,17 @@ The example omits schema entries for brevity. \code{view/open} has no request id
 and is not passed to \code{\link[=jdv_rpc]{jdv_rpc()}}; \code{\link[=jdv_register]{jdv_register()}} queues it for the host to
 deliver (see the Notification delivery section). \code{kind} is \code{grid}; \code{access}
 is \code{snapshot} or \code{random} for Snapshot or Paged mode, respectively; and
-\code{encoding} is \code{r-json}. Every descriptor includes all eight \code{capabilities}
+\code{encoding} is \code{jdv-json}. Every descriptor includes all eight \code{capabilities}
 fields shown for a grid: \code{seek}, \code{sort}, \code{filter}, \code{known_total}, and
 \code{refresh} are \code{true}; \code{next} is \code{false}; \code{track} is \code{true} only for a view
 that has a \code{tracking} field whose state is not \code{"lost"} (see Binding
 tracking). Grid \code{children} is \code{true} if and only if at least one column has
 \code{drillable: true}. \code{refresh} tells the host that \code{view/refresh} is accepted.
 Tree descriptors use \code{kind: "tree"}, \code{access: "random"},
-\code{encoding: "r-json"}, and capabilities \code{seek: true}, \code{sort: false},
+\code{encoding: "jdv-json"}, and capabilities \code{seek: true}, \code{sort: false},
 \code{filter: false}, \code{known_total: true}, \code{next: false}, \code{children: true},
 \code{refresh: true}, and \code{track} as for a grid. Tree descriptors omit grid-only
-fields (\code{mode}, \code{nrow}, \code{ncol}, \code{row_names}, \code{columns}, and \code{data}). A tree
+fields (\code{nrow}, \code{ncol}, \code{row_labels}, \code{columns}, and \code{data}). A tree
 descriptor includes an empty \code{path} at its root. A child descriptor may
 include \code{parent}, the parent view id. \code{title} is optional. \code{reason} says why
 the descriptor was sent (see below). A tree descriptor also has \code{class}, a
@@ -239,7 +239,7 @@ string array that follows \code{\link[base:class]{base::class()}} semantics for 
    \code{view}, \code{generation}, \code{kind}, \code{access}, \code{encoding}, \code{capabilities} \tab Required \tab Required \cr
    \code{title} \tab Optional \tab Optional \cr
    \code{reason} \tab Always sent by R; see below \tab Always sent by R; see below \cr
-   \code{mode}, \code{collation}, \code{nrow}, \code{ncol}, \code{row_names}, \code{columns} \tab Required \tab Omitted \cr
+   \code{collation}, \code{nrow}, \code{ncol}, \code{row_labels}, \code{columns} \tab Required \tab Omitted \cr
    \code{data} \tab Required for Snapshot; omitted for Paged \tab Omitted \cr
    \code{path} \tab Omitted \tab Required; empty for the root \cr
    \code{class}, \code{type} \tab Omitted \tab Required \cr
@@ -305,7 +305,7 @@ A tree descriptor has no grid fields:
     "path": [],
     "kind": "tree",
     "access": "random",
-    "encoding": "r-json",
+    "encoding": "jdv-json",
     "class": ["list"],
     "type": "list",
     "capabilities": \{
@@ -324,7 +324,7 @@ A request envelope has this shape:
 
 \if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
   "id": 1,
-  "method": "table/rows",
+  "method": "grid/rows",
   "params": \{
     "view": "v-1",
     "generation": 1,
@@ -462,16 +462,15 @@ implementation are specified separately.
 
 
 Sequential descriptors have \code{kind: "grid"}, \code{access: "sequential"},
-\code{encoding: "arrow-ipc"}, \code{mode: "sequential"}, \code{nrow: null}, and a known
-\code{ncol}. Only the \code{next} capability is true; \code{seek}, \code{sort}, \code{filter},
-\code{known_total}, \code{children}, \code{refresh}, and \code{track} are false. Registration
-calls the producer's \code{get_schema} but never \code{get_next}. It moves one exported
-Arrow stream into native ownership. Close, replacement, eviction, parent
-cascade, namespace unload, and R disconnection release the stream and any
-carried batch exactly once. A release callback may execute R code; registry
-identity and generation are rechecked before publishing its result. Releases
-requested inside an active producer callback are deferred until that callback
-has finished.
+\code{encoding: "arrow-ipc"}, \code{nrow: null}, and a known \code{ncol}. Only the \code{next}
+capability is true; \code{seek}, \code{sort}, \code{filter}, \code{known_total}, \code{children},
+\code{refresh}, and \code{track} are false. Registration calls the producer's
+\code{get_schema} but never \code{get_next}. It moves one exported Arrow stream into
+native ownership. Close, replacement, eviction, parent cascade, namespace
+unload, and R disconnection release the stream and any carried batch exactly
+once. A release callback may execute R code; registry identity and generation
+are rechecked before publishing its result. Releases requested inside an
+active producer callback are deferred until that callback has finished.
 
 \code{schema} contains the original logical Arrow schema recursively: \code{format},
 \code{name}, \code{flags}, \code{metadata}, \code{metadata_encoding}, \code{children}, and
@@ -500,8 +499,8 @@ Zero is a valid budget but returns \code{limit_exceeded} before fetching because
 it cannot hold an IPC stream. Offset, sorting, filtering, and count requests
 are rejected. The public synchronous \code{jdv_rpc(JSON)} entry rejects
 \code{stream/next} before consuming the producer; only the transport's private
-binary-capable entry can execute it. Random \code{table/rows} and object
-navigation are unavailable for sequential views.
+binary-capable entry can execute it. Random \code{grid/rows} and object navigation
+are unavailable for sequential views.
 
 A successful binary response carries \code{view}, \code{generation}, \code{first_row},
 \code{rows_fetched}, \code{rows_seen}, \code{done}, and the reserved \code{transfer} object.
@@ -709,7 +708,7 @@ any output path detach the browser. Repeated close/detach is harmless.
    \code{view/open} \tab R/host to viewer \tab Notification \tab Descriptor and, for Snapshot, all column payloads. Queued by \code{\link[=jdv_register]{jdv_register()}}. \cr
    \code{view/schema} \tab Host to R \tab Request \tab Current dimensions and schema. \cr
    \code{stream/next} \tab Host to R \tab Request \tab One forward-only Arrow IPC page and cursor metadata. \cr
-   \code{table/rows} \tab Host to R \tab Request \tab One selected page from a Paged view. \cr
+   \code{grid/rows} \tab Host to R \tab Request \tab One selected page from a Paged view. \cr
    \code{object/children} \tab Host to R \tab Request \tab One page of children at a typed object path. \cr
    \code{object/open} \tab Host to R \tab Request \tab Registers the captured value at a typed path as a child view. \cr
    \code{view/refresh} \tab Host to R \tab Request \tab Rebuilds a view from its captured value as the next generation of the same id. \cr
@@ -816,27 +815,28 @@ above. On a grid view, the first step must select a drillable cell:
 \if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
   "view": "v-1",
   "generation": 1,
-  "path": [\{ "kind": "cell", "row_index": 205, "column": 2 \}],
+  "path": [\{ "kind": "cell", "source_row": 204, "column": 2 \}],
   "mode": "paged",
   "collation": "C"
 \}
 }\if{html}{\out{</div>}}
 
-\code{row_index} is the original, one-based R row index, independent of sorting,
-filtering, and pagination. \code{column} is the zero-based schema position,
-including when column names are duplicated. \code{kind: "cell"} is allowed only at
-the start of a grid path. Remaining steps, if any, use the tree \code{type} forms
-above and are resolved within the captured cell value. The complete path,
-including its cell step, contains at most 32 steps. Grid \code{object/open}
-requires \code{capabilities.children: true} and \verb{columns[column].drillable: true};
-malformed selectors or non-drillable columns return \code{invalid_request}.
+\code{source_row} is the original, zero-based source-row position, independent of
+sorting, filtering, and pagination. \code{column} is the zero-based schema
+position, including when column names are duplicated. \code{kind: "cell"} is
+allowed only at the start of a grid path. Remaining steps, if any, use the
+tree \code{type} forms above and are resolved within the captured cell value. The
+complete path, including its cell step, contains at most 32 steps. Grid
+\code{object/open} requires \code{capabilities.children: true} and
+\verb{columns[column].drillable: true}; malformed selectors or non-drillable
+columns return \code{invalid_request}.
 
 Each grid column schema includes the Boolean \code{drillable}, which says whether
 the column's cells can be selected by \code{kind: "cell"}. This metadata is
 independent of \code{type}, \code{sortable}, and \code{filterable}; clients must not infer
-drillability from the type, the class, or display text. The R columns that
-are drillable are listed in the R column mapping (informative) section of
-\link[=jdv_query_spec]{query specification}. Snapshot views retain the R
+drillability from the type, \code{native_type}, or display text. The R columns
+that are drillable are listed in the R column mapping (informative) section
+of \link[=jdv_query_spec]{query specification}. Snapshot views retain the R
 source only when a drillable column needs subsequent cell capture. Retained
 source references are released when the view closes.
 
@@ -856,7 +856,7 @@ name is nonempty and unique and \code{x$`a b`} when the name is not a
 syntactic name, and \code{x[[3]]} (one-based) otherwise. An element of a named
 atomic vector uses \code{x[["name"]]} under the same rule. An S4 slot is \code{x@slot},
 an environment binding is \code{x$name}, an attribute is \code{attr(x, "names")}, and a
-grid cell is \code{df[12, "col"]} with the original one-based \code{row_index}, or
+grid cell is \code{df[12, "col"]} with the original zero-based \code{source_row} 11, or
 \code{df[12, 3]} with a one-based column position when the column name is missing,
 empty, or duplicated. A child of a child continues from the child's \code{title},
 for example \code{x$a[[2]]@data}. The \code{title} is truncated to 4,096 bytes. It is a
@@ -871,17 +871,17 @@ parent closes its descendants; each cascaded child emits \code{view/closed} with
 
 The browser uses the same child-view navigation for tree and grid parents.
 Opening controls appear only in drillable cells and use the displayed row's
-original \code{row_index}. The tree viewer shows the root \code{class}, and a checkbox,
-checked by default, sets the \code{attributes} parameter of its \code{object/children}
-requests. View breadcrumbs restore the parent's sort, filter, page,
-horizontal scroll, or tree path and child-page offset. A pending child open
-is tied to the active parent view and generation, separately from page query
-epochs: Snapshot sort, filter, and page operations remain local and do not
-cancel the captured cell request. Returning to the R prompt lets that
-original request complete without another browser request. Selecting a
-different view, replacing its generation, or closing it cancels its pending
-browser requests. Display text and navigation labels are inserted as DOM
-text.
+original \code{source_row} (shown as a one-based row number). The tree viewer
+shows the root \code{class}, and a checkbox, checked by default, sets the
+\code{attributes} parameter of its \code{object/children} requests. View breadcrumbs
+restore the parent's sort, filter, page, horizontal scroll, or tree path and
+child-page offset. A pending child open is tied to the active parent view and
+generation, separately from page query epochs: Snapshot sort, filter, and
+page operations remain local and do not cancel the captured cell request.
+Returning to the R prompt lets that original request complete without another
+browser request. Selecting a different view, replacing its generation, or
+closing it cancels its pending browser requests. Display text and navigation
+labels are inserted as DOM text.
 
 R 4.6 and newer use the public experimental \code{R_GetBindingType()} and
 \code{R_getVarEx()} APIs to distinguish \code{Value}, \code{Forced}, \code{Delayed}, \code{Unbound},
@@ -898,7 +898,7 @@ returned with an \code{unavailable} reason and sibling children remain available
 S4 \code{.Data} is opaque; slots are inspected as stored values.
 }
 
-\section{\code{table/rows}}{
+\section{\code{grid/rows}}{
 
 
 Parameters are:\tabular{lll}{
@@ -914,10 +914,10 @@ Parameters are:\tabular{lll}{
 
 
 The result contains \code{view}, \code{generation}, \code{total}, \code{total_unfiltered},
-\code{offset}, \code{limit}, and \code{data}. \code{data} contains \code{row_index}, optional
-\code{row_names}, and \code{columns}. The effective \code{limit} is clamped to the query
+\code{offset}, \code{limit}, and \code{data}. \code{data} contains \code{source_row}, optional
+\code{row_labels}, and \code{columns}. The effective \code{limit} is clamped to the query
 engine's row limit and may be reduced further to fit the JSON output budget.
-For an empty page, \code{row_index} and explicit \code{row_names} are empty arrays;
+For an empty page, \code{source_row} and explicit \code{row_labels} are empty arrays;
 \code{columns} still contains one schema/data/errors wrapper per selected column,
 with empty channel arrays. Only \verb{cols: []} produces an empty \code{columns} array.
 
@@ -1161,7 +1161,7 @@ Sequential sources, including Arrow and Polars sources, are unsupported.
 
 \code{\link[=jdv_handle_descriptor]{jdv_handle_descriptor()}} returns a JSON string with the shape of \code{view/open}
 params (or the \code{object/open} result for a child). \code{\link[=jdv_handle_request]{jdv_handle_request()}}
-accepts only \code{table/rows} and \code{object/children}, with the same parameter
+accepts only \code{grid/rows} and \code{object/children}, with the same parameter
 validation and result shapes as their viewer requests. It returns the result
 itself as JSON, without a response envelope. Omit \code{view} and \code{generation}
 from its R-list params: the handle supplies them, and specifying either is an
@@ -1181,7 +1181,7 @@ bounds the UTF-8 JSON result. Oversized row or child pages shrink by halving
 their returned item count. A single item that cannot fit fails with
 \code{limit_exceeded}. Descriptors are never truncated. Auto mode retains the
 usual Snapshot selection, and Snapshot descriptors contain the complete
-captured data and do not support \code{table/rows}.
+captured data and do not support \code{grid/rows}.
 
 Handles do not follow variable bindings or support refresh or tracking; their
 descriptor capabilities report both as false. Table handles retain the
@@ -1285,11 +1285,14 @@ connection with \code{\link[=jdv_connect]{jdv_connect()}} does not send it again
 contain only letters, digits, \code{.}, \verb{_}, \code{:}, and \code{-}. A receiver must not
 infer a process id or connection counter from it. A host rejects an invalid
 identifier, and rejects a duplicate active identifier with \code{in_use}.
-\code{producer} identifies the producer: \code{name} and \code{version} are strings.
-\code{runtime} is optional; when present, it has string \code{name} and \code{version}
-fields. Protocol major version 1 is the v1 contract in this document. A peer
-that does not support the announced major version rejects the handshake with
-\code{unsupported}; it must not continue with incompatible message semantics.
+\code{producer} identifies the producer: \code{name} and \code{version} are UTF-8 strings
+from 1 through 256 bytes each. \code{runtime} is optional; when present, it has
+string \code{name} and \code{version} fields, each also 1 through 256 UTF-8 bytes. A
+receiver rejects the handshake if any supplied metadata value is empty,
+invalid UTF-8, or exceeds the byte limit. Protocol major version 1 is the v1
+contract in this document. A peer that does not support the announced major
+version rejects the handshake with \code{unsupported}; it must not continue with
+incompatible message semantics.
 
 \code{wake} is optional and, when present, is a Boolean. An omitted value means
 \code{false}; any other type is invalid. When \code{true}, the host must send periodic
@@ -1376,7 +1379,7 @@ are defined in the \link[=jdv_query_spec]{query specification}.\tabular{lll}{
    \code{boolean} \tab  \tab \code{is_true}, \code{is_false} \cr
    \code{integer}, \code{number} \tab  \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
    \code{string} \tab  \tab \code{contains}, \code{starts_with}, \code{ends_with}, \code{text_equals} \cr
-   \code{factor} \tab \code{levels}, \code{ordered} \tab The text operators, and \verb{in} \cr
+   \code{categorical} \tab \code{levels}, \code{ordered} \tab The text operators, and \verb{in} \cr
    \code{date} \tab  \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
    \code{datetime} \tab \code{tz} \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
    \code{int64} \tab  \tab \code{eq}, \code{between} \cr
@@ -1388,22 +1391,21 @@ are defined in the \link[=jdv_query_spec]{query specification}.\tabular{lll}{
 Every column type also accepts \code{is_na} when a valid missingness mask is
 available. A client decides what it can do with a column from \code{type},
 \code{filterable}, \code{sortable}, and the grid \code{capabilities} alone. The schema's
-\code{class} field is informational: a client may use it as a display hint, such
-as for an input placeholder, but must not use it to infer semantics. Which R
-classes produce which \code{type} is an implementation detail described, as
-informative text, in the R column mapping section of
-\link[=jdv_query_spec]{query specification}, and can change without a
-protocol version change.
+\code{native_type} field is a producer-defined array of display strings. A client
+may show those strings as a hint but must not infer semantics from them. How
+R vectors map to protocol types is described, as informative text, in the R
+column mapping section of \link[=jdv_query_spec]{query specification}, and
+can change without a protocol version change.
 
 A client that receives a \code{type} it does not know must treat the column as
 display-only, exactly like \code{other}: it follows the column's \code{sortable} for
 sorting, offers no value-based filter, and uses only \code{is_na}. It must not
-fail, hide the column, or guess from \code{class}. Because of this rule, a new
-\code{type} can be added without changing the protocol major version. For the same
-reason, a later release may add operators or operand forms to a known type; a
-client offers only the operators it knows for that type and must be prepared
-for the server to answer a request with an \code{unsupported} error, which is an
-ordinary failure of that request and not a protocol violation.
+fail, hide the column, or guess from \code{native_type}. Because of this rule, a
+new \code{type} can be added without changing the protocol major version. For the
+same reason, a later release may add operators or operand forms to a known
+type; a client offers only the operators it knows for that type and must be
+prepared for the server to answer a request with an \code{unsupported} error,
+which is an ordinary failure of that request and not a protocol violation.
 }
 
 \section{Column payloads}{
@@ -1411,11 +1413,12 @@ ordinary failure of that request and not a protocol violation.
 
 Column identity is its zero-based \code{position}; \code{name} is display metadata and
 may be empty, duplicated, or otherwise unusual. A schema entry includes
-\code{position}, \code{name}, \code{type}, \code{class}, \code{sortable}, and \code{filterable}. Factor
-schemas also include \code{levels} and \code{ordered}; datetime schemas include \code{tz};
-duration schemas include \code{units}. Unknown optional schema fields must be
-ignored by clients so future schema extensions remain compatible; the Column
-types section defines how to treat an unknown \code{type} value.
+\code{position}, \code{name}, \code{type}, \code{native_type}, \code{sortable}, and \code{filterable}.
+Categorical schemas also include \code{levels} and \code{ordered}; datetime schemas
+include \code{tz}; duration schemas include \code{units}. Unknown optional schema
+fields must be ignored by clients so future schema extensions remain
+compatible; the Column types section defines how to treat an unknown \code{type}
+value.
 
 A Snapshot column payload is columnar. Channel arrays are omitted when
 absent:
@@ -1428,7 +1431,7 @@ absent:
 \}
 }\if{html}{\out{</div>}}
 
-\code{values}, \code{display}, \code{sortKey}, \code{special}, and \code{na}, when present, have one
+\code{values}, \code{display}, \code{sort_key}, \code{special}, and \code{na}, when present, have one
 entry for each row in the payload. \code{na} is sent whenever its extraction
 succeeds and is the authoritative missingness mask; clients must not infer
 missingness from display text. If a channel fails, that channel may be absent
@@ -1441,8 +1444,8 @@ channel-specific messages when errors are present. Snapshot columns include
 Snapshot \code{data.columns} entries are bare channel objects. In a Paged
 response, each selected column is wrapped as \verb{\{ "schema": ..., "data": ..., "errors": ... \}}, preserving the page-time schema and channel diagnostics.
 The \code{data} object inside that wrapper uses the same channel format as a
-Snapshot column. Paged responses never include \code{sortKey}; sorting remains on
-the R side.
+Snapshot column. Paged responses never include \code{sort_key}; sorting remains on
+the producer side.
 
 The following encoding rules apply:
 \itemize{
@@ -1462,22 +1465,20 @@ preserve exact integer precision. \code{na} identifies missing entries. The
 from values, using \code{"NA"} for missing entries. A class-specific format method
 may produce different display text, including a different missing label, in
 which case the channel is retained.
-\item \code{string} and \code{factor} values are strings. The \code{display} channel may be omitted
-under the same equality and missing-label rule. Factor order and labels come
+\item \code{string} and \code{categorical} values are strings. The \code{display} channel may be omitted
+under the same equality and missing-label rule. Categorical order and labels come
 from \code{levels} and \code{ordered} in the schema.
 \item \code{date} values are ISO \code{YYYY-MM-DD} strings. \code{datetime} values are ISO
 timestamp strings; the schema's \code{tz} records the source time-zone setting.
-\item Snapshot \code{sortKey} is present for sortable non-primitive types and encodes the
-R ordering semantics agreed in \link[=jdv_query_spec]{query specification}, including collation,
-factor level order, and \code{integer64} order. It may be omitted for plain
-boolean, integer, number, and duration columns whose ordering is recovered from \code{values}
-and \code{special}. A \code{null} sortKey is ordered after every non-null key,
-regardless of the \code{na} mask. Paged rows never include sort keys.
-\item \code{row_index} always reports original one-based R row numbers. Snapshot
-\code{row_names} and Paged page \code{row_names} contain values only for explicit row
-names; otherwise the field is \code{null}. Automatic row names are not materialized
-as a separate channel. A Paged \code{view/open} descriptor has \code{row_names: null};
-requested explicit names arrive with the page.
+\item Snapshot \code{sort_key} is present when a value's ordering cannot be recovered
+from its \code{values} and \code{special} entries. It carries the producer's ordering
+key; consumers compare keys rather than recomputing a producer's native
+ordering. A \code{null} sort key is ordered after every non-null key, regardless
+of the \code{na} mask. Paged rows never include sort keys.
+\item \code{source_row} always reports zero-based positions in original source order.
+Snapshot \code{row_labels} and Paged page \code{row_labels} contain one label per row
+when supplied; otherwise the field is \code{null}. A Paged \code{view/open} descriptor
+has \code{row_labels: null}; labels arrive with the page.
 }
 
 The cJSON writer first tries a 15-significant-digit representation for a
@@ -1491,17 +1492,17 @@ across a wide exponent range. Negative zero is written as \code{0}, without its
 sign.
 
 Snapshot payloads contain all table rows in one \code{data} object. Paged payloads
-contain only the requested row slice. Paged display formatting is performed
-on the requested slice, so text labels may differ from a Snapshot formatted
-across the whole column. The protocol guarantees matching sort and filter
-semantics, not identical display strings. For data frames, row slicing is
-performed per column using \code{x[[j]]} followed by that column's \code{[} method. It
-does not call table-level \code{[}. For matrices, slicing uses \code{x[rows, j]}.
-Source classes are preserved through slicing; jdv does not \code{\link[base:unclass]{base::unclass()}}
-or coerce a column before its subset method runs. Filtering and sorting use
-full column semantics before the requested rows are sliced. See
-\link[=jdv_query_spec]{query specification} for the detailed source and query
-contract.
+contain only the requested row slice. In the R producer, Paged display
+formatting is performed on the requested slice, so text labels may differ
+from a Snapshot formatted across the whole column. The protocol guarantees
+matching sort and filter semantics, not identical display strings. For data
+frames, the R producer slices each column using \code{x[[j]]} followed by that
+column's \code{[} method. It does not call table-level \code{[}. For matrices, it
+slices with \code{x[rows, j]}. Source classes are preserved through R slicing; jdv
+does not \code{\link[base:unclass]{base::unclass()}} or coerce a column before its subset method runs.
+Filtering and sorting use full column semantics before the requested rows are
+sliced. See \link[=jdv_query_spec]{query specification} for the detailed
+source and query contract.
 }
 
 \section{Filter and sort request shape}{

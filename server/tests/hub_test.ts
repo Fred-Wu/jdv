@@ -105,9 +105,8 @@ function openTable(connection: MemoryConnection, generation = 1): void {
     generation,
     kind: "grid",
     access: "snapshot",
-    encoding: "r-json",
+    encoding: "jdv-json",
     title: "Snapshot",
-    mode: "snapshot",
     nrow: 1,
     ncol: 1,
     columns: [{
@@ -139,7 +138,7 @@ function openTree(
     generation,
     kind: "tree",
     access: "random",
-    encoding: "r-json",
+    encoding: "jdv-json",
     title: "Tree fixture",
     capabilities: {
       seek: true,
@@ -390,6 +389,15 @@ Deno.test("hello validates required producer and runtime metadata", async () => 
     { name: "test", version: null },
     { name: "test", version: "1", runtime: null },
     { name: "test", version: "1", runtime: { name: "rt" } },
+    { name: "", version: "1" },
+    { name: "x".repeat(257), version: "1" },
+    { name: "é".repeat(129), version: "1" },
+    { name: "test", version: "v".repeat(257) },
+    {
+      name: "test",
+      version: "1",
+      runtime: { name: "rt", version: "v".repeat(257) },
+    },
   ];
   for (const producer of producerValues) {
     const hub = new Hub();
@@ -409,6 +417,34 @@ Deno.test("hello validates required producer and runtime metadata", async () => 
     assertEquals(JSON.parse(connection.writes[0]).error.code, "unsupported");
     hub.close();
   }
+});
+
+Deno.test("hello accepts producer metadata at the UTF-8 byte boundaries", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  const browser = new MemoryBrowser();
+  hub.acceptProducer(connection);
+  hub.attach(browser);
+  const producer = {
+    name: "x".repeat(256),
+    version: "v",
+    runtime: { name: "é".repeat(128), version: "z".repeat(256) },
+  };
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "metadata-boundary",
+      producer,
+      limits: { ...DEFAULT_LIMITS },
+    },
+  });
+  await browser.nextMessage((message) =>
+    message.type === "session/open" && message.session === "metadata-boundary"
+  );
+  assertEquals(connection.closed, false);
+  hub.close();
 });
 
 Deno.test("hello rejects an invalid wake value", async () => {
@@ -709,7 +745,7 @@ Deno.test("Hub relays a bounded Arrow IPC body in one browser binary frame", asy
       type: "request",
       id: "binary-page",
       session: "r-6100-1",
-      method: "table/rows",
+      method: "grid/rows",
       params: { view: "table-1", generation: 1, max_bytes: 5 },
     });
     const request = await connection.nextWrite(0);
@@ -771,7 +807,7 @@ Deno.test("Hub relays an empty binary body for a zero-byte request budget", asyn
       type: "request",
       id: "empty-binary",
       session: "r-6102-1",
-      method: "table/rows",
+      method: "grid/rows",
       params: { view: "table-1", generation: 1, max_bytes: 0 },
     });
     const request = await connection.nextWrite(0);
@@ -820,7 +856,7 @@ Deno.test("Hub rejects a binary response for a different view generation", async
       type: "request",
       id: "wrong-generation",
       session: "r-6110-1",
-      method: "table/rows",
+      method: "grid/rows",
       params: { view: "table-1", generation: 1 },
     });
     const request = await connection.nextWrite(0);
@@ -866,7 +902,7 @@ Deno.test("Hub drains a cancelled binary body before the next JSONL response", a
     type: "request",
     id: "cancelled-binary",
     session: "r-6111-1",
-    method: "table/rows",
+    method: "grid/rows",
     params: { view: "table-1", generation: 1, max_bytes: 2 },
   });
   const binaryRequest = await connection.nextWrite(0);
@@ -883,7 +919,7 @@ Deno.test("Hub drains a cancelled binary body before the next JSONL response", a
     type: "request",
     id: "after-binary",
     session: "r-6111-1",
-    method: "table/rows",
+    method: "grid/rows",
     params: { view: "table-1", generation: 1, offset: 1, limit: 1 },
   });
   const nextRequest = await connection.nextWrite(2);
@@ -1250,8 +1286,7 @@ Deno.test("object/open registers the child from R's notification even after brow
     generation: 1,
     kind: "grid",
     access: "snapshot",
-    encoding: "r-json",
-    mode: "snapshot",
+    encoding: "jdv-json",
     title: "Child table",
     parent: "tree-root",
     nrow: 1,
@@ -1307,8 +1342,7 @@ const CHILD_DESCRIPTOR = {
   generation: 1,
   kind: "grid",
   access: "snapshot",
-  encoding: "r-json",
-  mode: "snapshot",
+  encoding: "jdv-json",
   parent: "tree-root",
   nrow: 1,
   ncol: 1,
@@ -1451,7 +1485,7 @@ Deno.test("view lineage rejects self-parent and cycles before cascade close", as
     generation: 1,
     kind: "tree",
     access: "random",
-    encoding: "r-json",
+    encoding: "jdv-json",
     parent: "tree-a",
     path: [],
     capabilities: {
@@ -1477,7 +1511,7 @@ Deno.test("view lineage rejects self-parent and cycles before cascade close", as
     generation: 2,
     kind: "tree",
     access: "random",
-    encoding: "r-json",
+    encoding: "jdv-json",
     parent: "tree-b",
     path: [],
     capabilities: {
@@ -1494,7 +1528,7 @@ Deno.test("view lineage rejects self-parent and cycles before cascade close", as
     generation: 1,
     kind: "tree",
     access: "random",
-    encoding: "r-json",
+    encoding: "jdv-json",
     parent: "tree-self",
     path: [],
     capabilities: {
@@ -1560,7 +1594,7 @@ Deno.test("cancelled late replies release their request slot without reaching th
     type: "request",
     id: "cancel-me",
     session: "r-2-1",
-    method: "table/rows",
+    method: "grid/rows",
     params: { view: "table-1", generation: 1, offset: 0, limit: 10 },
   });
   const request = await connection.nextWrite(0);
@@ -1605,7 +1639,7 @@ Deno.test("queued row pages coalesce and wait behind the already sent page", asy
       type: "request",
       id,
       session: "r-3-1",
-      method: "table/rows",
+      method: "grid/rows",
       params: { view: "table-1", generation: 1, offset, limit: 10 },
     });
   request("page-1", 0);
@@ -1973,8 +2007,7 @@ Deno.test("closing a child clears only that view and cancels its pending work", 
     generation: 1,
     kind: "grid",
     access: "snapshot",
-    encoding: "r-json",
-    mode: "snapshot",
+    encoding: "jdv-json",
     title: "Child",
     parent: "tree-root",
     nrow: 1,
@@ -2382,12 +2415,12 @@ Deno.test("a one-message R queue retains the latest unsent page behind a live pa
         type: "request",
         id,
         session: "r-5005-1",
-        method: "table/rows",
+        method: "grid/rows",
         params: { view: "table-1", generation: 1, offset, limit: 10 },
       });
     requestPage("live-page", 0);
     const first = await connection.nextWrite(0);
-    assertEquals(first.method, "table/rows");
+    assertEquals(first.method, "grid/rows");
     connection.inject(notification("ack", { frames: 1 }));
     requestPage("old-page", 10);
     requestPage("latest-page", 20);
@@ -2402,7 +2435,7 @@ Deno.test("a one-message R queue retains the latest unsent page behind a live pa
       message.type === "response" && message.id === "live-page"
     );
     const next = await connection.nextWrite(1);
-    assertEquals(next.method, "table/rows");
+    assertEquals(next.method, "grid/rows");
     assertEquals((next.params as JsonRecord).offset, 20);
     connection.inject(notification("ack", { frames: 2 }));
     connection.inject({ id: next.id, result: { rows: [] } });
@@ -2635,14 +2668,14 @@ Deno.test("grid cell opens validate original row selectors and tree suffixes", a
   }));
   await browser.nextMessage((message) => message.type === "view/open");
   try {
-    const cell = { kind: "cell", row_index: 205, column: 0 };
+    const cell = { kind: "cell", source_row: 205, column: 0 };
     const invalid = [
       { method: "object/children", path: [cell] },
       { method: "object/open", path: [] },
-      { method: "object/open", path: [{ ...cell, row_index: 0 }] },
-      { method: "object/open", path: [{ ...cell, row_index: 501 }] },
-      { method: "object/open", path: [{ ...cell, row_index: 1.5 }] },
-      { method: "object/open", path: [{ ...cell, row_index: "205" }] },
+      { method: "object/open", path: [{ ...cell, source_row: -1 }] },
+      { method: "object/open", path: [{ ...cell, source_row: 501 }] },
+      { method: "object/open", path: [{ ...cell, source_row: 1.5 }] },
+      { method: "object/open", path: [{ ...cell, source_row: "205" }] },
       { method: "object/open", path: [{ ...cell, column: 1 }] },
       { method: "object/open", path: [{ ...cell, column: 2 }] },
       { method: "object/open", path: [{ ...cell, column: -1 }] },
@@ -3849,9 +3882,8 @@ function trackedOpen(
     generation,
     kind: "grid",
     access: "snapshot",
-    encoding: "r-json",
+    encoding: "jdv-json",
     title: "Snapshot",
-    mode: "snapshot",
     reason: generation === 1 ? "register" : "tracked",
     nrow: 1,
     ncol: 1,

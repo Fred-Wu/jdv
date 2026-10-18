@@ -96,11 +96,10 @@ test_that("registration returns snapshots and reuses titled generations", {
       "generation",
       "title",
       "reason",
-      "mode",
       "collation",
       "nrow",
       "ncol",
-      "row_names",
+      "row_labels",
       "columns",
       "data"
     )
@@ -108,7 +107,7 @@ test_that("registration returns snapshots and reuses titled generations", {
   expect_null(open$params$table)
   expect_identical(open$params$kind, "grid")
   expect_identical(open$params$access, "snapshot")
-  expect_identical(open$params$encoding, "r-json")
+  expect_identical(open$params$encoding, "jdv-json")
   expect_identical(
     open$params$capabilities,
     setNames(
@@ -126,9 +125,9 @@ test_that("registration returns snapshots and reuses titled generations", {
     )
   )
   expect_null(open$params$total_rows)
-  expect_identical(open$params$mode, "snapshot")
+  expect_null(open$params$mode)
   expect_length(open$params$data$columns, 2)
-  expect_identical(open$params$data$row_index, list(1L, 2L))
+  expect_identical(open$params$data$source_row, list(0L, 1L))
   expect_named(first, c("id", "generation", "open", "notifications"))
   expect_length(first$notifications, 0)
 
@@ -136,7 +135,7 @@ test_that("registration returns snapshots and reuses titled generations", {
   second_open <- rpc_json(second$open)
   expect_identical(second$id, first$id)
   expect_identical(second_open$params$generation, 2L)
-  expect_identical(second_open$params$mode, "paged")
+  expect_null(second_open$params$mode)
   expect_identical(second_open$params$access, "random")
   expect_named(
     second_open$params$capabilities,
@@ -173,7 +172,7 @@ test_that("registration returns snapshots and reuses titled generations", {
 
 test_that("legacy table RPC names are not aliases for view requests", {
   old_field <- rpc_json(jdv_rpc(paste0(
-    '{"id":1,"method":"table/rows","params":',
+    '{"id":1,"method":"grid/rows","params":',
     '{"table":"v-1","generation":1}}'
   )))
   old_method <- rpc_json(jdv_rpc(paste0(
@@ -200,9 +199,11 @@ test_that("view/schema preserves schema arrays for factors", {
   )$result$columns
 
   expect_identical(schema_columns, open_columns)
-  expect_identical(open_columns[[1]]$class, list("factor"))
+  expect_identical(open_columns[[1]]$native_type, list("factor"))
+  expect_identical(open_columns[[1]]$type, "categorical")
   expect_identical(open_columns[[1]]$levels, list("only"))
-  expect_identical(open_columns[[2]]$class, list("factor"))
+  expect_identical(open_columns[[2]]$native_type, list("factor"))
+  expect_identical(open_columns[[2]]$type, "categorical")
   expect_identical(open_columns[[2]]$levels, list())
 })
 
@@ -253,7 +254,7 @@ test_that("RPC pages preserve schema, channel errors, and source row indices", {
     {
       registered <- register_view(x, mode = "paged")
       reply <- rpc_call(
-        "table/rows",
+        "grid/rows",
         list(
           view = registered$id,
           generation = 1,
@@ -264,7 +265,7 @@ test_that("RPC pages preserve schema, channel errors, and source row indices", {
         )
       )
       expect_null(reply$error)
-      expect_identical(reply$result$data$row_index, list(3L, 2L))
+      expect_identical(reply$result$data$source_row, list(2L, 1L))
       expect_identical(reply$result$data$columns[[2]]$schema$name, "custom")
       expect_true(is.list(reply$result$data$columns[[2]]$errors))
       expect_identical(
@@ -293,7 +294,7 @@ test_that("RPC retains typed query error details", {
       registered <- register_view(x, mode = "paged")
       fail <- TRUE
       response <- rpc_call(
-        "table/rows",
+        "grid/rows",
         list(
           view = registered$id,
           generation = 1,
@@ -301,8 +302,11 @@ test_that("RPC retains typed query error details", {
         )
       )
       expect_rpc_code(response, "producer_error")
-      expect_identical(response$error$message, "Could not compute sortKey.")
-      expect_identical(response$error$details$errors$sortKey, "sort key failed")
+      expect_identical(response$error$message, "Could not compute sort_key.")
+      expect_identical(
+        response$error$details$errors$sort_key,
+        "sort key failed"
+      )
     }
   )
 })
@@ -335,7 +339,7 @@ test_that(
     )
     expect_rpc_code(
       rpc_call(
-        "table/rows",
+        "grid/rows",
         list(
           view = registered$id,
           generation = 1,
@@ -477,7 +481,7 @@ test_that(
     expect_identical(rpc_json(first$open)$params$collation, "locale")
     x$text <- c("changed", "values")
     page <- rpc_call(
-      "table/rows",
+      "grid/rows",
       list(view = first$id, generation = 1, limit = 2)
     )
     expect_identical(page$result$data$columns[[1]]$data$values, list("z", "a"))
@@ -501,20 +505,20 @@ test_that("the page row cap is captured when a paged table is registered", {
   x <- data.frame(value = 1:5)
   first <- register_view(x, title = "row-cap", mode = "paged")
   first_page <- rpc_call(
-    "table/rows",
+    "grid/rows",
     list(view = first$id, generation = 1, limit = 5)
   )
   expect_identical(first_page$result$limit, 2L)
 
   options(jdv.max_page_rows = 4)
   still_capped <- rpc_call(
-    "table/rows",
+    "grid/rows",
     list(view = first$id, generation = 1, limit = 5)
   )
   expect_identical(still_capped$result$limit, 2L)
   refreshed <- register_view(x, title = "row-cap", mode = "paged")
   refreshed_page <- rpc_call(
-    "table/rows",
+    "grid/rows",
     list(view = refreshed$id, generation = 2, limit = 5)
   )
   expect_identical(refreshed_page$result$limit, 4L)
@@ -530,7 +534,7 @@ test_that("auto registration budgets compact zero-column row indices", {
   )
   registered <- register_view(x, mode = "auto")
   open <- rpc_json(registered$open)
-  expect_identical(open$params$mode, "paged")
+  expect_null(open$params$mode)
   expect_identical(open$params$nrow, 800000000L)
   expect_identical(open$params$ncol, 0L)
   expect_true(is.environment(get(
@@ -558,14 +562,14 @@ test_that("row pages shrink to fit the configured message bound", {
     {
       registered <- register_view(x, mode = "paged")
       response <- jdv_rpc(rpc_request(
-        "table/rows",
+        "grid/rows",
         list(view = registered$id, generation = 1, limit = 30)
       ))
       expect_lte(nchar(response, type = "bytes"), 2048)
       result <- rpc_json(response)$result
       expect_gt(result$limit, 0)
       expect_lt(result$limit, 30)
-      expect_length(result$data$row_index, result$limit)
+      expect_length(result$data$source_row, result$limit)
       expect_length(result$data$columns[[1]]$data$display, result$limit)
       expect_identical(calls, 2L)
     }
@@ -580,7 +584,7 @@ test_that("public calls leave last value and process options intact", {
   set.seed(234)
   rng_before <- .Random.seed
   registered <- register_view(data.frame(x = 1:3), mode = "paged")
-  rpc_call("table/rows", list(view = registered$id, generation = 1))
+  rpc_call("grid/rows", list(view = registered$id, generation = 1))
   expect_identical(.Last.value, previous)
   expect_identical(options(), options_before)
   expect_identical(.Random.seed, rng_before)

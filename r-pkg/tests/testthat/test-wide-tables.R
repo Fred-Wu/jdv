@@ -27,7 +27,7 @@ test_that("wide tables register and explicitly selected columns render", {
       if (mode == "paged") {
         request <- list(
           id = 1,
-          method = "table/rows",
+          method = "grid/rows",
           params = list(
             view = registered$id,
             generation = 1,
@@ -40,8 +40,8 @@ test_that("wide tables register and explicitly selected columns render", {
         )
         expect_null(response$error)
         expect_identical(
-          unlist(response$result$data$row_index, use.names = FALSE),
-          1
+          unlist(response$result$data$source_row, use.names = FALSE),
+          0
         )
         expect_identical(
           unlist(

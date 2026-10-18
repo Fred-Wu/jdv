@@ -8,8 +8,8 @@
 #'
 #' The engine operates on data frames and matrices. Columns are identified by
 #' their **zero-based positions**, so duplicate or unusual column names are
-#' valid. Returned `row_index` values are the
-#' **original one-based R row numbers**.
+#' valid. Returned `source_row` values are **zero-based positions in the
+#' original source order**. Internal R subscripts remain one-based.
 #'
 #'
 #' @section Source slicing contract:
@@ -85,7 +85,7 @@
 #' includes display, missingness, values, and sort keys; it does not compute
 #' full-column filter text.
 #'
-#' Registration does not create automatic row names or a full `row_index`
+#' Registration does not create automatic row names or a full `source_row`
 #' vector. Without a sort or filter, original row order is generated when
 #' requested. Page display extracts actual requested row slices: `x[rows, j]`
 #' for a matrix, or a class-preserving slice of a data-frame column. Display is
@@ -191,11 +191,11 @@
 #' | `and`, `or` | `op`, `args` (array of child objects) | Any valid children. |
 #' | `not` | `op`, `arg` (one child object) | Any valid child. |
 #' | `is_na` | `op`, `col` | Any column with a valid missingness channel. |
-#' | `contains`, `starts_with`, `ends_with`, `text_equals` | `op`, `col`, `value` | `string`, `factor`. |
+#' | `contains`, `starts_with`, `ends_with`, `text_equals` | `op`, `col`, `value` | `string`, `categorical`. |
 #' | `eq`, `ne`, `lt`, `le`, `gt`, `ge` | `op`, `col`, `value` | `integer`, `number`, `duration`, `date`, `datetime`; `int64` supports only `eq`. |
 #' | `between` | `op`, `col`, `lower`, `upper` | `integer`, `number`, `duration`, `date`, `datetime`, `int64`. |
 #' | `is_true`, `is_false` | `op`, `col` | `boolean`. |
-#' | `in` | `op`, `col`, `values` (array of labels) | `factor`. |
+#' | `in` | `op`, `col`, `values` (array of labels) | `categorical`. |
 #'
 #' Example:
 #'
@@ -235,17 +235,17 @@
 #' @section Text:
 #'
 #'
-#' Text comparison folds **ASCII A-Z only** to a-z with [base::chartr()] after
-#' UTF-8 conversion. Non-ASCII characters retain their case: `Ä` and `ä` remain
-#' distinct. Matching uses fixed literal strings, not regular expressions.
-#' Brackets, dots, and asterisks have no pattern meaning. An empty needle
-#' matches every nonmissing text for contains/prefix/suffix operations;
-#' `text_equals` with an empty value matches only an empty source string.
+#' Text comparison folds **ASCII A-Z only** to a-z. Non-ASCII characters retain
+#' their case: `Ä` and `ä` remain distinct. Matching uses fixed literal strings,
+#' not regular expressions. Brackets, dots, and asterisks have no pattern
+#' meaning. An empty needle matches every nonmissing text for
+#' contains/prefix/suffix operations; `text_equals` with an empty value matches
+#' only an empty source string.
 #'
 #' Text sources are:
 #'
 #' - String: the original, untruncated character value.
-#' - Factor: its label.
+#' - Categorical: its label.
 #'
 #' Number, integer, Boolean, duration, date, datetime, and integer64 columns do
 #' not support text operators, and neither do `other` columns. List, matrix, and
@@ -259,7 +259,7 @@
 #'
 #'
 #' There is no dedicated blank operator; clients combine existing ones. A
-#' text-filterable column has a schema `type` of `string` or `factor` and
+#' text-filterable column has a schema `type` of `string` or `categorical` and
 #' `filterable` true. For such a column, blank (missing or empty string) is
 #'
 #' ```json
@@ -374,8 +374,8 @@
 #' (the jdv package) assigns a schema `type` to a column, and it is not part of
 #' the protocol. Which R classes and vectors map to which `type` can change from
 #' release to release without a protocol version change. Clients decide behavior
-#' from `type`, `filterable`, and `sortable`, never from the R class names in
-#' the schema's `class` field; see the Column types section of [jdv_spec].
+#' from `type`, `filterable`, and `sortable`, never from the producer-defined
+#' `native_type` display strings; see the Column types section of [jdv_spec].
 #'
 #' | R column | Schema `type` | Notes |
 #' | --- | --- | --- |
@@ -383,7 +383,7 @@
 #' | Integer vector without a class | `integer` | |
 #' | Double vector without a class | `number` | |
 #' | Character vector without a class | `string` | |
-#' | Factor, including ordered factors | `factor` | `levels` and `ordered` come from the factor. |
+#' | Factor, including ordered factors | `categorical` | `levels` and `ordered` come from the factor. |
 #' | `Date` | `date` | |
 #' | `POSIXct` and `POSIXlt` | `datetime` | `tz` is the time-zone setting of the vector. |
 #' | [base::difftime()], including classes that extend it such as `hms` | `duration` | `units` is the `units` attribute (always `secs` for `hms`). |
@@ -394,10 +394,15 @@
 #' | Complex and raw vectors | `other` | Not sortable and not filterable. |
 #' | Any other S3 or S4 class | `other` | Displayed through [base::format()] and sorted through [base::xtfrm()] when sortable; answers `is_na`. |
 #'
+#' The current R producer fills `native_type` with the character vector returned
+#' by [base::class()]. This mapping is informative only; clients treat each
+#' string as display text and infer no behavior from it. The R producer maps
+#' explicit row names to `row_labels` and sends `null` for automatic row names.
+#'
 #' An atomic vector wrapped only by [base::I()] is classified by its contents,
 #' so `I(1:3)` is an `integer` column. An `I()` list is an `other` column that
 #' is sortable and drillable but not filterable. `I()` around a classed vector
-#' keeps the classification of that class, so an `I()` factor is a `factor`
+#' keeps the classification of that class, so an `I()` factor is `categorical`
 #' column and an `I()` `difftime` is a `duration` column.
 #'
 #' The `drillable` field of the schema is true for unclassed list, `AsIs` list,
@@ -452,8 +457,8 @@
 #' | `total_unfiltered` | Original row count. |
 #' | `offset` | Validated requested offset. |
 #' | `limit` | Effective row limit after clamping. |
-#' | `data$row_index` | Original one-based row numbers for this page. |
-#' | `data$row_names` | Selected explicit row-name strings, or `NULL` for automatic/absent row names. |
+#' | `data$source_row` | Zero-based original source positions for this page. |
+#' | `data$row_labels` | Selected explicit row-name strings, or `NULL` for automatic/absent row names. |
 #' | `data$columns` | Selected columns in requested order; each is an extraction result containing `schema`, `data`, and `errors`. |
 #'
 #' Page column data requests display, missingness, and values only; it does not
@@ -471,10 +476,10 @@
 #' `schema`, `data`, and `errors`; no failed channel result enters the cache.
 #' The initial holder schema is not overwritten by a later extraction result.
 #'
-#' Snapshot wire encoding may omit `display` for string, factor, and integer64
-#' columns only when every nonmissing display value equals its semantic value
-#' and every missing display value is the standard string `"NA"`. The
-#' missingness mask then reconstructs the omitted missing labels. A
+#' Snapshot wire encoding may omit `display` for string, categorical, and
+#' integer64 columns only when every nonmissing display value equals its
+#' semantic value and every missing display value is the standard string `"NA"`.
+#' The missingness mask then reconstructs the omitted missing labels. A
 #' class-specific formatter that uses another missing label keeps its `display`
 #' channel, including when all rows are missing. Zero-row columns use the same
 #' equality checks, with empty comparisons treated as equal.
@@ -506,17 +511,19 @@
 #' to double.
 #'
 #' For supported inputs with valid required channels, Paged and Snapshot must
-#' return identical original row indices for every sort/filter request. Display
-#' strings may differ because R format methods can inspect the whole vector or
-#' the requested page when choosing a format.
+#' return identical original source-row positions for every sort/filter request.
+#' Display strings may differ because R format methods can inspect the whole
+#' vector or the requested page when choosing a format.
 #'
-#' The version 1 query fixture ships with the package. Its `fold` entries record
-#' ASCII folding. Each `cases` entry describes typed source columns and
-#' `queries` with expected original one-based row indices. Number `special`
-#' entries reconstruct nonfinite source values; JSON null means missing data.
-#' Factor columns include levels and orderedness; datetime columns include
-#' timezone metadata; duration columns include `units`, and an `r` of `hms`
-#' marks a vector with the `c("hms", "difftime")` class structure.
+#' The version 1 query fixture ships with the package as shared conformance data
+#' for query semantics. Its `fold` entries record ASCII folding. Each `cases`
+#' entry describes typed source columns and `queries` with expected zero-based
+#' positions in original source order. An `r` member is only an R test-harness
+#' construction hint, not a wire field. Number `special` entries reconstruct
+#' nonfinite source values; JSON null means missing data. Factor columns include
+#' levels and orderedness; datetime columns include timezone metadata; duration
+#' columns include `units`, and an `r` of `hms` marks a vector with the
+#' `c("hms", "difftime")` class structure.
 #'
 #' `example-other` uses a synthetic `query_record` class factory: its fixture
 #' `values` array supplies the numeric constructor input, with JSON null

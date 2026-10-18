@@ -458,8 +458,8 @@ local({
     }
     if (scenario == "fragmented") {
       expect_identical(
-        received$responses[[1]]$result$data$row_index,
-        list(1L, 2L)
+        received$responses[[1]]$result$data$source_row,
+        list(0L, 1L)
       )
     }
 
@@ -518,8 +518,8 @@ local({
     skip_if_not_installed("callr")
     received <- with_mock_transport("fragmented", data.frame(value = 11:13))
     expect_identical(
-      received$responses[[1]]$result$data$row_index,
-      list(1L, 2L)
+      received$responses[[1]]$result$data$source_row,
+      list(0L, 1L)
     )
   })
 
@@ -1394,8 +1394,8 @@ local({
             )
             expect_identical(received$open$method, "view/open")
             expect_identical(
-              received$responses[[1L]]$result$data$row_index,
-              list(1L, 2L)
+              received$responses[[1L]]$result$data$source_row,
+              list(0L, 1L)
             )
             expect_length(.jdv_state$queue, 0L)
           },

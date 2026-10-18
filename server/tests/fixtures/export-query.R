@@ -62,9 +62,9 @@ column_from_fixture_values <- function(column) {
     }
     return(out)
   }
-  if (type %in% c("string", "factor")) {
+  if (type %in% c("string", "categorical")) {
     out <- vapply(values, function(v) v %||% NA_character_, character(1L))
-    if (type == "factor") {
+    if (type == "categorical") {
       return(factor(
         out,
         levels = unlist(column$levels),
@@ -174,7 +174,7 @@ paged_holder <- getFromNamespace("paged_table", "jdv")(reverse_numeric)
 reverse_numeric_paged <- query_indices(
   paged_holder,
   sort = list(list(col = 0L, desc = FALSE))
-)
+) - 1L
 
 submillisecond <- as.POSIXct(
   1577836800 + c(0.000001, 0.000002),
@@ -207,7 +207,7 @@ ancient_date_holder <- getFromNamespace("paged_table", "jdv")(
 ancient_date_paged <- query_indices(
   ancient_date_holder,
   filter = list(op = "lt", col = 0L, value = "1970-01-01")
-)
+) - 1L
 
 output <- list(
   cases = snapshots,

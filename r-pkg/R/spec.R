@@ -23,9 +23,10 @@
 #' - The only supported envelope encoding is `json`; the only supported compression
 #'   is `none`. Both fields may be omitted to select those defaults. Unknown values
 #'   produce an `unsupported` error.
-#' - A view id is a string. Column positions and sequential `first_row` offsets are
-#'   zero-based. `row_index` is the original one-based R row number, including
-#'   after filtering and sorting.
+#' - A view id is a string. Column positions, `source_row` values, and sequential
+#'   `first_row` offsets are zero-based. `source_row` is the original source-row
+#'   position, including after filtering and sorting. Browser row labels display
+#'   that position plus one.
 #' - Request ids are either strings of at most 128 UTF-8 bytes or JSON integer
 #'   literal tokens from 0 through `2^53 - 1`. Fractional and exponent-form numeric
 #'   ids are rejected, even when their mathematical value is integral. The same
@@ -36,7 +37,7 @@
 #'   compatibility. Filter, sort, and `stream/next` parameter objects remain
 #'   strict. Duplicate object keys are rejected. Unknown methods return
 #'   `method_not_found`.
-#' - The page request method remains `table/rows` and identifies its owner with
+#' - The page request method is `grid/rows` and identifies its owner with
 #'   `params.view`. Lifecycle methods use the view names listed below; the former
 #'   `table/open`, `table/closed`, `table/schema`, and `table/close` names are not
 #'   aliases.
@@ -133,7 +134,7 @@
 #' columns retains its source and registration fingerprint in R for cell
 #' inspection. Other Snapshots retain only table metadata. The host is
 #' responsible for caching the snapshot data in both cases, and neither has a
-#' `table/rows` endpoint. Paged registration retains the source and its initial
+#' `grid/rows` endpoint. Paged registration retains the source and its initial
 #' schema in R and returns schema and dimensions in `open`; rows are computed on
 #' demand.
 #'
@@ -167,7 +168,7 @@
 #' `mode = "auto"` selects Snapshot only when both the cell estimate
 #' `nrow * max(1, ncol)` and a deterministic byte estimate fit their thresholds.
 #' The byte threshold is `min(jdv.snapshot_max_bytes, jdv.max_message_bytes)`.
-#' The cell estimate counts `row_index` even for a zero-column table. Byte
+#' The cell estimate counts `source_row` even for a zero-column table. Byte
 #' estimation samples at most 256 evenly spaced rows; snapshot construction then
 #' checks actual source string lengths and generated channel sizes. A sampled
 #' estimate can therefore miss a large value, in which case automatic mode
@@ -188,10 +189,9 @@
 #'     "generation": 1,
 #'     "title": "example",
 #'     "reason": "register",
-#'     "mode": "paged",
 #'     "kind": "grid",
 #'     "access": "random",
-#'     "encoding": "r-json",
+#'     "encoding": "jdv-json",
 #'     "capabilities": {
 #'       "seek": true,
 #'       "sort": true,
@@ -205,7 +205,7 @@
 #'     "collation": "C",
 #'     "nrow": 100,
 #'     "ncol": 2,
-#'     "row_names": null,
+#'     "row_labels": null,
 #'     "columns": []
 #'   }
 #' }
@@ -215,17 +215,17 @@
 #' and is not passed to [jdv_rpc()]; [jdv_register()] queues it for the host to
 #' deliver (see the Notification delivery section). `kind` is `grid`; `access`
 #' is `snapshot` or `random` for Snapshot or Paged mode, respectively; and
-#' `encoding` is `r-json`. Every descriptor includes all eight `capabilities`
+#' `encoding` is `jdv-json`. Every descriptor includes all eight `capabilities`
 #' fields shown for a grid: `seek`, `sort`, `filter`, `known_total`, and
 #' `refresh` are `true`; `next` is `false`; `track` is `true` only for a view
 #' that has a `tracking` field whose state is not `"lost"` (see Binding
 #' tracking). Grid `children` is `true` if and only if at least one column has
 #' `drillable: true`. `refresh` tells the host that `view/refresh` is accepted.
 #' Tree descriptors use `kind: "tree"`, `access: "random"`,
-#' `encoding: "r-json"`, and capabilities `seek: true`, `sort: false`,
+#' `encoding: "jdv-json"`, and capabilities `seek: true`, `sort: false`,
 #' `filter: false`, `known_total: true`, `next: false`, `children: true`,
 #' `refresh: true`, and `track` as for a grid. Tree descriptors omit grid-only
-#' fields (`mode`, `nrow`, `ncol`, `row_names`, `columns`, and `data`). A tree
+#' fields (`nrow`, `ncol`, `row_labels`, `columns`, and `data`). A tree
 #' descriptor includes an empty `path` at its root. A child descriptor may
 #' include `parent`, the parent view id. `title` is optional. `reason` says why
 #' the descriptor was sent (see below). A tree descriptor also has `class`, a
@@ -238,7 +238,7 @@
 #' | `view`, `generation`, `kind`, `access`, `encoding`, `capabilities` | Required                                 | Required                     |
 #' | `title`                                                            | Optional                                 | Optional                     |
 #' | `reason`                                                           | Always sent by R; see below              | Always sent by R; see below  |
-#' | `mode`, `collation`, `nrow`, `ncol`, `row_names`, `columns`        | Required                                 | Omitted                      |
+#' | `collation`, `nrow`, `ncol`, `row_labels`, `columns`               | Required                                 | Omitted                      |
 #' | `data`                                                             | Required for Snapshot; omitted for Paged | Omitted                      |
 #' | `path`                                                             | Omitted                                  | Required; empty for the root |
 #' | `class`, `type`                                                    | Omitted                                  | Required                     |
@@ -303,7 +303,7 @@
 #'     "path": [],
 #'     "kind": "tree",
 #'     "access": "random",
-#'     "encoding": "r-json",
+#'     "encoding": "jdv-json",
 #'     "class": ["list"],
 #'     "type": "list",
 #'     "capabilities": {
@@ -323,7 +323,7 @@
 #' ```json
 #' {
 #'   "id": 1,
-#'   "method": "table/rows",
+#'   "method": "grid/rows",
 #'   "params": {
 #'     "view": "v-1",
 #'     "generation": 1,
@@ -464,16 +464,15 @@
 #'
 #'
 #' Sequential descriptors have `kind: "grid"`, `access: "sequential"`,
-#' `encoding: "arrow-ipc"`, `mode: "sequential"`, `nrow: null`, and a known
-#' `ncol`. Only the `next` capability is true; `seek`, `sort`, `filter`,
-#' `known_total`, `children`, `refresh`, and `track` are false. Registration
-#' calls the producer's `get_schema` but never `get_next`. It moves one exported
-#' Arrow stream into native ownership. Close, replacement, eviction, parent
-#' cascade, namespace unload, and R disconnection release the stream and any
-#' carried batch exactly once. A release callback may execute R code; registry
-#' identity and generation are rechecked before publishing its result. Releases
-#' requested inside an active producer callback are deferred until that callback
-#' has finished.
+#' `encoding: "arrow-ipc"`, `nrow: null`, and a known `ncol`. Only the `next`
+#' capability is true; `seek`, `sort`, `filter`, `known_total`, `children`,
+#' `refresh`, and `track` are false. Registration calls the producer's
+#' `get_schema` but never `get_next`. It moves one exported Arrow stream into
+#' native ownership. Close, replacement, eviction, parent cascade, namespace
+#' unload, and R disconnection release the stream and any carried batch exactly
+#' once. A release callback may execute R code; registry identity and generation
+#' are rechecked before publishing its result. Releases requested inside an
+#' active producer callback are deferred until that callback has finished.
 #'
 #' `schema` contains the original logical Arrow schema recursively: `format`,
 #' `name`, `flags`, `metadata`, `metadata_encoding`, `children`, and
@@ -502,8 +501,8 @@
 #' it cannot hold an IPC stream. Offset, sorting, filtering, and count requests
 #' are rejected. The public synchronous `jdv_rpc(JSON)` entry rejects
 #' `stream/next` before consuming the producer; only the transport's private
-#' binary-capable entry can execute it. Random `table/rows` and object
-#' navigation are unavailable for sequential views.
+#' binary-capable entry can execute it. Random `grid/rows` and object navigation
+#' are unavailable for sequential views.
 #'
 #' A successful binary response carries `view`, `generation`, `first_row`,
 #' `rows_fetched`, `rows_seen`, `done`, and the reserved `transfer` object.
@@ -714,7 +713,7 @@
 #' | `view/open`       | R/host to viewer | Notification | Descriptor and, for Snapshot, all column payloads. Queued by [jdv_register()].     |
 #' | `view/schema`     | Host to R        | Request      | Current dimensions and schema.                                                     |
 #' | `stream/next`     | Host to R        | Request      | One forward-only Arrow IPC page and cursor metadata.                               |
-#' | `table/rows`      | Host to R        | Request      | One selected page from a Paged view.                                               |
+#' | `grid/rows`       | Host to R        | Request      | One selected page from a Paged view.                                               |
 #' | `object/children` | Host to R        | Request      | One page of children at a typed object path.                                       |
 #' | `object/open`     | Host to R        | Request      | Registers the captured value at a typed path as a child view.                      |
 #' | `view/refresh`    | Host to R        | Request      | Rebuilds a view from its captured value as the next generation of the same id.     |
@@ -821,27 +820,28 @@
 #' {
 #'   "view": "v-1",
 #'   "generation": 1,
-#'   "path": [{ "kind": "cell", "row_index": 205, "column": 2 }],
+#'   "path": [{ "kind": "cell", "source_row": 204, "column": 2 }],
 #'   "mode": "paged",
 #'   "collation": "C"
 #' }
 #' ```
 #'
-#' `row_index` is the original, one-based R row index, independent of sorting,
-#' filtering, and pagination. `column` is the zero-based schema position,
-#' including when column names are duplicated. `kind: "cell"` is allowed only at
-#' the start of a grid path. Remaining steps, if any, use the tree `type` forms
-#' above and are resolved within the captured cell value. The complete path,
-#' including its cell step, contains at most 32 steps. Grid `object/open`
-#' requires `capabilities.children: true` and `columns[column].drillable: true`;
-#' malformed selectors or non-drillable columns return `invalid_request`.
+#' `source_row` is the original, zero-based source-row position, independent of
+#' sorting, filtering, and pagination. `column` is the zero-based schema
+#' position, including when column names are duplicated. `kind: "cell"` is
+#' allowed only at the start of a grid path. Remaining steps, if any, use the
+#' tree `type` forms above and are resolved within the captured cell value. The
+#' complete path, including its cell step, contains at most 32 steps. Grid
+#' `object/open` requires `capabilities.children: true` and
+#' `columns[column].drillable: true`; malformed selectors or non-drillable
+#' columns return `invalid_request`.
 #'
 #' Each grid column schema includes the Boolean `drillable`, which says whether
 #' the column's cells can be selected by `kind: "cell"`. This metadata is
 #' independent of `type`, `sortable`, and `filterable`; clients must not infer
-#' drillability from the type, the class, or display text. The R columns that
-#' are drillable are listed in the R column mapping (informative) section of
-#' \link[=jdv_query_spec]{query specification}. Snapshot views retain the R
+#' drillability from the type, `native_type`, or display text. The R columns
+#' that are drillable are listed in the R column mapping (informative) section
+#' of \link[=jdv_query_spec]{query specification}. Snapshot views retain the R
 #' source only when a drillable column needs subsequent cell capture. Retained
 #' source references are released when the view closes.
 #'
@@ -861,7 +861,7 @@
 #' syntactic name, and `x[[3]]` (one-based) otherwise. An element of a named
 #' atomic vector uses `x[["name"]]` under the same rule. An S4 slot is `x@slot`,
 #' an environment binding is `x$name`, an attribute is `attr(x, "names")`, and a
-#' grid cell is `df[12, "col"]` with the original one-based `row_index`, or
+#' grid cell is `df[12, "col"]` with the original zero-based `source_row` 11, or
 #' `df[12, 3]` with a one-based column position when the column name is missing,
 #' empty, or duplicated. A child of a child continues from the child's `title`,
 #' for example `x$a[[2]]@data`. The `title` is truncated to 4,096 bytes. It is a
@@ -876,17 +876,17 @@
 #'
 #' The browser uses the same child-view navigation for tree and grid parents.
 #' Opening controls appear only in drillable cells and use the displayed row's
-#' original `row_index`. The tree viewer shows the root `class`, and a checkbox,
-#' checked by default, sets the `attributes` parameter of its `object/children`
-#' requests. View breadcrumbs restore the parent's sort, filter, page,
-#' horizontal scroll, or tree path and child-page offset. A pending child open
-#' is tied to the active parent view and generation, separately from page query
-#' epochs: Snapshot sort, filter, and page operations remain local and do not
-#' cancel the captured cell request. Returning to the R prompt lets that
-#' original request complete without another browser request. Selecting a
-#' different view, replacing its generation, or closing it cancels its pending
-#' browser requests. Display text and navigation labels are inserted as DOM
-#' text.
+#' original `source_row` (shown as a one-based row number). The tree viewer
+#' shows the root `class`, and a checkbox, checked by default, sets the
+#' `attributes` parameter of its `object/children` requests. View breadcrumbs
+#' restore the parent's sort, filter, page, horizontal scroll, or tree path and
+#' child-page offset. A pending child open is tied to the active parent view and
+#' generation, separately from page query epochs: Snapshot sort, filter, and
+#' page operations remain local and do not cancel the captured cell request.
+#' Returning to the R prompt lets that original request complete without another
+#' browser request. Selecting a different view, replacing its generation, or
+#' closing it cancels its pending browser requests. Display text and navigation
+#' labels are inserted as DOM text.
 #'
 #' R 4.6 and newer use the public experimental `R_GetBindingType()` and
 #' `R_getVarEx()` APIs to distinguish `Value`, `Forced`, `Delayed`, `Unbound`,
@@ -903,7 +903,7 @@
 #' S4 `.Data` is opaque; slots are inspected as stored values.
 #'
 #'
-#' @section `table/rows`:
+#' @section `grid/rows`:
 #'
 #'
 #' Parameters are:
@@ -919,10 +919,10 @@
 #' | `cols`       | No       | Array of zero-based column positions; omitted or `null` selects all columns.              |
 #'
 #' The result contains `view`, `generation`, `total`, `total_unfiltered`,
-#' `offset`, `limit`, and `data`. `data` contains `row_index`, optional
-#' `row_names`, and `columns`. The effective `limit` is clamped to the query
+#' `offset`, `limit`, and `data`. `data` contains `source_row`, optional
+#' `row_labels`, and `columns`. The effective `limit` is clamped to the query
 #' engine's row limit and may be reduced further to fit the JSON output budget.
-#' For an empty page, `row_index` and explicit `row_names` are empty arrays;
+#' For an empty page, `source_row` and explicit `row_labels` are empty arrays;
 #' `columns` still contains one schema/data/errors wrapper per selected column,
 #' with empty channel arrays. Only `cols: []` produces an empty `columns` array.
 #'
@@ -1170,7 +1170,7 @@
 #'
 #' [jdv_handle_descriptor()] returns a JSON string with the shape of `view/open`
 #' params (or the `object/open` result for a child). [jdv_handle_request()]
-#' accepts only `table/rows` and `object/children`, with the same parameter
+#' accepts only `grid/rows` and `object/children`, with the same parameter
 #' validation and result shapes as their viewer requests. It returns the result
 #' itself as JSON, without a response envelope. Omit `view` and `generation`
 #' from its R-list params: the handle supplies them, and specifying either is an
@@ -1190,7 +1190,7 @@
 #' their returned item count. A single item that cannot fit fails with
 #' `limit_exceeded`. Descriptors are never truncated. Auto mode retains the
 #' usual Snapshot selection, and Snapshot descriptors contain the complete
-#' captured data and do not support `table/rows`.
+#' captured data and do not support `grid/rows`.
 #'
 #' Handles do not follow variable bindings or support refresh or tracking; their
 #' descriptor capabilities report both as false. Table handles retain the
@@ -1294,11 +1294,14 @@
 #' contain only letters, digits, `.`, `_`, `:`, and `-`. A receiver must not
 #' infer a process id or connection counter from it. A host rejects an invalid
 #' identifier, and rejects a duplicate active identifier with `in_use`.
-#' `producer` identifies the producer: `name` and `version` are strings.
-#' `runtime` is optional; when present, it has string `name` and `version`
-#' fields. Protocol major version 1 is the v1 contract in this document. A peer
-#' that does not support the announced major version rejects the handshake with
-#' `unsupported`; it must not continue with incompatible message semantics.
+#' `producer` identifies the producer: `name` and `version` are UTF-8 strings
+#' from 1 through 256 bytes each. `runtime` is optional; when present, it has
+#' string `name` and `version` fields, each also 1 through 256 UTF-8 bytes. A
+#' receiver rejects the handshake if any supplied metadata value is empty,
+#' invalid UTF-8, or exceeds the byte limit. Protocol major version 1 is the v1
+#' contract in this document. A peer that does not support the announced major
+#' version rejects the handshake with `unsupported`; it must not continue with
+#' incompatible message semantics.
 #'
 #' `wake` is optional and, when present, is a Boolean. An omitted value means
 #' `false`; any other type is invalid. When `true`, the host must send periodic
@@ -1387,7 +1390,7 @@
 #' | `boolean` | | `is_true`, `is_false` |
 #' | `integer`, `number` | | `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `between` |
 #' | `string` | | `contains`, `starts_with`, `ends_with`, `text_equals` |
-#' | `factor` | `levels`, `ordered` | The text operators, and `in` |
+#' | `categorical` | `levels`, `ordered` | The text operators, and `in` |
 #' | `date` | | `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `between` |
 #' | `datetime` | `tz` | `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `between` |
 #' | `int64` | | `eq`, `between` |
@@ -1397,22 +1400,21 @@
 #' Every column type also accepts `is_na` when a valid missingness mask is
 #' available. A client decides what it can do with a column from `type`,
 #' `filterable`, `sortable`, and the grid `capabilities` alone. The schema's
-#' `class` field is informational: a client may use it as a display hint, such
-#' as for an input placeholder, but must not use it to infer semantics. Which R
-#' classes produce which `type` is an implementation detail described, as
-#' informative text, in the R column mapping section of
-#' \link[=jdv_query_spec]{query specification}, and can change without a
-#' protocol version change.
+#' `native_type` field is a producer-defined array of display strings. A client
+#' may show those strings as a hint but must not infer semantics from them. How
+#' R vectors map to protocol types is described, as informative text, in the R
+#' column mapping section of \link[=jdv_query_spec]{query specification}, and
+#' can change without a protocol version change.
 #'
 #' A client that receives a `type` it does not know must treat the column as
 #' display-only, exactly like `other`: it follows the column's `sortable` for
 #' sorting, offers no value-based filter, and uses only `is_na`. It must not
-#' fail, hide the column, or guess from `class`. Because of this rule, a new
-#' `type` can be added without changing the protocol major version. For the same
-#' reason, a later release may add operators or operand forms to a known type; a
-#' client offers only the operators it knows for that type and must be prepared
-#' for the server to answer a request with an `unsupported` error, which is an
-#' ordinary failure of that request and not a protocol violation.
+#' fail, hide the column, or guess from `native_type`. Because of this rule, a
+#' new `type` can be added without changing the protocol major version. For the
+#' same reason, a later release may add operators or operand forms to a known
+#' type; a client offers only the operators it knows for that type and must be
+#' prepared for the server to answer a request with an `unsupported` error,
+#' which is an ordinary failure of that request and not a protocol violation.
 #'
 #'
 #' @section Column payloads:
@@ -1420,11 +1422,12 @@
 #'
 #' Column identity is its zero-based `position`; `name` is display metadata and
 #' may be empty, duplicated, or otherwise unusual. A schema entry includes
-#' `position`, `name`, `type`, `class`, `sortable`, and `filterable`. Factor
-#' schemas also include `levels` and `ordered`; datetime schemas include `tz`;
-#' duration schemas include `units`. Unknown optional schema fields must be
-#' ignored by clients so future schema extensions remain compatible; the Column
-#' types section defines how to treat an unknown `type` value.
+#' `position`, `name`, `type`, `native_type`, `sortable`, and `filterable`.
+#' Categorical schemas also include `levels` and `ordered`; datetime schemas
+#' include `tz`; duration schemas include `units`. Unknown optional schema
+#' fields must be ignored by clients so future schema extensions remain
+#' compatible; the Column types section defines how to treat an unknown `type`
+#' value.
 #'
 #' A Snapshot column payload is columnar. Channel arrays are omitted when
 #' absent:
@@ -1438,7 +1441,7 @@
 #' }
 #' ```
 #'
-#' `values`, `display`, `sortKey`, `special`, and `na`, when present, have one
+#' `values`, `display`, `sort_key`, `special`, and `na`, when present, have one
 #' entry for each row in the payload. `na` is sent whenever its extraction
 #' succeeds and is the authoritative missingness mask; clients must not infer
 #' missingness from display text. If a channel fails, that channel may be absent
@@ -1452,8 +1455,8 @@
 #' response, each selected column is wrapped as `{ "schema": ..., "data": ...,
 #' "errors": ... }`, preserving the page-time schema and channel diagnostics.
 #' The `data` object inside that wrapper uses the same channel format as a
-#' Snapshot column. Paged responses never include `sortKey`; sorting remains on
-#' the R side.
+#' Snapshot column. Paged responses never include `sort_key`; sorting remains on
+#' the producer side.
 #'
 #' The following encoding rules apply:
 #'
@@ -1473,22 +1476,20 @@
 #'   from values, using `"NA"` for missing entries. A class-specific format method
 #'   may produce different display text, including a different missing label, in
 #'   which case the channel is retained.
-#' - `string` and `factor` values are strings. The `display` channel may be omitted
-#'   under the same equality and missing-label rule. Factor order and labels come
+#' - `string` and `categorical` values are strings. The `display` channel may be omitted
+#'   under the same equality and missing-label rule. Categorical order and labels come
 #'   from `levels` and `ordered` in the schema.
 #' - `date` values are ISO `YYYY-MM-DD` strings. `datetime` values are ISO
 #'   timestamp strings; the schema's `tz` records the source time-zone setting.
-#' - Snapshot `sortKey` is present for sortable non-primitive types and encodes the
-#'   R ordering semantics agreed in \link[=jdv_query_spec]{query specification}, including collation,
-#'   factor level order, and `integer64` order. It may be omitted for plain
-#'   boolean, integer, number, and duration columns whose ordering is recovered from `values`
-#'   and `special`. A `null` sortKey is ordered after every non-null key,
-#'   regardless of the `na` mask. Paged rows never include sort keys.
-#' - `row_index` always reports original one-based R row numbers. Snapshot
-#'   `row_names` and Paged page `row_names` contain values only for explicit row
-#'   names; otherwise the field is `null`. Automatic row names are not materialized
-#'   as a separate channel. A Paged `view/open` descriptor has `row_names: null`;
-#'   requested explicit names arrive with the page.
+#' - Snapshot `sort_key` is present when a value's ordering cannot be recovered
+#'   from its `values` and `special` entries. It carries the producer's ordering
+#'   key; consumers compare keys rather than recomputing a producer's native
+#'   ordering. A `null` sort key is ordered after every non-null key, regardless
+#'   of the `na` mask. Paged rows never include sort keys.
+#' - `source_row` always reports zero-based positions in original source order.
+#'   Snapshot `row_labels` and Paged page `row_labels` contain one label per row
+#'   when supplied; otherwise the field is `null`. A Paged `view/open` descriptor
+#'   has `row_labels: null`; labels arrive with the page.
 #'
 #' The cJSON writer first tries a 15-significant-digit representation for a
 #' finite double and accepts it only when its own double read-back equals the
@@ -1501,17 +1502,17 @@
 #' sign.
 #'
 #' Snapshot payloads contain all table rows in one `data` object. Paged payloads
-#' contain only the requested row slice. Paged display formatting is performed
-#' on the requested slice, so text labels may differ from a Snapshot formatted
-#' across the whole column. The protocol guarantees matching sort and filter
-#' semantics, not identical display strings. For data frames, row slicing is
-#' performed per column using `x[[j]]` followed by that column's `[` method. It
-#' does not call table-level `[`. For matrices, slicing uses `x[rows, j]`.
-#' Source classes are preserved through slicing; jdv does not [base::unclass()]
-#' or coerce a column before its subset method runs. Filtering and sorting use
-#' full column semantics before the requested rows are sliced. See
-#' \link[=jdv_query_spec]{query specification} for the detailed source and query
-#' contract.
+#' contain only the requested row slice. In the R producer, Paged display
+#' formatting is performed on the requested slice, so text labels may differ
+#' from a Snapshot formatted across the whole column. The protocol guarantees
+#' matching sort and filter semantics, not identical display strings. For data
+#' frames, the R producer slices each column using `x[[j]]` followed by that
+#' column's `[` method. It does not call table-level `[`. For matrices, it
+#' slices with `x[rows, j]`. Source classes are preserved through R slicing; jdv
+#' does not [base::unclass()] or coerce a column before its subset method runs.
+#' Filtering and sorting use full column semantics before the requested rows are
+#' sliced. See \link[=jdv_query_spec]{query specification} for the detailed
+#' source and query contract.
 #'
 #'
 #' @section Filter and sort request shape:

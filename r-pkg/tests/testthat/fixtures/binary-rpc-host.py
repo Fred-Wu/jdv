@@ -37,7 +37,7 @@ def main():
                     if value.get("method") != "ack":
                         return value
 
-            send(1, "table/rows", 4)
+            send(1, "grid/rows", 4)
             closed = read()
             while closed.get("method") == "view/open":
                 # Another view registered after the first one announces itself.
@@ -48,7 +48,7 @@ def main():
             assert header["warnings"] == ["binary integration warning"], header
             assert header["result"]["transfer"]["byte_length"] == 4, header
             assert stream.read(4) == bytes([0, 10, 255, 1])
-            send(2, "table/rows", 0)
+            send(2, "grid/rows", 0)
             error = read()
             assert error["id"] == 2 and error["error"]["code"] == "limit_exceeded", error
             send(3, "view/schema", 4)

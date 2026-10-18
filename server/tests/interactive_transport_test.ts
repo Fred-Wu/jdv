@@ -455,7 +455,7 @@ Deno.test({
       );
 
       const sendRows = async (id: string, offset: number) => {
-        await sendRequest(id, "table/rows", {
+        await sendRequest(id, "grid/rows", {
           view: table,
           generation,
           offset,
@@ -479,7 +479,7 @@ Deno.test({
         });
       };
       const rRequest = (offset: number) => (frame: WireFrame) =>
-        frame.direction === "to-r" && frame.value.method === "table/rows" &&
+        frame.direction === "to-r" && frame.value.method === "grid/rows" &&
         (frame.value.params as Record<string, unknown> | undefined)?.offset ===
           offset;
       const rSchemaRequest = (after: number) => (frame: WireFrame) =>

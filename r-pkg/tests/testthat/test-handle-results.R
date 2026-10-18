@@ -67,15 +67,15 @@ test_that("handle descriptors and row results match ordinary RPC results", {
     sort = list(list(col = 0L, desc = FALSE)),
     filter = list(op = "ge", col = 2L, value = 20)
   )
-  actual <- .jdv_json_parse(jdv_handle_request(handle, "table/rows", params))
-  expected <- handle_rpc_result(ordinary, "table/rows", params)
+  actual <- .jdv_json_parse(jdv_handle_request(handle, "grid/rows", params))
+  expected <- handle_rpc_result(ordinary, "grid/rows", params)
   expect_identical(
     normalize_handle_result(actual),
     normalize_handle_result(expected)
   )
   expect_match(actual$view, "^h-")
   expect_equal(actual$generation, 1)
-  expect_equal(unlist(actual$data$row_index, use.names = FALSE), c(4, 1, 3))
+  expect_equal(unlist(actual$data$source_row, use.names = FALSE), c(3, 0, 2))
   expect_identical(
     unlist(actual$data$columns[[2L]]$data$values, use.names = FALSE),
     c("plain", "café", "naïve")
@@ -83,10 +83,10 @@ test_that("handle descriptors and row results match ordinary RPC results", {
 
   empty <- .jdv_json_parse(jdv_handle_request(
     handle,
-    "table/rows",
+    "grid/rows",
     list(offset = 20L, limit = 2L)
   ))
-  expect_length(empty$data$row_index, 0L)
+  expect_length(empty$data$source_row, 0L)
   expect_length(empty$data$columns, 3L)
 })
 
@@ -107,7 +107,7 @@ test_that("matrix snapshots and grid child descriptors match ordinary views", {
     normalize_handle_descriptor(.jdv_json_parse(ordinary_snapshot$open)$params)
   )
   expect_error(
-    jdv_handle_request(snapshot, "table/rows", list(offset = 0L, limit = 1L)),
+    jdv_handle_request(snapshot, "grid/rows", list(offset = 0L, limit = 1L)),
     class = "jdv_error_unsupported"
   )
 
@@ -118,7 +118,7 @@ test_that("matrix snapshots and grid child descriptors match ordinary views", {
   on.exit(jdv_handle_close(handle), add = TRUE)
   ordinary <- register_view(source, mode = "paged")
   on.exit(.jdv_close_internal(ordinary$id), add = TRUE)
-  path <- list(list(kind = "cell", row_index = 1L, column = 0L))
+  path <- list(list(kind = "cell", source_row = 0L, column = 0L))
   child <- jdv_handle_open(handle, path, mode = "paged")
   on.exit(jdv_handle_close(child), add = TRUE)
   opened <- handle_rpc_result(
@@ -132,7 +132,7 @@ test_that("matrix snapshots and grid child descriptors match ordinary views", {
   )
   page <- .jdv_json_parse(jdv_handle_request(
     child,
-    "table/rows",
+    "grid/rows",
     list(offset = 0L, limit = 2L)
   ))
   expect_identical(
@@ -248,13 +248,13 @@ test_that(
 
     full <- .jdv_json_parse(jdv_handle_request(
       handle,
-      "table/rows",
+      "grid/rows",
       list(offset = 0L, limit = 100L),
       max_bytes = 10000L
     ))
     bounded_json <- jdv_handle_request(
       handle,
-      "table/rows",
+      "grid/rows",
       list(offset = 0L, limit = 100L),
       max_bytes = 1500L
     )
@@ -264,16 +264,16 @@ test_that(
     expect_equal(bounded$offset, 0)
     expect_identical(bounded$total, full$total)
     expect_identical(bounded$total_unfiltered, full$total_unfiltered)
-    expect_length(bounded$data$row_index, bounded$limit)
+    expect_length(bounded$data$source_row, bounded$limit)
 
     no_columns <- .jdv_json_parse(jdv_handle_request(
       handle,
-      "table/rows",
+      "grid/rows",
       list(offset = 0L, limit = 3L, cols = integer())
     ))
     expect_equal(
-      unlist(no_columns$data$row_index, use.names = FALSE),
-      as.double(1:3)
+      unlist(no_columns$data$source_row, use.names = FALSE),
+      as.double(0:2)
     )
     expect_length(no_columns$data$columns, 0L)
   }

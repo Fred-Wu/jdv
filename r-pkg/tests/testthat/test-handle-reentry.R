@@ -15,11 +15,11 @@ test_that("user format methods cannot reenter a running handle", {
     function(x, ...) {
       if (!observations$attempted) {
         observations$attempted <- TRUE
-        path <- list(list(kind = "cell", row_index = 1L, column = 0L))
+        path <- list(list(kind = "cell", source_row = 0L, column = 0L))
         observations$request <- tryCatch(
           jdv_handle_request(
             handle,
-            "table/rows",
+            "grid/rows",
             list(offset = 0L, limit = 1L)
           ),
           error = identity
@@ -38,7 +38,7 @@ test_that("user format methods cannot reenter a running handle", {
     {
       page <- jdv_handle_request(
         handle,
-        "table/rows",
+        "grid/rows",
         list(offset = 0L, limit = 2L)
       )
     }
@@ -58,7 +58,7 @@ test_that("closing a parent during a child query defers cleanup safely", {
   on.exit(jdv_handle_close(parent), add = TRUE)
   child_handle <- jdv_handle_open(
     parent,
-    list(list(kind = "cell", row_index = 1L, column = 0L)),
+    list(list(kind = "cell", source_row = 0L, column = 0L)),
     mode = "paged"
   )
   on.exit(jdv_handle_close(child_handle), add = TRUE)
@@ -78,7 +78,7 @@ test_that("closing a parent during a child query defers cleanup safely", {
       request_error <- tryCatch(
         jdv_handle_request(
           child_handle,
-          "table/rows",
+          "grid/rows",
           list(offset = 0L, limit = 2L)
         ),
         error = identity
@@ -117,7 +117,7 @@ test_that("closing a parent while opening a child rolls the child back", {
       open_error <- tryCatch(
         jdv_handle_open(
           parent,
-          list(list(kind = "cell", row_index = 1L, column = 0L)),
+          list(list(kind = "cell", source_row = 0L, column = 0L)),
           mode = "paged"
         ),
         error = identity

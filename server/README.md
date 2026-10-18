@@ -189,28 +189,28 @@ Send requests with a unique string id per WebSocket client and session:
   "type": "request",
   "id": "page-1",
   "session": "r-1234-1",
-  "method": "table/rows",
+  "method": "grid/rows",
   "params": { "view": "v-1", "generation": 1, "offset": 0, "limit": 200 }
 }
 ```
 
-The server accepts `table/rows`, `view/schema`, `object/children`,
-`object/open`, `view/close`, `view/refresh`, `view/track`, `stream/next`,
-`stream/cache/info`, and `stream/cache/get`. Object requests carry the view
-generation and a typed path rooted at that view. `object/children` is tree-only.
-Grid `object/open` paths start with
-`{"kind":"cell","row_index":205,"column":2}`: the row is the original one-based
-R index and the column is its zero-based schema position. Optional suffix steps
-use tree path forms. The column must have `drillable: true`, and the grid's
-`capabilities.children` must be true. Object child pages are capped at 500
-entries; paths are capped at 32 steps. Opening a child registers a captured
+The server accepts `grid/rows`, `view/schema`, `object/children`, `object/open`,
+`view/close`, `view/refresh`, `view/track`, `stream/next`, `stream/cache/info`,
+and `stream/cache/get`. Object requests carry the view generation and a typed
+path rooted at that view. `object/children` is tree-only. Grid `object/open`
+paths start with `{"kind":"cell","source_row":204,"column":2}`: the row is the
+original zero-based source position and the column is its zero-based schema
+position. The browser displays row numbers starting at one. Optional suffix
+steps use tree path forms. The column must have `drillable: true`, and the
+grid's `capabilities.children` must be true. Object child pages are capped at
+500 entries; paths are capped at 32 steps. Opening a child registers a captured
 value as a new view. Closing a child releases that view without closing its
 parent. Responses use `type: "response"` and carry the original client id. A
 `busy` event is informational and does not cancel the request. A client may send
 `{"type":"cancel","id":"page-1","session":"r-1234-1"}`; it is forwarded as an R
-`cancel` notification when the request was already sent. Unsent `table/rows` and
+`cancel` notification when the request was already sent. Unsent `grid/rows` and
 `object/children` requests use separate coalescing rules. For the same client,
-session, view, and generation, an unsent `table/rows` request is replaced by the
+session, view, and generation, an unsent `grid/rows` request is replaced by the
 latest page request. An unsent `object/children` request is replaced only by a
 new request with the same full typed path; a different path stays in its own
 lane. A request already sent to R is allowed to finish; later requests in the

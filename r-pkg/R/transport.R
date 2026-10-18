@@ -300,7 +300,7 @@
   if (
     is.character(method) &&
       length(method) == 1L &&
-      method %in% c("table/rows", "view/schema", "view/close", "stream/next")
+      method %in% c("grid/rows", "view/schema", "view/close", "stream/next")
   ) {
     params <- request$params
     if (

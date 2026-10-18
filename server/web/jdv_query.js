@@ -33,12 +33,12 @@ export function querySnapshot(descriptor, {
     throw queryError("invalid_request", "Malformed Snapshot descriptor.");
   }
   if (
-    (table.data.row_index !== undefined &&
-      (!Array.isArray(table.data.row_index) ||
-        table.data.row_index.length !== rowCount)) ||
-    (table.data.row_names !== undefined && table.data.row_names !== null &&
-      (!Array.isArray(table.data.row_names) ||
-        table.data.row_names.length !== rowCount))
+    (table.data.source_row !== undefined &&
+      (!Array.isArray(table.data.source_row) ||
+        table.data.source_row.length !== rowCount)) ||
+    (table.data.row_labels !== undefined && table.data.row_labels !== null &&
+      (!Array.isArray(table.data.row_labels) ||
+        table.data.row_labels.length !== rowCount))
   ) {
     throw queryError("schema_changed", "Invalid row metadata channels.");
   }
@@ -66,9 +66,9 @@ export function querySnapshot(descriptor, {
   }
   const pageIndices = selected.slice(offset, offset + effectiveLimit);
   const rowIndex = pageIndices.map((row) =>
-    table.data.row_index?.[row] ?? row + 1
+    table.data.source_row?.[row] ?? row
   );
-  const rowNames = table.data.row_names;
+  const rowNames = table.data.row_labels;
   const pageColumns = request.cols.map((position) => {
     const source = columns[position];
     const data = {};
@@ -91,8 +91,8 @@ export function querySnapshot(descriptor, {
     offset,
     limit: effectiveLimit,
     data: {
-      row_index: rowIndex,
-      row_names: Array.isArray(rowNames)
+      source_row: rowIndex,
+      row_labels: Array.isArray(rowNames)
         ? pageIndices.map((row) => rowNames[row])
         : null,
       columns: pageColumns,
@@ -107,14 +107,14 @@ function snapshotRowCount(table) {
   if (table?.nrow !== null) return null;
 
   const lengths = [];
-  if (Array.isArray(table.data?.row_index)) {
-    lengths.push(table.data.row_index.length);
+  if (Array.isArray(table.data?.source_row)) {
+    lengths.push(table.data.source_row.length);
   }
-  if (Array.isArray(table.data?.row_names)) {
-    lengths.push(table.data.row_names.length);
+  if (Array.isArray(table.data?.row_labels)) {
+    lengths.push(table.data.row_labels.length);
   }
   for (const column of table.data?.columns ?? []) {
-    for (const name of ["values", "display", "sortKey", "special", "na"]) {
+    for (const name of ["values", "display", "sort_key", "special", "na"]) {
       if (Array.isArray(column?.[name])) lengths.push(column[name].length);
     }
   }
@@ -136,8 +136,8 @@ export function decodeRows(schema, data, rowIndex = null, rowNames = null) {
     const count = rowIndex?.length ?? decoded[0]?.length ?? 0;
     return Array.from({ length: count }, (_, index) => {
       const row = {
-        row_index: rowIndex?.[index] ?? decoded[0]?.[index]?.row_index ??
-          index + 1,
+        source_row: rowIndex?.[index] ?? decoded[0]?.[index]?.source_row ??
+          index,
       };
       if (Array.isArray(rowNames)) row.row_name = safeDisplay(rowNames[index]);
       for (const columnRows of decoded) {
@@ -178,7 +178,7 @@ export function decodeRows(schema, data, rowIndex = null, rowNames = null) {
       text = "";
     }
     const row = {};
-    row.row_index = Array.isArray(rowIndex) ? rowIndex[index] : index + 1;
+    row.source_row = Array.isArray(rowIndex) ? rowIndex[index] : index;
     if (Array.isArray(rowNames)) row.row_name = safeDisplay(rowNames[index]);
     row[`c${schema.position}`] = safeDisplay(text);
     return row;
@@ -206,7 +206,7 @@ function validateChannels(nrow, columns) {
     if (!schema || schema.position !== i || typeof schema.type !== "string") {
       throw queryError("invalid_request", "Malformed Snapshot schema.");
     }
-    for (const name of ["values", "display", "sortKey", "special", "na"]) {
+    for (const name of ["values", "display", "sort_key", "special", "na"]) {
       const channel = data[name];
       if (
         channel !== undefined &&
@@ -222,7 +222,7 @@ function validateChannels(nrow, columns) {
       throw queryError("schema_changed", "Invalid display channel.");
     }
     if (
-      data.sortKey?.some((value) =>
+      data.sort_key?.some((value) =>
         value !== null && (typeof value !== "number" || !Number.isFinite(value))
       )
     ) {
@@ -379,7 +379,7 @@ function validateFilter(columns, node, context, depth) {
     return { op, col };
   }
   if (stringOps.includes(op)) {
-    if (!["string", "factor"].includes(schema.type)) {
+    if (!["string", "categorical"].includes(schema.type)) {
       throw queryError("unsupported", "Text filter is unavailable.");
     }
     if (typeof node.value !== "string") {
@@ -390,7 +390,7 @@ function validateFilter(columns, node, context, depth) {
   }
   if (op === "in") {
     if (
-      schema.type !== "factor" || !Array.isArray(node.values)
+      schema.type !== "categorical" || !Array.isArray(node.values)
     ) {
       throw queryError(
         "unsupported",
@@ -654,7 +654,7 @@ function compareValues(type, left, right) {
 }
 
 function hasSortKey(schema, data) {
-  if (Array.isArray(data.sortKey)) return true;
+  if (Array.isArray(data.sort_key)) return true;
   if (
     ["boolean", "integer", "number", "duration", "int64"].includes(
       schema.type,
@@ -667,11 +667,11 @@ function hasSortKey(schema, data) {
 
 function keyAt(column, row) {
   const { schema, data } = column;
-  if (data.na[row] || data.sortKey?.[row] === null) {
+  if (data.na[row] || data.sort_key?.[row] === null) {
     return { missing: true, value: null };
   }
-  if (Array.isArray(data.sortKey)) {
-    return { kind: "rank", missing: false, value: data.sortKey[row] };
+  if (Array.isArray(data.sort_key)) {
+    return { kind: "rank", missing: false, value: data.sort_key[row] };
   }
   if (schema.type === "int64") {
     return { kind: "decimal", missing: false, value: data.values[row] };
@@ -689,7 +689,7 @@ function keyAt(column, row) {
     }
     return { kind: "numeric", missing: false, value: data.values[row] };
   }
-  return { kind: "rank", missing: false, value: data.sortKey[row] };
+  return { kind: "rank", missing: false, value: data.sort_key[row] };
 }
 
 function compareRows(columns, sort, a, b) {

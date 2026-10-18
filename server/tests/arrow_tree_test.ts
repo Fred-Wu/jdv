@@ -34,7 +34,7 @@ function fromVector(vector: Vector, physical = false, exactOnly = false) {
     { first_row: 10, rows_fetched: vector.length },
     arrow,
   );
-  return (row = 0) => createArrowCellRoot(page, row + 11, 4);
+  return (row = 0) => createArrowCellRoot(page, row + 10, 4);
 }
 function failure(action: () => unknown) {
   let error: unknown;
@@ -340,12 +340,19 @@ Deno.test("Arrow tree validates numeric selectors and exposes unsupported mappin
     Arrow,
   );
   assertEquals(
-    arrowTreeNode(createArrowCellRoot(page, 6, 0)).summary,
+    arrowTreeNode(createArrowCellRoot(page, 5, 0)).summary,
     "Unsupported: union",
   );
-  assertEquals(arrowTreeNode(createArrowCellRoot(page, 7, 1)).summary, "2");
+  assertEquals(arrowTreeNode(createArrowCellRoot(page, 6, 1)).summary, "2");
+  const zeroPage = createArrowTreePage(
+    Arrow.tableToIPC(table),
+    { columns: [{ index: 0, name: "real", ipc_index: 0 }] },
+    { first_row: 0, rows_fetched: 2 },
+    Arrow,
+  );
+  assertEquals(arrowTreeNode(createArrowCellRoot(zeroPage, 0, 0)).summary, "1");
   for (
-    const [row, col] of [[5, 1], [8, 1], [6, -1], [6, 1.5], [6, 99], [6, 2]]
+    const [row, col] of [[4, 1], [7, 1], [5, -1], [5, 1.5], [5, 99], [5, 2]]
   ) {
     assert(
       failure(() => createArrowCellRoot(page, row, col)).message.length > 0,
@@ -475,7 +482,7 @@ Deno.test("null dictionaries retain shallow types and unnamed columns use positi
     { first_row: 0, rows_fetched: 2 },
     Arrow,
   );
-  const node = arrowTreeNode(createArrowCellRoot(page, 1, 4));
+  const node = arrowTreeNode(createArrowCellRoot(page, 0, 4));
   assertEquals(node.type, "dictionary");
   assertEquals(node.summary, "NA");
   assertEquals(node.label, "[5] (unnamed)");
@@ -490,7 +497,7 @@ Deno.test("null dictionaries retain shallow types and unnamed columns use positi
     Arrow,
   );
   const longLabel =
-    arrowTreeNode(createArrowCellRoot(longLabelPage, 1, 0)).label;
+    arrowTreeNode(createArrowCellRoot(longLabelPage, 0, 0)).label;
   assertEquals(longLabel.length, 4096);
   assert(longLabel.endsWith("… [truncated]"));
 });

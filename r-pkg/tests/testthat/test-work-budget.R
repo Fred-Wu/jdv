@@ -70,7 +70,7 @@ test_that("wide packed data-frame missingness fails before slicing cells", {
     counter$slices <- 0L
     options(jdv.max_work_bytes = 64 * 1024^2)
     prefix <- jdv_budget_test_rpc(
-      "table/rows",
+      "grid/rows",
       list(view = registered$id, generation = 1, offset = 0, limit = 32)
     )
     expect_null(prefix$error)
@@ -79,7 +79,7 @@ test_that("wide packed data-frame missingness fails before slicing cells", {
     counter$slices <- 0L
     options(jdv.max_work_bytes = 1024)
     reply <- jdv_budget_test_rpc(
-      "table/rows",
+      "grid/rows",
       list(view = registered$id, generation = 1, offset = 0, limit = 64)
     )
     expect_identical(reply$error$code, "limit_exceeded")
@@ -178,16 +178,16 @@ test_that("public registration and RPC encode with unset work options", {
   paged <- register_view(data.frame(value = 1:100), mode = "paged")
   expect_true(nzchar(paged$open))
   paged_reply <- jdv_budget_test_rpc(
-    "table/rows",
+    "grid/rows",
     list(view = paged$id, generation = 1, offset = 0, limit = 2)
   )
   expect_null(paged_reply$error)
-  expect_identical(paged_reply$result$data$row_index, list(1L, 2L))
+  expect_identical(paged_reply$result$data$source_row, list(0L, 1L))
 
   .jdv_close_internal(paged$id)
   snapshot <- register_view(data.frame(value = 1:3), mode = "auto")
   expect_identical(
-    jsonlite::fromJSON(snapshot$open, simplifyVector = FALSE)$params$mode,
+    jsonlite::fromJSON(snapshot$open, simplifyVector = FALSE)$params$access,
     "snapshot"
   )
 })
@@ -202,7 +202,7 @@ test_that("one-row wide double packed matrices return a shape summary", {
   source <- data.frame(packed = I(packed))
   registered <- register_view(source, mode = "paged")
   reply <- jdv_budget_test_rpc(
-    "table/rows",
+    "grid/rows",
     list(view = registered$id, generation = 1, offset = 0, limit = 1)
   )
 
@@ -251,11 +251,11 @@ test_that("page sizing bounds packed matrix and frame row slicing", {
         registered$open,
         simplifyVector = FALSE
       )$params
-      expect_identical(descriptor$mode, "paged")
+      expect_identical(descriptor$access, "random")
 
       counter$slices <- 0L
       reply <- jdv_budget_test_rpc(
-        "table/rows",
+        "grid/rows",
         list(view = registered$id, generation = 1, offset = 0, limit = 64)
       )
       expect_null(reply$error)
@@ -344,7 +344,7 @@ test_that("oversized Date and factor formatter results remain limit errors", {
           mode = "paged"
         )
         reply <- jdv_budget_test_rpc(
-          "table/rows",
+          "grid/rows",
           list(view = registered$id, generation = 1, offset = 39, limit = 1)
         )
         expect_identical(reply$error$code, "limit_exceeded")
@@ -421,7 +421,7 @@ test_that("compound filter masks fail before full columns are materialized", {
     )
   )
   reply <- jdv_budget_test_rpc(
-    "table/rows",
+    "grid/rows",
     list(
       view = registered$id,
       generation = 1,

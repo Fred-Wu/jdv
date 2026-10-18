@@ -236,7 +236,7 @@ export function createSequentialCache(
   }
   const pages = new Map();
   let bytes = 0;
-  let evictedThrough = 0;
+  let evictedThrough = -1;
   let nextPage = 0;
   function pageBytes(rows) {
     return rows.reduce((sum, row) =>
@@ -252,7 +252,7 @@ export function createSequentialCache(
     pages.delete(page);
     bytes -= removed.bytes;
     for (const row of removed.rows) {
-      evictedThrough = Math.max(evictedThrough, row.row_index);
+      evictedThrough = Math.max(evictedThrough, row.source_row);
     }
     return true;
   }
@@ -270,7 +270,7 @@ export function createSequentialCache(
       while (bounded.length && size > maxBytes) {
         const removed = bounded.shift();
         size -= pageBytes([removed]);
-        evictedThrough = Math.max(evictedThrough, removed.row_index);
+        evictedThrough = Math.max(evictedThrough, removed.source_row);
       }
       pages.set(page, { rows: bounded, bytes: size });
       bytes += size;
@@ -327,10 +327,10 @@ export function decodeArrowPage(
   }
   const rows = [];
   let displayBytes = 0;
-  let discardedThrough = 0;
+  let discardedThrough = -1;
   for (let row = 0; row < metadata.rows_fetched; row++) {
     /** @type {Record<string, string|number>} */
-    const output = { row_index: metadata.first_row + row + 1 };
+    const output = { source_row: metadata.first_row + row };
     for (const column of descriptor.columns) {
       const ipc = column.ipc_index;
       if (column.unsupported || ipc === null || ipc === undefined) {
@@ -348,7 +348,7 @@ export function decodeArrowPage(
       }
     }
     for (const key of Object.keys(output)) {
-      if (key !== "row_index") output[key] = boundedText(output[key]);
+      if (key !== "source_row") output[key] = boundedText(output[key]);
     }
     const size = 64 +
       Object.values(output).reduce(
@@ -362,7 +362,7 @@ export function decodeArrowPage(
     displayBytes += size;
     while (displayBytes > SEQUENTIAL_CACHE_BYTES) {
       const removed = rows.shift();
-      discardedThrough = removed.row_index;
+      discardedThrough = removed.source_row;
       displayBytes -= 64 +
         Object.values(removed).reduce(
           (sum, value) => sum + 16 + String(value).length * 2,

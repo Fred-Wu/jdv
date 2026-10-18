@@ -494,7 +494,7 @@ async function sequentialBrowser(
       const inspectCell = async (page: typeof first, column: number) => {
         await click(
           page,
-          `#column-window button[data-action="inspect-arrow-cell"][data-row-index="1"][data-column="${column}"]`,
+          `#column-window button[data-action="inspect-arrow-cell"][data-row-index="0"][data-column="${column}"]`,
         );
         await waitFor(page, () => {
           const tree = (globalThis as unknown as BrowserRuntime).document
@@ -645,7 +645,7 @@ async function sequentialBrowser(
         } else {
           await click(
             first,
-            '#column-window button[data-action="inspect-arrow-cell"][data-row-index="1"][data-column="16"]',
+            '#column-window button[data-action="inspect-arrow-cell"][data-row-index="0"][data-column="16"]',
           );
           await waitFor(
             first,

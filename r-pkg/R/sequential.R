@@ -65,7 +65,6 @@
       kind = "grid",
       access = "sequential",
       encoding = "arrow-ipc",
-      mode = "sequential",
       capabilities = list(
         seek = FALSE,
         sort = FALSE,

@@ -57,14 +57,14 @@
         {
           "name": "mixed-missing-secondary",
           "expected": [
-            6,
-            3,
-            8,
-            7,
+            5,
             2,
-            4,
+            7,
+            6,
             1,
-            5
+            3,
+            0,
+            4
           ],
           "sort": [
             {
@@ -80,14 +80,14 @@
         {
           "name": "ascending-missing-secondary",
           "expected": [
-            7,
-            3,
-            8,
             6,
             2,
-            4,
+            7,
+            5,
             1,
-            5
+            3,
+            0,
+            4
           ],
           "sort": [
             {
@@ -103,10 +103,10 @@
         {
           "name": "missing",
           "expected": [
+            0,
             1,
-            2,
-            4,
-            5
+            3,
+            4
           ],
           "filter": {
             "op": "is_na",
@@ -116,7 +116,7 @@
         {
           "name": "positive-infinity",
           "expected": [
-            6
+            5
           ],
           "filter": {
             "op": "eq",
@@ -129,7 +129,7 @@
         {
           "name": "negative-infinity",
           "expected": [
-            7
+            6
           ],
           "filter": {
             "op": "lt",
@@ -140,10 +140,10 @@
         {
           "name": "inclusive-infinity-bounds",
           "expected": [
-            3,
+            2,
+            5,
             6,
-            7,
-            8
+            7
           ],
           "filter": {
             "op": "between",
@@ -159,8 +159,8 @@
         {
           "name": "not-equal",
           "expected": [
-            6,
-            7
+            5,
+            6
           ],
           "filter": {
             "op": "ne",
@@ -171,13 +171,13 @@
         {
           "name": "not-includes-missing",
           "expected": [
+            0,
             1,
             2,
             3,
             4,
             5,
-            6,
-            8
+            7
           ],
           "filter": {
             "op": "not",
@@ -191,10 +191,10 @@
         {
           "name": "and-or",
           "expected": [
+            0,
             1,
-            2,
-            4,
-            5
+            3,
+            4
           ],
           "filter": {
             "op": "and",
@@ -227,14 +227,14 @@
         {
           "name": "empty-and",
           "expected": [
+            0,
             1,
             2,
             3,
             4,
             5,
             6,
-            7,
-            8
+            7
           ],
           "filter": {
             "op": "and",
@@ -271,7 +271,7 @@
         {
           "name": "tiny-equality",
           "expected": [
-            1
+            0
           ],
           "filter": {
             "op": "eq",
@@ -282,7 +282,7 @@
         {
           "name": "zero-equality",
           "expected": [
-            3
+            2
           ],
           "filter": {
             "op": "eq",
@@ -293,9 +293,9 @@
         {
           "name": "inclusive-tiny",
           "expected": [
+            0,
             1,
-            2,
-            3
+            2
           ],
           "filter": {
             "op": "between",
@@ -307,7 +307,7 @@
         {
           "name": "negative",
           "expected": [
-            4
+            3
           ],
           "filter": {
             "op": "lt",
@@ -318,12 +318,12 @@
         {
           "name": "descending",
           "expected": [
-            6,
             5,
-            2,
+            4,
             1,
-            3,
-            4
+            0,
+            2,
+            3
           ],
           "sort": [
             {
@@ -354,12 +354,12 @@
         {
           "name": "ascending",
           "expected": [
-            4,
-            6,
             3,
+            5,
             2,
             1,
-            5
+            0,
+            4
           ],
           "sort": [
             {
@@ -371,12 +371,12 @@
         {
           "name": "descending",
           "expected": [
+            0,
             1,
             2,
             3,
-            4,
-            6,
-            5
+            5,
+            4
           ],
           "sort": [
             {
@@ -409,10 +409,10 @@
         {
           "name": "contains-literal-brackets",
           "expected": [
+            0,
             1,
             2,
-            3,
-            4
+            3
           ],
           "filter": {
             "op": "contains",
@@ -423,7 +423,7 @@
         {
           "name": "unicode-uppercase-unchanged",
           "expected": [
-            3
+            2
           ],
           "filter": {
             "op": "text_equals",
@@ -434,7 +434,7 @@
         {
           "name": "unicode-lowercase-unchanged",
           "expected": [
-            4
+            3
           ],
           "filter": {
             "op": "text_equals",
@@ -445,9 +445,9 @@
         {
           "name": "starts",
           "expected": [
+            0,
             1,
-            2,
-            8
+            7
           ],
           "filter": {
             "op": "starts_with",
@@ -458,7 +458,7 @@
         {
           "name": "ends",
           "expected": [
-            5
+            4
           ],
           "filter": {
             "op": "ends_with",
@@ -469,7 +469,7 @@
         {
           "name": "literal-dot",
           "expected": [
-            8
+            7
           ],
           "filter": {
             "op": "contains",
@@ -480,13 +480,13 @@
         {
           "name": "empty-needle",
           "expected": [
+            0,
             1,
             2,
             3,
             4,
-            5,
-            7,
-            8
+            6,
+            7
           ],
           "filter": {
             "op": "contains",
@@ -497,7 +497,7 @@
         {
           "name": "empty-equals",
           "expected": [
-            7
+            6
           ],
           "filter": {
             "op": "text_equals",
@@ -508,13 +508,13 @@
         {
           "name": "not-missing-true",
           "expected": [
+            0,
             1,
             2,
             3,
             4,
             5,
-            6,
-            7
+            6
           ],
           "filter": {
             "op": "not",
@@ -542,7 +542,7 @@
         },
         {
           "name": "f",
-          "type": "factor",
+          "type": "categorical",
           "values": [
             "high",
             "low",
@@ -561,8 +561,8 @@
         {
           "name": "true",
           "expected": [
-            1,
-            4
+            0,
+            3
           ],
           "filter": {
             "op": "is_true",
@@ -572,7 +572,7 @@
         {
           "name": "false",
           "expected": [
-            2
+            1
           ],
           "filter": {
             "op": "is_false",
@@ -582,8 +582,8 @@
         {
           "name": "factor-in",
           "expected": [
-            1,
-            3
+            0,
+            2
           ],
           "filter": {
             "op": "in",
@@ -607,10 +607,10 @@
         {
           "name": "factor-level-order",
           "expected": [
-            2,
-            3,
             1,
-            4
+            2,
+            0,
+            3
           ],
           "sort": [
             {
@@ -622,10 +622,10 @@
         {
           "name": "mixed",
           "expected": [
+            0,
+            3,
             1,
-            4,
-            2,
-            3
+            2
           ],
           "sort": [
             {
@@ -669,8 +669,8 @@
         {
           "name": "date-equality",
           "expected": [
-            1,
-            4
+            0,
+            3
           ],
           "filter": {
             "op": "eq",
@@ -681,7 +681,7 @@
         {
           "name": "date-less-equal",
           "expected": [
-            3
+            2
           ],
           "filter": {
             "op": "le",
@@ -692,9 +692,9 @@
         {
           "name": "date-between",
           "expected": [
-            1,
-            3,
-            4
+            0,
+            2,
+            3
           ],
           "filter": {
             "op": "between",
@@ -706,10 +706,10 @@
         {
           "name": "date-sort",
           "expected": [
+            2,
+            0,
             3,
-            1,
-            4,
-            2
+            1
           ],
           "sort": [
             {
@@ -721,7 +721,7 @@
         {
           "name": "time-offset",
           "expected": [
-            1
+            0
           ],
           "filter": {
             "op": "eq",
@@ -732,7 +732,7 @@
         {
           "name": "time-naive-fraction",
           "expected": [
-            2
+            1
           ],
           "filter": {
             "op": "eq",
@@ -743,8 +743,8 @@
         {
           "name": "time-between-offset",
           "expected": [
-            1,
-            2
+            0,
+            1
           ],
           "filter": {
             "op": "between",
@@ -756,10 +756,10 @@
         {
           "name": "time-sort",
           "expected": [
-            4,
+            3,
+            0,
             1,
-            2,
-            3
+            2
           ],
           "sort": [
             {
@@ -792,14 +792,14 @@
         {
           "name": "ascending",
           "expected": [
+            3,
             4,
             5,
-            6,
-            8,
-            2,
-            3,
+            7,
             1,
-            7
+            2,
+            0,
+            6
           ],
           "sort": [
             {
@@ -811,14 +811,14 @@
         {
           "name": "descending",
           "expected": [
-            1,
-            3,
+            0,
             2,
-            6,
-            8,
+            1,
             5,
+            7,
             4,
-            7
+            3,
+            6
           ],
           "sort": [
             {
@@ -830,7 +830,7 @@
         {
           "name": "exact-equality",
           "expected": [
-            2
+            1
           ],
           "filter": {
             "op": "eq",
@@ -841,10 +841,10 @@
         {
           "name": "inclusive",
           "expected": [
-            2,
+            1,
+            4,
             5,
-            6,
-            8
+            7
           ],
           "filter": {
             "op": "between",
@@ -856,7 +856,7 @@
         {
           "name": "missing",
           "expected": [
-            7
+            6
           ],
           "filter": {
             "op": "is_na",
@@ -883,10 +883,10 @@
         {
           "name": "stable-sort",
           "expected": [
-            2,
-            4,
             1,
-            3
+            3,
+            0,
+            2
           ],
           "sort": [
             {
@@ -898,7 +898,7 @@
         {
           "name": "missing",
           "expected": [
-            3
+            2
           ],
           "filter": {
             "op": "is_na",
@@ -952,7 +952,7 @@
         },
         {
           "name": "fct",
-          "type": "factor",
+          "type": "categorical",
           "values": [
             "low",
             "high",
@@ -967,7 +967,7 @@
         },
         {
           "name": "ord",
-          "type": "factor",
+          "type": "categorical",
           "values": [
             "high",
             "low",
@@ -1095,8 +1095,8 @@
         {
           "name": "lgl-is-true",
           "expected": [
-            1,
-            4
+            0,
+            3
           ],
           "filter": {
             "op": "is_true",
@@ -1124,8 +1124,8 @@
         {
           "name": "int-gt",
           "expected": [
-            1,
-            4
+            0,
+            3
           ],
           "filter": {
             "op": "gt",
@@ -1156,7 +1156,7 @@
         {
           "name": "dbl-between",
           "expected": [
-            1
+            0
           ],
           "filter": {
             "op": "between",
@@ -1177,8 +1177,8 @@
         {
           "name": "chr-contains",
           "expected": [
-            1,
-            4
+            0,
+            3
           ],
           "filter": {
             "op": "contains",
@@ -1198,8 +1198,8 @@
         {
           "name": "fct-in",
           "expected": [
-            1,
-            4
+            0,
+            3
           ],
           "filter": {
             "op": "in",
@@ -1212,7 +1212,7 @@
         {
           "name": "fct-text",
           "expected": [
-            2
+            1
           ],
           "filter": {
             "op": "text_equals",
@@ -1232,8 +1232,8 @@
         {
           "name": "ord-in",
           "expected": [
-            2,
-            3
+            1,
+            2
           ],
           "filter": {
             "op": "in",
@@ -1247,8 +1247,8 @@
         {
           "name": "ord-text",
           "expected": [
-            1,
-            3
+            0,
+            2
           ],
           "filter": {
             "op": "contains",
@@ -1268,8 +1268,8 @@
         {
           "name": "date-gt",
           "expected": [
-            1,
-            4
+            0,
+            3
           ],
           "filter": {
             "op": "gt",
@@ -1289,8 +1289,8 @@
         {
           "name": "time-ge",
           "expected": [
-            1,
-            3
+            0,
+            2
           ],
           "filter": {
             "op": "ge",
@@ -1310,7 +1310,7 @@
         {
           "name": "i64-eq",
           "expected": [
-            1
+            0
           ],
           "filter": {
             "op": "eq",
@@ -1330,10 +1330,10 @@
         {
           "name": "s3-sort",
           "expected": [
-            2,
-            4,
             1,
-            3
+            3,
+            0,
+            2
           ],
           "sort": [
             {
@@ -1345,7 +1345,7 @@
         {
           "name": "s3-is-na",
           "expected": [
-            3
+            2
           ],
           "filter": {
             "op": "is_na",
@@ -1355,9 +1355,9 @@
         {
           "name": "s3-not-is-na",
           "expected": [
+            0,
             1,
-            2,
-            4
+            3
           ],
           "filter": {
             "op": "not",
@@ -1430,10 +1430,10 @@
         {
           "name": "s4-sort",
           "expected": [
-            2,
-            4,
             1,
-            3
+            3,
+            0,
+            2
           ],
           "sort": [
             {
@@ -1445,7 +1445,7 @@
         {
           "name": "s4-is-na",
           "expected": [
-            3
+            2
           ],
           "filter": {
             "op": "is_na",
@@ -1455,9 +1455,9 @@
         {
           "name": "s4-not-is-na",
           "expected": [
+            0,
             1,
-            2,
-            4
+            3
           ],
           "filter": {
             "op": "not",
@@ -1530,10 +1530,10 @@
         {
           "name": "dur-sort",
           "expected": [
-            2,
-            4,
             1,
-            3
+            3,
+            0,
+            2
           ],
           "sort": [
             {
@@ -1545,7 +1545,7 @@
         {
           "name": "dur-is-na",
           "expected": [
-            3
+            2
           ],
           "filter": {
             "op": "is_na",
@@ -1555,9 +1555,9 @@
         {
           "name": "dur-not-is-na",
           "expected": [
+            0,
             1,
-            2,
-            4
+            3
           ],
           "filter": {
             "op": "not",
@@ -1588,7 +1588,7 @@
         {
           "name": "dur-compare",
           "expected": [
-            1
+            0
           ],
           "filter": {
             "op": "eq",
@@ -1599,9 +1599,9 @@
         {
           "name": "dur-between",
           "expected": [
+            0,
             1,
-            2,
-            4
+            3
           ],
           "filter": {
             "op": "between",
@@ -1613,7 +1613,7 @@
         {
           "name": "dur-clock",
           "expected": [
-            1
+            0
           ],
           "filter": {
             "op": "ge",
@@ -1647,8 +1647,8 @@
         {
           "name": "asis-int-gt",
           "expected": [
-            1,
-            4
+            0,
+            3
           ],
           "filter": {
             "op": "gt",
@@ -1659,10 +1659,10 @@
         {
           "name": "asis-int-sort",
           "expected": [
-            2,
-            4,
             1,
-            3
+            3,
+            0,
+            2
           ],
           "sort": [
             {
@@ -1674,8 +1674,8 @@
         {
           "name": "asis-chr-contains",
           "expected": [
-            1,
-            4
+            0,
+            3
           ],
           "filter": {
             "op": "contains",
@@ -1686,8 +1686,8 @@
         {
           "name": "asis-lgl-is-true",
           "expected": [
-            1,
-            4
+            0,
+            3
           ],
           "filter": {
             "op": "is_true",
@@ -1697,7 +1697,7 @@
         {
           "name": "asis-dbl-between",
           "expected": [
-            1
+            0
           ],
           "filter": {
             "op": "between",
@@ -1782,7 +1782,7 @@
         {
           "name": "mins-eq-number",
           "expected": [
-            2
+            1
           ],
           "filter": {
             "op": "eq",
@@ -1793,7 +1793,7 @@
         {
           "name": "mins-eq-clock",
           "expected": [
-            2
+            1
           ],
           "filter": {
             "op": "eq",
@@ -1804,7 +1804,7 @@
         {
           "name": "mins-ge-clock",
           "expected": [
-            1
+            0
           ],
           "filter": {
             "op": "ge",
@@ -1815,7 +1815,7 @@
         {
           "name": "mins-lt-zero",
           "expected": [
-            4
+            3
           ],
           "filter": {
             "op": "lt",
@@ -1826,7 +1826,7 @@
         {
           "name": "mins-eq-negative-clock",
           "expected": [
-            4
+            3
           ],
           "filter": {
             "op": "eq",
@@ -1837,8 +1837,8 @@
         {
           "name": "mins-ne",
           "expected": [
-            1,
-            4
+            0,
+            3
           ],
           "filter": {
             "op": "ne",
@@ -1849,8 +1849,8 @@
         {
           "name": "mins-gt-fraction",
           "expected": [
-            1,
-            2
+            0,
+            1
           ],
           "filter": {
             "op": "gt",
@@ -1861,8 +1861,8 @@
         {
           "name": "mins-between-mixed",
           "expected": [
-            2,
-            4
+            1,
+            3
           ],
           "filter": {
             "op": "between",
@@ -1874,7 +1874,7 @@
         {
           "name": "mins-is-na",
           "expected": [
-            3
+            2
           ],
           "filter": {
             "op": "is_na",
@@ -1884,10 +1884,10 @@
         {
           "name": "mins-sort",
           "expected": [
-            4,
-            2,
+            3,
             1,
-            3
+            0,
+            2
           ],
           "sort": [
             {
@@ -2027,7 +2027,7 @@
         {
           "name": "clock-ge-fraction",
           "expected": [
-            1
+            0
           ],
           "filter": {
             "op": "ge",
@@ -2038,7 +2038,7 @@
         {
           "name": "clock-eq-negative",
           "expected": [
-            4
+            3
           ],
           "filter": {
             "op": "eq",
@@ -2049,8 +2049,8 @@
         {
           "name": "clock-lt",
           "expected": [
-            2,
-            4
+            1,
+            3
           ],
           "filter": {
             "op": "lt",
@@ -2061,7 +2061,7 @@
         {
           "name": "clock-eq-whole-fraction",
           "expected": [
-            2
+            1
           ],
           "filter": {
             "op": "eq",
@@ -2072,8 +2072,8 @@
         {
           "name": "clock-between",
           "expected": [
-            1,
-            2
+            0,
+            1
           ],
           "filter": {
             "op": "between",
@@ -2085,10 +2085,10 @@
         {
           "name": "clock-sort-desc",
           "expected": [
+            0,
             1,
-            2,
-            4,
-            3
+            3,
+            2
           ],
           "sort": [
             {
@@ -2100,7 +2100,7 @@
         {
           "name": "days-eq-clock",
           "expected": [
-            1
+            0
           ],
           "filter": {
             "op": "eq",
@@ -2111,7 +2111,7 @@
         {
           "name": "days-eq-half",
           "expected": [
-            2
+            1
           ],
           "filter": {
             "op": "eq",
@@ -2122,7 +2122,7 @@
         {
           "name": "days-gt",
           "expected": [
-            4
+            3
           ],
           "filter": {
             "op": "gt",
@@ -2133,7 +2133,7 @@
         {
           "name": "weeks-eq-clock",
           "expected": [
-            1
+            0
           ],
           "filter": {
             "op": "eq",
@@ -2144,7 +2144,7 @@
         {
           "name": "weeks-eq-half",
           "expected": [
-            2
+            1
           ],
           "filter": {
             "op": "eq",
@@ -2155,7 +2155,7 @@
         {
           "name": "weeks-eq-number",
           "expected": [
-            2
+            1
           ],
           "filter": {
             "op": "eq",
@@ -2166,8 +2166,8 @@
         {
           "name": "hours-gt",
           "expected": [
-            1,
-            3
+            0,
+            2
           ],
           "filter": {
             "op": "gt",
@@ -2178,7 +2178,7 @@
         {
           "name": "hours-lt",
           "expected": [
-            4
+            3
           ],
           "filter": {
             "op": "lt",
@@ -2189,7 +2189,7 @@
         {
           "name": "hours-eq-clock",
           "expected": [
-            1
+            0
           ],
           "filter": {
             "op": "eq",
@@ -2200,7 +2200,7 @@
         {
           "name": "hours-eq-infinity",
           "expected": [
-            3
+            2
           ],
           "filter": {
             "op": "eq",
@@ -2213,7 +2213,7 @@
         {
           "name": "hours-is-na",
           "expected": [
-            2
+            1
           ],
           "filter": {
             "op": "is_na",

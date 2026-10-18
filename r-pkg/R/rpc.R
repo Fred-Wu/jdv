@@ -70,10 +70,10 @@
 #' `invalid_request`. A closed handle, including a child closed by its parent,
 #' signals `view_not_found`. Table fingerprint changes signal `schema_changed`.
 #' Sequential sources and unsupported operations on a handle's mode signal
-#' `unsupported`. Methods other than `table/rows` and `object/children` passed
-#' to [jdv_handle_request()] signal `method_not_found`; use [jdv_handle_open()]
-#' to open a child. A descriptor or single page item that cannot fit its byte
-#' limit signals `limit_exceeded`.
+#' `unsupported`. Methods other than `grid/rows` and `object/children` passed to
+#' [jdv_handle_request()] signal `method_not_found`; use [jdv_handle_open()] to
+#' open a child. A descriptor or single page item that cannot fit its byte limit
+#' signals `limit_exceeded`.
 #'
 #' @examples
 #' library(jdv)
@@ -494,10 +494,23 @@ jdv_json_object <- function(x = list()) {
       schema[[field]] <- .jdv_json_values(schema[[field]])
     }
   }
+  if (!is.null(schema$class)) {
+    schema$native_type <- schema$class
+    schema$class <- NULL
+  }
+  if (identical(schema$type, "factor")) schema$type <- "categorical"
   schema
 }
 
 .jdv_schema <- function(schemas) lapply(schemas, .jdv_schema_fields)
+
+.jdv_json_channel_errors <- function(errors) {
+  if (is.null(errors)) {
+    return(NULL)
+  }
+  names(errors)[names(errors) == "sortKey"] <- "sort_key"
+  errors
+}
 
 .jdv_json_column <- function(column, snapshot = FALSE) {
   data <- column$data
@@ -525,7 +538,7 @@ jdv_json_object <- function(x = list()) {
     !is.null(data$sortKey) &&
       !column$schema$type %in% c("boolean", "integer", "number", "duration")
   ) {
-    out$sortKey <- .jdv_json_values(data$sortKey)
+    out$sort_key <- .jdv_json_values(data$sortKey)
   }
   if (!is.null(data$special)) {
     out$special <- .jdv_json_values(data$special)
@@ -533,7 +546,9 @@ jdv_json_object <- function(x = list()) {
   if (!is.null(data$na)) {
     out$na <- .jdv_json_values(data$na)
   }
-  if (snapshot && length(column$errors)) out$errors <- column$errors
+  if (snapshot && length(column$errors)) {
+    out$errors <- .jdv_json_channel_errors(column$errors)
+  }
   out
 }
 
@@ -541,7 +556,7 @@ jdv_json_object <- function(x = list()) {
   list(
     schema = .jdv_schema_fields(column$schema),
     data = .jdv_json_column(column),
-    errors = column$errors
+    errors = .jdv_json_channel_errors(column$errors)
   )
 }
 
@@ -575,8 +590,8 @@ jdv_json_object <- function(x = list()) {
       schema = snapshot$schema,
       row_names = row_names,
       data = list(
-        row_index = .jdv_json_values(seq_len(snapshot$nrow)),
-        row_names = if (is.null(row_names)) {
+        source_row = .jdv_json_values(seq_len(snapshot$nrow) - 1L),
+        row_labels = if (is.null(row_names)) {
           NULL
         } else {
           .jdv_json_values(row_names)
@@ -645,16 +660,19 @@ jdv_json_object <- function(x = list()) {
     view = id,
     kind = "grid",
     access = if (content$mode == "snapshot") "snapshot" else "random",
-    encoding = "r-json",
+    encoding = "jdv-json",
     capabilities = capabilities,
     generation = generation,
     title = title,
     reason = reason,
-    mode = content$mode,
     collation = content$collation,
     nrow = content$nrow,
     ncol = content$ncol,
-    row_names = content$row_names,
+    row_labels = if (is.null(content$row_names)) {
+      NULL
+    } else {
+      .jdv_json_values(content$row_names)
+    },
     columns = .jdv_schema(content$schema)
   )
   if (!is.null(tracking)) {
@@ -1430,7 +1448,7 @@ jdv_register <- function(
   )
 }
 
-# Shared table/rows engine. The entry is already acquired by the caller.
+# Shared grid/rows engine. The entry is already acquired by the caller.
 .jdv_request_table_rows <- function(entry, params) {
   .jdv_fields(
     params,
@@ -1459,10 +1477,15 @@ jdv_register <- function(
     total_unfiltered = result$total_unfiltered,
     offset = result$offset,
     limit = result$limit,
-    data = within(result$data, {
-      row_index <- .jdv_json_values(row_index)
-      if (!is.null(row_names)) row_names <- .jdv_json_values(row_names)
-    })
+    data = list(
+      source_row = .jdv_json_values(result$data$row_index - 1L),
+      row_labels = if (is.null(result$data$row_names)) {
+        NULL
+      } else {
+        .jdv_json_values(result$data$row_names)
+      },
+      columns = result$data$columns
+    )
   )
   attr(output, "jdv_work_budget") <- budget
   output
@@ -1658,7 +1681,7 @@ jdv_register <- function(
     on.exit(.jdv_release_entry(entry), add = TRUE)
     return(.jdv_track_set(entry, enabled))
   }
-  if (method %in% c("table/rows", "view/schema", "view/close")) {
+  if (method %in% c("grid/rows", "view/schema", "view/close")) {
     .jdv_fields(
       params,
       c("view", "generation", "offset", "limit", "sort", "filter", "cols"),
@@ -1722,22 +1745,28 @@ jdv_register <- function(
       code = error$code %||% "producer_error",
       message = substr(conditionMessage(error), 1L, 1024L)
     )
-    if (!is.null(error$details)) response$error$details <- error$details
+    if (!is.null(error$details)) {
+      details <- error$details
+      if (is.list(details) && "errors" %in% names(details)) {
+        details$errors <- .jdv_json_channel_errors(details$errors)
+      }
+      response$error$details <- details
+    }
   }
   response$warnings <- .jdv_json_values(warnings)
   response
 }
 
 .jdv_trim_page <- function(page, limit) {
-  count <- min(as.integer(limit), length(page$data$row_index))
+  count <- min(as.integer(limit), length(page$data$source_row))
   take <- function(x) {
     if (is.null(x) || !(json_is_array(x) || inherits(x, "jdv_json_array"))) {
       return(x)
     }
     structure(x[seq_len(count)], class = class(x))
   }
-  page$data$row_index <- take(page$data$row_index)
-  page$data$row_names <- take(page$data$row_names)
+  page$data$source_row <- take(page$data$source_row)
+  page$data$row_labels <- take(page$data$row_labels)
   page$data$columns <- lapply(page$data$columns, function(column) {
     for (channel in names(column$data)) {
       column$data[[channel]] <- take(column$data[[channel]])
@@ -1960,10 +1989,10 @@ jdv_rpc <- function(request = NULL) {
     inherits(encoded, "jdv_query_error") &&
       encoded$code == "limit_exceeded" &&
       !inherits(result, "error") &&
-      identical(parsed$method, "table/rows") &&
+      identical(parsed$method, "grid/rows") &&
       is.list(result) &&
       is.list(result$data) &&
-      !is.null(result$data$row_index)
+      !is.null(result$data$source_row)
   ) {
     page_limit <- query_integer(result$limit, "limit")
     while (page_limit > 1) {

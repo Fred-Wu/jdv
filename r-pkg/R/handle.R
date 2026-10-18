@@ -300,10 +300,10 @@
 #'
 #' [jdv_handle_descriptor()] returns the JSON descriptor that corresponds to the
 #' parameters of a normal `view/open` message. A Snapshot descriptor contains
-#' the complete captured table and does not support `table/rows`. Use
+#' the complete captured table and does not support `grid/rows`. Use
 #' `mode = "paged"` when queries should return bounded row pages.
 #'
-#' [jdv_handle_request()] accepts `"table/rows"` for paged table handles and
+#' [jdv_handle_request()] accepts `"grid/rows"` for paged table handles and
 #' `"object/children"` for list handles. Its `params` argument is a named list
 #' using the corresponding protocol parameters: `offset`, `limit`, `sort`,
 #' `filter`, and zero-based `cols` for rows; or typed `path`, `offset`, `limit`,
@@ -351,7 +351,7 @@
 #' @param handle A handle returned by [jdv_handle()] or [jdv_handle_open()].
 #' @param max_bytes Maximum encoded JSON result size in bytes. The effective
 #'   maximum is also bounded by `jdv.max_message_bytes`.
-#' @param method Either `"table/rows"` or `"object/children"`.
+#' @param method Either `"grid/rows"` or `"object/children"`.
 #' @param params A named list of parameters for `method`.
 #' @param path A non-empty typed object path as used by `object/open`.
 #' @return
@@ -363,7 +363,7 @@
 #' descriptor <- jdv_handle_descriptor(handle)
 #' preview <- jdv_handle_request(
 #'   handle,
-#'   "table/rows",
+#'   "grid/rows",
 #'   list(offset = 0L, limit = 10L, cols = 0:3),
 #'   max_bytes = 64 * 1024
 #' )
@@ -452,7 +452,7 @@ jdv_handle_request <- function(
   ) {
     jdv_abort("invalid_argument", "method must be one non-empty string.")
   }
-  if (!method %in% c("table/rows", "object/children")) {
+  if (!method %in% c("grid/rows", "object/children")) {
     query_error(
       "method_not_found",
       "Use jdv_handle_open() to open a child handle."
@@ -479,8 +479,8 @@ jdv_handle_request <- function(
       "view and generation are supplied by the handle."
     )
   }
-  if (method == "table/rows" && identical(state$entry$mode, "tree")) {
-    query_error("unsupported", "table/rows requires a table handle.")
+  if (method == "grid/rows" && identical(state$entry$mode, "tree")) {
+    query_error("unsupported", "grid/rows requires a table handle.")
   }
   if (method == "object/children" && !identical(state$entry$mode, "tree")) {
     query_error("unsupported", "object/children requires a tree handle.")
@@ -501,7 +501,7 @@ jdv_handle_request <- function(
   )
   .jdv_handle_check_source(entry)
   full_params <- c(list(view = entry$id, generation = entry$generation), params)
-  if (method == "table/rows") {
+  if (method == "grid/rows") {
     result <- .jdv_request_table_rows(entry, full_params)
     .jdv_handle_assert_current(state, check_busy = FALSE)
     budget <- attr(result, "jdv_work_budget", exact = TRUE)
@@ -529,7 +529,7 @@ jdv_handle_request <- function(
       ) {
         stop(encoded)
       }
-      count <- length(result$data$row_index)
+      count <- length(result$data$source_row)
       if (count <= 1L) {
         query_error("limit_exceeded", "A row page cannot fit within max_bytes.")
       }

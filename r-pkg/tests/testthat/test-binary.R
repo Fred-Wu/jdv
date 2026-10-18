@@ -1,7 +1,7 @@
 binary_test_request <- function(max_bytes = 100, generation = 1) {
   .jdv_json_encode(list(
     id = "binary-request",
-    method = "table/rows",
+    method = "grid/rows",
     params = list(
       view = "binary-view",
       generation = generation,
@@ -463,7 +463,7 @@ test_that(
     removed <- FALSE
     local_mocked_bindings(
       .jdv_process_request = function(request, request_id) {
-        if (identical(request$method, "table/rows")) {
+        if (identical(request$method, "grid/rows")) {
           if (!removed) {
             removed <<- TRUE
             .jdv_close_internal(spare$id, notify = TRUE)

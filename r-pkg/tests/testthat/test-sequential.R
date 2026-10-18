@@ -187,7 +187,7 @@ test_that("sequential validation and recoverable errors preserve the stream", {
   state$failure <- NULL
   expect_s3_class(sequential_request(view), "jdv_binary_packet")
   expect_identical(
-    sequential_error(sequential_request(view, method = "table/rows")),
+    sequential_error(sequential_request(view, method = "grid/rows")),
     "unsupported"
   )
   schema <- .jdv_json_parse(sequential_request(

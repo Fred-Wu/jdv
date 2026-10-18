@@ -43,7 +43,7 @@ def main():
                     maximum = "4"
                 if case == "null_request_limit":
                     maximum = None
-                request = {"id": request_id, "method": "table/rows", "params": {
+                request = {"id": request_id, "method": "grid/rows", "params": {
                     "view": "binary-view", "generation": 1,
                     "case": case, "max_bytes": maximum,
                 }}

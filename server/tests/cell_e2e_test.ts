@@ -326,7 +326,7 @@ Deno.test({
         );
 
         const cellPath = (rowIndex: number, column: number) => [
-          { kind: "cell", row_index: rowIndex, column },
+          { kind: "cell", source_row: rowIndex, column },
         ];
         const listCell = responseResult(
           await request(
@@ -334,7 +334,7 @@ Deno.test({
             snapshot,
             "cell-list",
             "object/open",
-            { path: cellPath(1, 1) },
+            { path: cellPath(0, 1) },
           ),
         );
         assertEquals(listCell.kind, "tree");
@@ -347,7 +347,7 @@ Deno.test({
             "object/open",
             {
               path: [
-                ...cellPath(205, 1),
+                ...cellPath(204, 1),
                 { type: "index", index: 2 },
               ],
             },
@@ -361,7 +361,7 @@ Deno.test({
             snapshot,
             "cell-frame",
             "object/open",
-            { path: cellPath(2, 1) },
+            { path: cellPath(1, 1) },
           ),
         );
         assertEquals(frameCell.kind, "grid");
@@ -371,13 +371,13 @@ Deno.test({
             snapshot,
             "cell-matrix",
             "object/open",
-            { path: cellPath(3, 1) },
+            { path: cellPath(2, 1) },
           ),
         );
         assertEquals(matrixCell.kind, "grid");
 
         const invalidRequests = [
-          { path: cellPath(0, 1) },
+          { path: cellPath(-1, 1) },
           { path: cellPath(406, 1) },
           { path: cellPath(1, -1) },
           { path: cellPath(1, 3) },
@@ -402,7 +402,7 @@ Deno.test({
           "object/open",
           {
             generation: Number(snapshot.params.generation) + 1,
-            path: cellPath(1, 1),
+            path: cellPath(0, 1),
           },
         );
         assertEquals(responseErrorCode(stale), "stale_generation");
@@ -411,7 +411,7 @@ Deno.test({
           snapshot,
           "cell-nondrillable",
           "object/open",
-          { path: cellPath(1, 0) },
+          { path: cellPath(0, 0) },
         );
         assertEquals(responseErrorCode(nonDrillable), "invalid_request");
 
@@ -419,7 +419,7 @@ Deno.test({
           browser,
           paged,
           "cell-paged-rows",
-          "table/rows",
+          "grid/rows",
           {
             offset: 200,
             limit: 5,
@@ -431,20 +431,20 @@ Deno.test({
         const pagedRowsData = asRecord(
           asRecord(responseResult(pagedRows).data),
         );
-        assertEquals(pagedRowsData.row_index, [205, 204, 203, 202, 201]);
+        assertEquals(pagedRowsData.source_row, [204, 203, 202, 201, 200]);
         const pagedCell = responseResult(
           await request(
             browser,
             paged,
             "cell-paged-open",
             "object/open",
-            { path: cellPath(Number(asArray(pagedRowsData.row_index)[0]), 1) },
+            { path: cellPath(Number(asArray(pagedRowsData.source_row)[0]), 1) },
           ),
         );
         assertEquals(pagedCell.kind, "tree");
         assertEquals(pagedCell.parent, paged.params.view);
 
-        const capturePath = cellPath(1, 1);
+        const capturePath = cellPath(0, 1);
         await rEval(arf, "options(jdv.snapshot_max_cells = 0L)");
         const capturedChild = responseResult(
           await request(
@@ -458,7 +458,8 @@ Deno.test({
           ),
         );
         assertEquals(capturedChild.kind, "grid");
-        assertEquals(capturedChild.mode, "paged");
+        assertEquals(capturedChild.access, "random");
+        assertEquals(capturedChild.encoding, "jdv-json");
         await rEval(
           arf,
           "jdv_cell_capture_backing$payload[[1L]] <- " +
@@ -473,7 +474,7 @@ Deno.test({
             browser,
             capturedChildView,
             "cell-capture-old-rows",
-            "table/rows",
+            "grid/rows",
             { offset: 0, limit: 10, cols: [0] },
           ),
         );
@@ -487,7 +488,8 @@ Deno.test({
             { path: capturePath },
           ),
         );
-        assertEquals(replacementChild.mode, "paged");
+        assertEquals(replacementChild.access, "random");
+        assertEquals(replacementChild.encoding, "jdv-json");
         const replacementRows = responseResult(
           await request(
             browser,
@@ -496,7 +498,7 @@ Deno.test({
               params: replacementChild,
             },
             "cell-capture-new-rows",
-            "table/rows",
+            "grid/rows",
             { offset: 0, limit: 10, cols: [0] },
           ),
         );
@@ -582,7 +584,7 @@ Deno.test({
           await click(page, '.tabulator-page[data-page="next"]');
         }, 45_000);
         const sourceCellSelector =
-          '[data-action="open-cell"][data-row-index="205"][data-column="1"]';
+          '[data-action="open-cell"][data-row-index="204"][data-column="1"]';
         await phase(
           "Cell E2E selected cell becomes visible",
           () => page.waitForSelector(sourceCellSelector),

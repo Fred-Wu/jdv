@@ -438,7 +438,8 @@ query_channel <- function(holder, j, channel, budget = NULL) {
     } else {
       "producer_error"
     }
-    query_error(code, paste0("Could not compute ", channel, "."), result)
+    wire_channel <- if (identical(channel, "sortKey")) "sort_key" else channel
+    query_error(code, paste0("Could not compute ", wire_channel, "."), result)
   }
   query_cache_set(holder, "channel_cache", key, result$data)
 }

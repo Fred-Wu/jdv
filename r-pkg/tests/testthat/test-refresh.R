@@ -168,16 +168,16 @@ test_that("the registration intent is replayed, not the effective mode", {
     refresh_json(view)
     .jdv_json_parse(jdv_notifications())$params
   })
-  expect_identical(refreshed[[1L]]$mode, "paged")
+  expect_identical(refreshed[[1L]]$access, "random")
   expect_identical(refreshed[[1L]]$collation, "locale")
-  expect_identical(refreshed[[2L]]$mode, "snapshot")
+  expect_identical(refreshed[[2L]]$access, "snapshot")
   expect_identical(refreshed[[2L]]$collation, "locale")
-  expect_identical(refreshed[[3L]]$mode, "paged")
+  expect_identical(refreshed[[3L]]$access, "random")
   expect_identical(refresh_entry(auto$id)$intent_mode, "auto")
 
   options(jdv.snapshot_max_cells = 10000)
   refresh_json(auto$id, 2)
-  expect_identical(.jdv_json_parse(jdv_notifications())$params$mode, "snapshot")
+  expect_null(.jdv_json_parse(jdv_notifications())$params$mode)
   options(jdv.collation = NULL)
   refresh_json(snapshot$id, 2)
   expect_identical(
@@ -207,7 +207,7 @@ test_that("a failed rebuild leaves the generation, children, and state", {
       root <- jdv_register(value, mode = "paged")
       child <- refresh_open(
         root,
-        list(list(kind = "cell", row_index = 1, column = 0))
+        list(list(kind = "cell", source_row = 0, column = 0))
       )$result
       expect_type(child$view, "character")
       jdv_notifications()

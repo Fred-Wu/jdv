@@ -49,7 +49,7 @@ jdv_handle_close(handle)
 \item{max_bytes}{Maximum encoded JSON result size in bytes. The effective
 maximum is also bounded by \code{jdv.max_message_bytes}.}
 
-\item{method}{Either \code{"table/rows"} or \code{"object/children"}.}
+\item{method}{Either \code{"grid/rows"} or \code{"object/children"}.}
 
 \item{params}{A named list of parameters for \code{method}.}
 
@@ -72,10 +72,10 @@ restoring it is not supported. Treat the returned environment as opaque.
 \details{
 \code{\link[=jdv_handle_descriptor]{jdv_handle_descriptor()}} returns the JSON descriptor that corresponds to the
 parameters of a normal \code{view/open} message. A Snapshot descriptor contains
-the complete captured table and does not support \code{table/rows}. Use
+the complete captured table and does not support \code{grid/rows}. Use
 \code{mode = "paged"} when queries should return bounded row pages.
 
-\code{\link[=jdv_handle_request]{jdv_handle_request()}} accepts \code{"table/rows"} for paged table handles and
+\code{\link[=jdv_handle_request]{jdv_handle_request()}} accepts \code{"grid/rows"} for paged table handles and
 \code{"object/children"} for list handles. Its \code{params} argument is a named list
 using the corresponding protocol parameters: \code{offset}, \code{limit}, \code{sort},
 \code{filter}, and zero-based \code{cols} for rows; or typed \code{path}, \code{offset}, \code{limit},
@@ -119,7 +119,7 @@ handle <- jdv_handle(mtcars, mode = "paged")
 descriptor <- jdv_handle_descriptor(handle)
 preview <- jdv_handle_request(
   handle,
-  "table/rows",
+  "grid/rows",
   list(offset = 0L, limit = 10L, cols = 0:3),
   max_bytes = 64 * 1024
 )

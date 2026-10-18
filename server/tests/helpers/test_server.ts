@@ -152,7 +152,7 @@ export class TestServer {
       this.url,
       (message) => {
         if (
-          message.type === "request" && message.method === "table/rows" &&
+          message.type === "request" && message.method === "grid/rows" &&
           typeof message.id === "string"
         ) {
           const params = isRecord(message.params) ? message.params : {};
@@ -305,7 +305,7 @@ export class TestServer {
         frame.id !== undefined && this.#requestMethods.has(String(frame.id))
       ) {
         const method = this.#requestMethods.get(String(frame.id));
-        if (method === "table/rows") {
+        if (method === "grid/rows") {
           frame.clientId = this.#rRequestClientIds.get(String(frame.id));
           this.#tableRowsResponses.push(frame);
         }
@@ -314,10 +314,10 @@ export class TestServer {
       }
     } else {
       this.#serverToRFrames.push(frame);
-      if (frame.method === "table/rows") this.#tableRowsRequests.push(frame);
+      if (frame.method === "grid/rows") this.#tableRowsRequests.push(frame);
       if (frame.id !== undefined && frame.method) {
         this.#requestMethods.set(String(frame.id), frame.method);
-        if (frame.method === "table/rows") {
+        if (frame.method === "grid/rows") {
           const index = this.#browserRowsQueue.findIndex((request) =>
             request.view === frame.view &&
             request.generation === frame.generation &&
@@ -689,7 +689,7 @@ function summarizeFrame(
     if (typeof payload.offset === "number") frame.offset = payload.offset;
     if (typeof payload.limit === "number") frame.limit = payload.limit;
     const data = isRecord(payload.data) ? payload.data : payload;
-    if (Array.isArray(data.row_index)) frame.rowCount = data.row_index.length;
+    if (Array.isArray(data.source_row)) frame.rowCount = data.source_row.length;
     if (payload.data !== undefined) {
       frame.hasData = true;
       frame.dataBytes = encoder.encode(JSON.stringify(payload.data)).byteLength;

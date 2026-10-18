@@ -42,8 +42,8 @@ type QueryPage = {
   total: number;
   offset: number;
   data: {
-    row_index: number[];
-    row_names?: string[];
+    source_row: number[];
+    row_labels?: string[];
     columns: QueryColumn[];
   };
 };
@@ -72,20 +72,20 @@ Deno.test("page chunks fill by actual returned rows without gaps or duplicates",
           : nextOffset === 37
           ? firstPageCaps.shift() ?? 200
           : 200;
-        const count = Math.min(cap, source.data.row_index.length);
+        const count = Math.min(cap, source.data.source_row.length);
         return Promise.resolve({
           result: {
             ...source,
             data: {
               ...source.data,
-              row_index: source.data.row_index.slice(0, count),
+              source_row: source.data.source_row.slice(0, count),
               columns: source.data.columns.map((column) => ({
                 ...column,
                 data: Object.fromEntries(
                   Object.entries(column.data).map(([key, value]) => [
                     key,
                     Array.isArray(value) &&
-                      value.length === source.data.row_index.length
+                      value.length === source.data.source_row.length
                       ? value.slice(0, count)
                       : value,
                   ]),
@@ -100,19 +100,19 @@ Deno.test("page chunks fill by actual returned rows without gaps or duplicates",
         decodeRows(
           result.data.columns.map((column) => column.schema),
           result.data.columns.map((column) => column.data),
-          result.data.row_index,
-          result.data.row_names,
+          result.data.source_row,
+          result.data.row_labels,
         ),
     });
     rows.push(
-      ...page.rows.map((row: { row_index?: number }) =>
-        row.row_index as number
+      ...page.rows.map((row: { source_row?: number }) =>
+        row.source_row as number
       ),
     );
   }
 
   assertEquals(offsets, [0, 37, 49, 200]);
-  assertEquals(rows, Array.from({ length: 249 }, (_, index) => index + 1));
+  assertEquals(rows, Array.from({ length: 249 }, (_, index) => index));
 });
 
 Deno.test("Snapshot query applies sort and filter before paging", () => {
@@ -125,13 +125,13 @@ Deno.test("Snapshot query applies sort and filter before paging", () => {
   });
 
   assertEquals(page.total, 6);
-  assertEquals(page.data.row_index, [4, 5]);
+  assertEquals(page.data.source_row, [3, 4]);
 });
 
 Deno.test("browser transport ignores stale responses after table replacement", async () => {
   const socket = new FakeSocket();
   const transport = createBrowserTransport(socket);
-  const oldRequest = transport.request("r-1-1", "table/rows", {
+  const oldRequest = transport.request("r-1-1", "grid/rows", {
     view: "t1",
     generation: 1,
     offset: 0,
@@ -149,10 +149,10 @@ Deno.test("browser transport ignores stale responses after table replacement", a
     type: "response",
     id: oldFrame.id,
     session: "r-1-1",
-    result: { data: { row_index: [1] } },
+    result: { data: { source_row: [0] } },
   });
 
-  const currentRequest = transport.request("r-1-1", "table/rows", {
+  const currentRequest = transport.request("r-1-1", "grid/rows", {
     view: "t1",
     generation: 2,
     offset: 0,
@@ -163,7 +163,7 @@ Deno.test("browser transport ignores stale responses after table replacement", a
     type: "response",
     id: currentFrame.id,
     session: "r-1-1",
-    result: { data: { row_index: [7] } },
+    result: { data: { source_row: [6] } },
   };
   transport.handleMessage(currentResponse);
   assertEquals(await currentRequest, currentResponse);
@@ -173,7 +173,7 @@ Deno.test("browser transport settles one exact matching binary response", async 
   const socket = new FakeSocket();
   const transport = createBrowserTransport(socket);
   const body = new Uint8Array([0, 10, 13, 255]);
-  const request = transport.request("r-1-1", "table/rows", {
+  const request = transport.request("r-1-1", "grid/rows", {
     view: "v-1",
     generation: 7,
     max_bytes: body.length,
@@ -203,7 +203,7 @@ Deno.test("browser transport settles one exact matching binary response", async 
 Deno.test("browser transport rejects producer errors and continues after unknown codes", async () => {
   const socket = new FakeSocket();
   const transport = createBrowserTransport(socket);
-  const first = transport.request("r-1-1", "table/rows", {
+  const first = transport.request("r-1-1", "grid/rows", {
     view: "t1",
     generation: 1,
   }, 10);
@@ -233,7 +233,7 @@ Deno.test("browser transport rejects producer errors and continues after unknown
   assertEquals(producerFailure.code, "producer_error");
   assertEquals(producerFailure.details, { field: "offset", value: -1 });
 
-  const second = transport.request("r-1-1", "table/rows", {
+  const second = transport.request("r-1-1", "grid/rows", {
     view: "t1",
     generation: 1,
   }, 10);
@@ -265,7 +265,7 @@ Deno.test("browser transport rejects producer errors and continues after unknown
   assertEquals(futureFailure.code, "future_producer_failure");
   assertEquals(futureFailure.details, details);
 
-  const third = transport.request("r-1-1", "table/rows", {
+  const third = transport.request("r-1-1", "grid/rows", {
     view: "t1",
     generation: 1,
   }, 10);
@@ -274,7 +274,7 @@ Deno.test("browser transport rejects producer errors and continues after unknown
     type: "response",
     id: thirdFrame.id,
     session: "r-1-1",
-    result: { data: { row_index: [1] } },
+    result: { data: { source_row: [0] } },
   };
   transport.handleMessage(response);
   assertEquals(await third, response);
@@ -286,7 +286,7 @@ Deno.test("browser transport rejects producer errors and continues after unknown
 Deno.test("browser transport rejects malformed binary envelopes and ignores cancelled late bodies", async () => {
   const socket = new FakeSocket();
   const transport = createBrowserTransport(socket);
-  const request = transport.request("r-1-1", "table/rows", {
+  const request = transport.request("r-1-1", "grid/rows", {
     view: "v-1",
     generation: 1,
     max_bytes: 1,
@@ -304,7 +304,7 @@ Deno.test("browser transport rejects malformed binary envelopes and ignores canc
   };
   for (
     const invalidEnvelope of [
-      { ...envelope, method: "table/rows" },
+      { ...envelope, method: "grid/rows" },
       { ...envelope, error: { code: "bad" } },
       { ...envelope, result: { ...envelope.result, view: "" } },
       { ...envelope, result: { ...envelope.result, generation: 0 } },
@@ -332,7 +332,7 @@ Deno.test("browser transport rejects malformed binary envelopes and ignores canc
 
   const secondSocket = new FakeSocket();
   const secondTransport = createBrowserTransport(secondSocket);
-  const cancelled = secondTransport.request("r-2-1", "table/rows", {
+  const cancelled = secondTransport.request("r-2-1", "grid/rows", {
     view: "v-2",
     generation: 2,
   });
@@ -361,7 +361,7 @@ Deno.test("transport settles pending requests on clear and disconnect", async ()
       disconnects++;
     },
   });
-  const cleared = transport.request("r-1-1", "table/rows", {
+  const cleared = transport.request("r-1-1", "grid/rows", {
     view: "t1",
     generation: 1,
   });
@@ -374,7 +374,7 @@ Deno.test("transport settles pending requests on clear and disconnect", async ()
     session: "r-1-1",
   });
 
-  const sessionRequest = transport.request("r-2-1", "table/rows", {
+  const sessionRequest = transport.request("r-2-1", "grid/rows", {
     view: "t2",
     generation: 1,
   });
@@ -387,7 +387,7 @@ Deno.test("transport settles pending requests on clear and disconnect", async ()
     session: "r-2-1",
   });
 
-  const disconnected = transport.request("r-1-1", "table/rows", {
+  const disconnected = transport.request("r-1-1", "grid/rows", {
     view: "t1",
     generation: 1,
   });
@@ -400,7 +400,7 @@ Deno.test("transport settles pending requests on clear and disconnect", async ()
 Deno.test("transport settles server cancellation and ignores a late reply", async () => {
   const socket = new FakeSocket();
   const transport = createBrowserTransport(socket);
-  const request = transport.request("r-1-1", "table/rows", {
+  const request = transport.request("r-1-1", "grid/rows", {
     view: "t1",
     generation: 1,
   });
@@ -415,7 +415,7 @@ Deno.test("transport settles server cancellation and ignores a late reply", asyn
     type: "response",
     id: frame.id,
     session: "r-1-1",
-    result: { data: { row_index: [1] } },
+    result: { data: { source_row: [0] } },
   });
   assertEquals(socket.sent, []);
 });
@@ -427,7 +427,7 @@ Deno.test("page fill stops when its epoch changes during a response", async () =
     offset: 0,
     limit: 2,
     fetchPage: () => new Promise((resolve) => release = resolve),
-    decode: () => [{ row_index: 1 }],
+    decode: () => [{ source_row: 1 }],
     isCurrent: () => current,
   });
   current = false;
@@ -436,7 +436,7 @@ Deno.test("page fill stops when its epoch changes during a response", async () =
       offset: 0,
       total: 2,
       total_unfiltered: 2,
-      data: { row_index: [1], columns: [] },
+      data: { source_row: [0], columns: [] },
     },
   });
   await assertRejectsAbort(pending);
@@ -452,10 +452,10 @@ Deno.test("page fill returns filtered and unfiltered query totals", async () => 
           offset: 0,
           total: 1,
           total_unfiltered: 3,
-          data: { row_index: [2], columns: [] },
+          data: { source_row: [1], columns: [] },
         },
       }),
-    decode: () => [{ row_index: 2 }],
+    decode: () => [{ source_row: 1 }],
   });
   assertEquals(result.total, 1);
   assertEquals(result.total_unfiltered, 3);
@@ -473,7 +473,7 @@ Deno.test("page fill rejects an empty response before the requested total", asyn
             offset: 0,
             total: 2,
             total_unfiltered: 2,
-            data: { row_index: [], columns: [] },
+            data: { source_row: [], columns: [] },
           },
         }),
       decode: () => [],
@@ -520,7 +520,7 @@ Deno.test("decoded cell and row labels remain plain text", () => {
     ["<script>bad()</script>"],
   );
   assertEquals(decoded, [{
-    row_index: 42,
+    source_row: 42,
     row_name: "<script>bad()</script>",
     c0: "<img src=x onerror=alert(1)>",
   }]);
@@ -535,8 +535,7 @@ function snapshot(nrow: number) {
       generation: 1,
       kind: "grid",
       access: "snapshot",
-      encoding: "r-json",
-      mode: "snapshot",
+      encoding: "jdv-json",
       nrow,
       ncol: 2,
       capabilities: {
@@ -564,17 +563,17 @@ function snapshot(nrow: number) {
         },
       ],
       data: {
-        row_index: values,
-        row_names: values.map((value) => `row-${value}`),
+        source_row: values.map((value) => value - 1),
+        row_labels: values.map((value) => `row-${value}`),
         columns: [
           {
             values,
-            sortKey: values,
+            sort_key: values,
             na: values.map(() => false),
           },
           {
             values: values.map((value) => nrow + 1 - value),
-            sortKey: values.map((value) => nrow + 1 - value),
+            sort_key: values.map((value) => nrow + 1 - value),
             na: values.map(() => false),
           },
         ],

@@ -317,7 +317,7 @@ export async function fillRemotePage({
     const response = await fetchPage({ offset: cursor, limit: remaining });
     if (!isCurrent()) throw abortError("The query was replaced.");
     const result = response?.result;
-    if (!result || !result.data || !Array.isArray(result.data.row_index)) {
+    if (!result || !result.data || !Array.isArray(result.data.source_row)) {
       throw new Error("The producer returned an invalid table page.");
     }
     total = result.total;
@@ -342,7 +342,7 @@ export async function fillRemotePage({
       );
     }
     totalUnfiltered = result.total_unfiltered;
-    const count = result.data.row_index.length;
+    const count = result.data.source_row.length;
     if (!Number.isSafeInteger(result.offset) || result.offset < 0) {
       throw new Error("The producer returned invalid page bounds.");
     }

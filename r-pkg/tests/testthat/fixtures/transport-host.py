@@ -181,7 +181,7 @@ def main():
                 return
             request = {
                 "id": "mock-rows-1",
-                "method": "table/rows",
+                "method": "grid/rows",
                 "params": {
                     "view": params["view"],
                     "generation": params["generation"],
@@ -536,7 +536,7 @@ def main():
                 )
                 for column in columns
             )
-            node_count = len(data.get("row_index", [])) + sum(
+            node_count = len(data.get("source_row", [])) + sum(
                 len(channel)
                 for column in columns
                 for channel in column.values()

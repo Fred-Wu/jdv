@@ -4,7 +4,7 @@ wide_page_rpc <- function(view, include_cols = FALSE, cols = NULL) {
     params["cols"] <- list(cols)
   }
   request <- jsonlite::toJSON(
-    list(id = 1, method = "table/rows", params = params),
+    list(id = 1, method = "grid/rows", params = params),
     auto_unbox = TRUE,
     null = "null",
     digits = 17
@@ -39,7 +39,7 @@ test_that("omitted and null cols return every wide matrix column", {
   expect_equal(omitted$result$total_unfiltered, row_count)
   expect_true(omitted$result$limit > 0)
   expect_lt(omitted$result$limit, row_count)
-  expect_length(omitted$result$data$row_index, omitted$result$limit)
+  expect_length(omitted$result$data$source_row, omitted$result$limit)
   expect_length(omitted$result$data$columns, column_count)
   expect_identical(omitted$result$data$columns[[1L]]$schema$name, "v00001")
   expect_identical(

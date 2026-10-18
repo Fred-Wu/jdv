@@ -247,7 +247,7 @@ export class Hub {
     }
     if (
       ![
-        "table/rows",
+        "grid/rows",
         "view/schema",
         "view/close",
         "view/refresh",
@@ -1321,7 +1321,7 @@ export class Hub {
       left.client !== right.client || left.method !== right.method ||
       left.view !== right.view || left.generation !== right.generation
     ) return false;
-    if (left.method === "table/rows") return true;
+    if (left.method === "grid/rows") return true;
     if (left.method !== "object/children") return false;
     const leftParams = left.requestFrame?.value.params;
     const rightParams = right.requestFrame?.value.params;
@@ -1696,7 +1696,7 @@ function isObject(value: unknown): value is JsonObject {
 }
 
 function isCoalescibleMethod(method: string): boolean {
-  return method === "table/rows" || method === "object/children";
+  return method === "grid/rows" || method === "object/children";
 }
 
 function isObjectRequest(
@@ -1717,7 +1717,7 @@ function isObjectRequest(
     const cell = path[0];
     if (
       !isObject(cell) || cell.kind !== "cell" || Object.hasOwn(cell, "type") ||
-      !Number.isSafeInteger(cell.row_index) || Number(cell.row_index) < 1 ||
+      !Number.isSafeInteger(cell.source_row) || Number(cell.source_row) < 0 ||
       !Number.isSafeInteger(cell.column) || Number(cell.column) < 0 ||
       !isTypedPath(path.slice(1))
     ) return false;
@@ -1729,7 +1729,7 @@ function isObjectRequest(
       : undefined;
     return isObject(schema) && schema.drillable === true &&
       (!Number.isSafeInteger(viewParams.nrow) ||
-        Number(cell.row_index) <= Number(viewParams.nrow));
+        Number(cell.source_row) < Number(viewParams.nrow));
   }
   if (viewParams.kind !== "tree" || !isTypedPath(path)) return false;
   if (method === "object/open") {
@@ -1784,16 +1784,25 @@ function parseLimits(value: JsonObject): ProducerLimits | null {
 }
 
 function parseProducer(value: JsonObject): JsonObject | null {
-  if (typeof value.name !== "string" || typeof value.version !== "string") {
+  if (
+    !isValidMetadataText(value.name) || !isValidMetadataText(value.version)
+  ) {
     return null;
   }
   if (value.runtime !== undefined) {
     if (
-      !isObject(value.runtime) || typeof value.runtime.name !== "string" ||
-      typeof value.runtime.version !== "string"
+      !isObject(value.runtime) ||
+      !isValidMetadataText(value.runtime.name) ||
+      !isValidMetadataText(value.runtime.version)
     ) return null;
   }
   return value;
+}
+
+function isValidMetadataText(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const length = new TextEncoder().encode(value).byteLength;
+  return length >= 1 && length <= 256;
 }
 
 function isValidProducerSessionId(value: string): boolean {

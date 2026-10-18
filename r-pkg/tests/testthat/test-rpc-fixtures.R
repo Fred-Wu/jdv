@@ -50,6 +50,13 @@ rpc_fixture_snapshot <- function(open_message, template) {
   template$ncol <- as.integer(params$ncol)
   template$collation <- params$collation
   template$schema <- lapply(params$columns, function(schema) {
+    if (!is.null(schema$native_type)) {
+      schema$class <- schema$native_type
+      schema$native_type <- NULL
+    }
+    if (identical(schema$type, "categorical")) {
+      schema$type <- "factor"
+    }
     for (field in c("class", "levels")) {
       if (!is.null(schema[[field]])) {
         schema[[field]] <- unlist(schema[[field]], use.names = FALSE)
@@ -60,11 +67,12 @@ rpc_fixture_snapshot <- function(open_message, template) {
   template$columns <- lapply(seq_along(params$data$columns), function(j) {
     wire <- params$data$columns[[j]]
     data <- list()
-    for (field in c("values", "display", "sortKey", "special", "na")) {
+    for (field in c("values", "display", "sort_key", "special", "na")) {
+      internal_field <- if (identical(field, "sort_key")) "sortKey" else field
       if (!is.null(wire[[field]])) {
-        data[[field]] <- rpc_fixture_values(
+        data[[internal_field]] <- rpc_fixture_values(
           wire[[field]],
-          template$columns[[j]]$data[[field]]
+          template$columns[[j]]$data[[internal_field]]
         )
       }
     }
@@ -94,7 +102,7 @@ rpc_fixture_close <- function(id, generation = 1L) {
 rpc_fixture_page <- function(id, query) {
   request <- rpc_fixture_json(list(
     id = 1L,
-    method = "table/rows",
+    method = "grid/rows",
     params = list(
       view = id,
       generation = 1L,
@@ -131,13 +139,13 @@ test_that("public RPC round-trips every shared query fixture", {
           simplifyVector = FALSE
         )
         expect_identical(open_message$method, "view/open")
-        expect_identical(open_message$params$mode, "snapshot")
+        expect_null(open_message$params$mode)
         expect_identical(
           as.integer(unlist(
-            open_message$params$data$row_index,
+            open_message$params$data$source_row,
             use.names = FALSE
           )),
-          seq_len(nrow(x))
+          seq_len(nrow(x)) - 1L
         )
         wire_snapshot <- rpc_fixture_snapshot(open_message, snapshot_table(x))
 
@@ -163,7 +171,7 @@ test_that("public RPC round-trips every shared query fixture", {
           paged_response <- rpc_fixture_page(paged$id, query)
           expect_null(paged_response$error, info = paste(case$name, query$name))
           paged_rows <- as.integer(unlist(
-            paged_response$result$data$row_index,
+            paged_response$result$data$source_row,
             use.names = FALSE
           ))
           snapshot_rows <- snapshot_indices(
@@ -178,11 +186,11 @@ test_that("public RPC round-trips every shared query fixture", {
           )
           expect_identical(
             snapshot_rows,
-            expected,
+            expected + 1L,
             info = paste("snapshot", case$name, query$name)
           )
           expect_identical(
-            paged_rows,
+            paged_rows + 1L,
             snapshot_rows,
             info = paste("mode parity", case$name, query$name)
           )

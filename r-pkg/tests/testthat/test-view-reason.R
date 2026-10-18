@@ -45,7 +45,7 @@ test_that("object/open sends the child reason for grid and tree children", {
   )
   tree <- jdv_register(list(list(1)))
   jdv_notifications()
-  cell <- list(list(kind = "cell", row_index = 1, column = 0))
+  cell <- list(list(kind = "cell", source_row = 0, column = 0))
   step <- list(list(type = "index", index = 1))
 
   from_grid <- reason_rpc(
@@ -196,7 +196,7 @@ test_that("child titles cover slots, bindings, and grid cells", {
   }
 
   cell <- function(row, column) {
-    list(kind = "cell", row_index = row, column = column)
+    list(kind = "cell", source_row = row - 1L, column = column)
   }
   frame <- data.frame(
     id = 1:2,

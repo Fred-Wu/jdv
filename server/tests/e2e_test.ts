@@ -250,7 +250,7 @@ function rVector(column: Record<string, unknown>): string {
     );
     return `c(${tokens.join(", ")})`;
   }
-  if (type === "factor") {
+  if (type === "categorical") {
     const tokens = values.map((value) =>
       value === null ? "NA_character_" : rQuote(String(value))
     );
@@ -370,7 +370,7 @@ function responseResult(
 function responseRowIndex(message: Record<string, unknown>): number[] {
   const result = responseResult(message);
   const data = asRecord(result.data);
-  return data.row_index as number[];
+  return data.source_row as number[];
 }
 
 async function assertNoCompletedEvaluation(
@@ -409,7 +409,7 @@ Deno.test({
           fixtureTableCode("numeric-special", "snapshot", "e2e-snapshot"),
         );
         const snapshot = await openedTable(browser, "e2e-snapshot");
-        assertEquals(snapshot.params.mode, "snapshot");
+        assertEquals(snapshot.params.access, "snapshot");
         const snapshotEnvelope = { params: snapshot.params };
         const rowsBeforeSnapshotQuery =
           server.wire.snapshot().tableRowsRequests.length;
@@ -431,7 +431,7 @@ Deno.test({
           offset: 1,
           limit: 3,
         });
-        assertEquals(localResult.data.row_index, [4, 1, 5]);
+        assertEquals(localResult.data.source_row, [3, 0, 4]);
         assertEquals(
           server.wire.snapshot().tableRowsRequests.length,
           rowsBeforeSnapshotQuery,
@@ -468,7 +468,7 @@ Deno.test({
           type: "request",
           id: "e2e-busy-page",
           session: busyTable.session,
-          method: "table/rows",
+          method: "grid/rows",
           params: {
             view: busyTable.params.view,
             generation: busyTable.params.generation,
@@ -540,7 +540,7 @@ Deno.test({
           ].join("; "),
         );
         const largeTable = await openedTable(browser, "e2e-paged-large");
-        assertEquals(largeTable.params.mode, "paged");
+        assertEquals(largeTable.params.access, "random");
         assert(
           !("data" in largeTable.params),
           "Paged descriptor carried table data.",
@@ -579,7 +579,7 @@ Deno.test({
           browser,
           largeTable,
           "e2e-large-page",
-          "table/rows",
+          "grid/rows",
           {
             offset: 49_997,
             limit: 3,
@@ -588,7 +588,7 @@ Deno.test({
         );
         const largeResult = responseResult(largeResponse);
         const largeData = asRecord(largeResult.data);
-        assertEquals(largeData.row_index, [49_998, 49_999, 50_000]);
+        assertEquals(largeData.source_row, [49_997, 49_998, 49_999]);
         assertEquals((largeData.columns as unknown[]).length, 1);
         const largeColumn = asRecord((largeData.columns as unknown[])[0]);
         assertEquals(asRecord(largeColumn.schema).position, 0);
@@ -648,7 +648,7 @@ Deno.test({
             browser,
             numericTable,
             `e2e-sem-${String(query.name)}`,
-            "table/rows",
+            "grid/rows",
             {
               offset: 0,
               limit: 200,
@@ -663,7 +663,7 @@ Deno.test({
           browser,
           numericTable,
           "e2e-selected-columns",
-          "table/rows",
+          "grid/rows",
           {
             offset: 1,
             limit: 2,
@@ -671,8 +671,8 @@ Deno.test({
           },
         );
         const selectedData = asRecord(responseResult(selected).data);
-        assertEquals(selectedData.row_index, [2, 3]);
-        assertEquals(selectedData.row_names, [
+        assertEquals(selectedData.source_row, [1, 2]);
+        assertEquals(selectedData.row_labels, [
           "fixture-row-2",
           "fixture-row-3",
         ]);
@@ -684,7 +684,7 @@ Deno.test({
           browser,
           numericTable,
           "e2e-invalid-filter",
-          "table/rows",
+          "grid/rows",
           {
             filter: { op: "eq", col: 99, value: 1 },
           },
@@ -704,7 +704,7 @@ Deno.test({
               browser,
               table,
               `e2e-${caseName}-${String(query.name)}`,
-              "table/rows",
+              "grid/rows",
               {
                 offset: 0,
                 limit: 200,
@@ -734,7 +734,7 @@ Deno.test({
           browser,
           compactTable,
           "e2e-compact-tail",
-          "table/rows",
+          "grid/rows",
           { offset: 799_999_997, limit: 3 },
         );
         assertEquals(
@@ -770,7 +770,7 @@ Deno.test({
           browser,
           agreePaged,
           "e2e-snapshot-paged-agreement",
-          "table/rows",
+          "grid/rows",
           {
             sort: sharedSort,
             filter: sharedFilter,
@@ -781,8 +781,8 @@ Deno.test({
         );
         const pagedResult = responseResult(pagedResponse);
         const pagedData = asRecord(pagedResult.data);
-        assertEquals(pagedData.row_index, snapshotPage.data.row_index);
-        assertEquals(pagedData.row_names, snapshotPage.data.row_names);
+        assertEquals(pagedData.source_row, snapshotPage.data.source_row);
+        assertEquals(pagedData.row_labels, snapshotPage.data.row_labels);
         const pagedColumn =
           (pagedData.columns as Array<Record<string, unknown>>)[0];
         const snapshotColumn = snapshotPage.data.columns[0];
@@ -847,26 +847,26 @@ Deno.test({
           const local = querySnapshot({ params: calendarSnapshot.params }, {
             filter: query.filter,
           });
-          assertEquals(local.data.row_index, query.expected);
+          assertEquals(local.data.source_row, query.expected);
           const remote = await request(
             browser,
             calendarPaged,
             `e2e-calendar-filter-${index}`,
-            "table/rows",
+            "grid/rows",
             { offset: 0, limit: 20, filter: query.filter, cols: [0, 1, 2] },
           );
-          assertEquals(responseRowIndex(remote), local.data.row_index);
+          assertEquals(responseRowIndex(remote), local.data.source_row);
         }
         const calendarRemoteAll = await request(
           browser,
           calendarPaged,
           "e2e-calendar-all-rows",
-          "table/rows",
+          "grid/rows",
           { offset: 0, limit: 20, cols: [0, 1, 2] },
         );
         assertEquals(
           responseRowIndex(calendarRemoteAll),
-          calendarSnapshotRows.data.row_index,
+          calendarSnapshotRows.data.source_row,
         );
 
         const sharedRegistry = await rEval(
@@ -917,7 +917,7 @@ Deno.test({
           limit: 2,
           cols: [1],
         });
-        assertEquals(restoredQuery.data.row_index.length, 2);
+        assertEquals(restoredQuery.data.source_row.length, 2);
         assertEquals(
           server.wire.snapshot().tableRowsRequests.length,
           restoredRowsBefore,
@@ -926,7 +926,7 @@ Deno.test({
           reconnect,
           agreePaged,
           "e2e-reconnect-paged",
-          "table/rows",
+          "grid/rows",
           {
             offset: 0,
             limit: 2,
@@ -979,7 +979,7 @@ Deno.test({
           reconnect,
           reopened,
           "e2e-reconnected-paged",
-          "table/rows",
+          "grid/rows",
           { offset: 0, limit: 2, cols: [0] },
         );
         assertEquals(responseRowIndex(reopenedPage), [1, 2]);

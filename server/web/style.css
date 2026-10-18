@@ -248,22 +248,22 @@ legend {
   opacity: 0.35;
 }
 
-#column-window .tabulator-header .tabulator-col[tabulator-field="row_index"],
-#column-window .tabulator-row .tabulator-cell[tabulator-field="row_index"] {
+#column-window .tabulator-header .tabulator-col[tabulator-field="source_row"],
+#column-window .tabulator-row .tabulator-cell[tabulator-field="source_row"] {
   transform: translateX(var(--row-horizontal-compensation, 0px));
   z-index: 12;
   border-right: 2px solid #aaa;
 }
 
-#column-window .tabulator-header .tabulator-col[tabulator-field="row_index"] {
+#column-window .tabulator-header .tabulator-col[tabulator-field="source_row"] {
   background-color: #e2e2e2;
 }
 
-#column-window .tabulator-row-odd .tabulator-cell[tabulator-field="row_index"] {
+#column-window .tabulator-row-odd .tabulator-cell[tabulator-field="source_row"] {
   background-color: #fff;
 }
 
-#column-window .tabulator-row-even .tabulator-cell[tabulator-field="row_index"] {
+#column-window .tabulator-row-even .tabulator-cell[tabulator-field="source_row"] {
   background-color: #efefef;
 }
 

@@ -705,7 +705,7 @@
     view = id,
     kind = "tree",
     access = "random",
-    encoding = "r-json",
+    encoding = "jdv-json",
     capabilities = jdv_json_object(capabilities),
     generation = generation,
     title = title,

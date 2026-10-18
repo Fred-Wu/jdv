@@ -448,7 +448,7 @@ function viewSupport(descriptor) {
       capabilities.sort === false && capabilities.filter === false &&
       capabilities.known_total === false && capabilities.children === false;
   }
-  if (descriptor.encoding !== "r-json") return false;
+  if (descriptor.encoding !== "jdv-json") return false;
   if (descriptor.kind === "tree") {
     return descriptor.access === "random" &&
       capabilities.seek === true && capabilities.sort === false &&
@@ -457,8 +457,6 @@ function viewSupport(descriptor) {
   }
   return descriptor.kind === "grid" &&
     (descriptor.access === "snapshot" || descriptor.access === "random") &&
-    descriptor.mode ===
-      (descriptor.access === "snapshot" ? "snapshot" : "paged") &&
     Array.isArray(descriptor.columns);
 }
 
@@ -481,7 +479,7 @@ function queryCountLabel(total, totalUnfiltered) {
 function setTableMeta(state, total, totalUnfiltered) {
   metaElement.textContent = `${queryCountLabel(total, totalUnfiltered)} · ${
     countLabel(state.descriptor.ncol, "column")
-  } · ${state.descriptor.mode} · ${state.session}`;
+  } · ${state.session}`;
 }
 
 function refreshAvailable(descriptor) {
@@ -652,7 +650,7 @@ function renderLists() {
       ? `Object tree · ${treeDescriptorText(descriptor)} · ${session}`
       : `${countLabel(descriptor.nrow, "row")} · ${
         countLabel(descriptor.ncol, "column")
-      } · ${descriptor.mode ?? "unknown"} · ${session}`;
+      } · ${session}`;
     const button = document.createElement("button");
     button.type = "button";
     const support = viewSupport(descriptor);
@@ -758,7 +756,7 @@ function openView(session, descriptor, returnTree = null, restored = null) {
   titleElement.textContent = descriptor.title ?? "Untitled table";
   metaElement.textContent = `${countLabel(descriptor.nrow, "row")} · ${
     countLabel(descriptor.ncol, "column")
-  } · ${descriptor.mode} · ${session}`;
+  } · ${session}`;
   warningsElement.replaceChildren();
   paginationElement.replaceChildren();
   populateColumnChoices();
@@ -785,7 +783,7 @@ function openView(session, descriptor, returnTree = null, restored = null) {
       resizable: false,
     },
     columns: initialColumns,
-    index: "row_index",
+    index: "source_row",
     placeholder: "No rows match this query.",
     pagination: descriptor.capabilities.seek === true &&
       descriptor.capabilities.known_total === true,
@@ -1054,7 +1052,7 @@ function loadArrowTreeChildren(state, offset) {
 }
 
 function pageMetadataForRow(record, rowIndex) {
-  const row = rowIndex - 1;
+  const row = rowIndex;
   const all = new Map(record.arrowPageMetadata);
   for (const [page, metadata] of record.cachePages ?? []) {
     if (!all.has(page)) all.set(page, metadata);
@@ -1365,7 +1363,7 @@ function filterOperators(schema) {
   if (selected?.descriptor.capabilities.filter !== true) return [];
   const common = [["is_na", "Is missing"]];
   if (schema.filterable !== true) return common;
-  if (["string", "factor"].includes(schema.type)) {
+  if (["string", "categorical"].includes(schema.type)) {
     return common.concat([
       ["contains", "Contains"],
       ["starts_with", "Starts with"],
@@ -1430,7 +1428,7 @@ function updateFilterInputs() {
   } else if (schema?.type === "duration") {
     filterHelp.textContent =
       `Use a number in ${schema.units}, or H:MM:SS with an optional fraction and a leading minus sign. Comparisons use the underlying value, not the displayed rounding.`;
-  } else if (["string", "factor"].includes(schema?.type)) {
+  } else if (["string", "categorical"].includes(schema?.type)) {
     filterHelp.textContent =
       "Text comparisons ignore ASCII letter case; non-ASCII case is preserved.";
   } else {
@@ -1443,7 +1441,7 @@ function valuePlaceholder(schema, fallback = "Value") {
   if (schema?.type === "datetime") return "YYYY-MM-DDTHH:MM:SSZ or ±HH:MM";
   if (schema?.type === "date") return "YYYY-MM-DD";
   if (schema?.type === "duration") {
-    return schema.class?.includes("hms") ? "H:MM:SS" : `${schema.units}`;
+    return `${schema.units}`;
   }
   if (schema?.type === "int64") return "Exact decimal integer";
   return fallback;
@@ -1524,7 +1522,7 @@ function buildFilterAst() {
 }
 
 function parseFilterValue(schema, value, label = "Value") {
-  if (["string", "factor"].includes(schema.type)) return value;
+  if (["string", "categorical"].includes(schema.type)) return value;
   if (schema.type === "boolean") {
     throw new Error("Choose a Boolean filter operation.");
   }
@@ -1725,13 +1723,13 @@ function buildTableColumns(positions) {
   const state = selected;
   const columns = [{
     title: "Row",
-    field: "row_index",
+    field: "source_row",
     width: 86,
     minWidth: 86,
     maxWidth: 86,
     headerSort: false,
     resizable: false,
-    formatter: textFormatter,
+    formatter: (cell) => textNode(Number(cell.getValue()) + 1),
   }];
   for (const position of positions) {
     const schema = selected.columns[position];
@@ -1762,8 +1760,8 @@ function buildTableColumns(positions) {
 
 function cellFormatter(cell, schema, state) {
   const content = textNode(cell.getValue() ?? "");
-  const rowIndex = cell.getRow().getData().row_index;
-  if (!Number.isSafeInteger(rowIndex) || rowIndex < 1) return content;
+  const rowIndex = cell.getRow().getData().source_row;
+  if (!Number.isSafeInteger(rowIndex) || rowIndex < 0) return content;
   content.className = "drillable-cell";
   const open = document.createElement("button");
   open.type = "button";
@@ -1773,13 +1771,13 @@ function cellFormatter(cell, schema, state) {
   open.textContent = "Open";
   open.setAttribute(
     "aria-label",
-    `Open row ${rowIndex}, column ${schema.position}`,
+    `Open row ${rowIndex + 1}, column ${schema.position}`,
   );
   open.addEventListener("click", (event) => {
     event.stopPropagation();
     openChild(state, [{
       kind: "cell",
-      row_index: rowIndex,
+      source_row: rowIndex,
       column: schema.position,
     }]);
   });
@@ -1789,8 +1787,8 @@ function cellFormatter(cell, schema, state) {
 
 function arrowCellFormatter(cell, schema, state) {
   const content = textNode(cell.getValue() ?? "");
-  const rowIndex = cell.getRow().getData().row_index;
-  if (!Number.isSafeInteger(rowIndex) || rowIndex < 1) return content;
+  const rowIndex = cell.getRow().getData().source_row;
+  if (!Number.isSafeInteger(rowIndex) || rowIndex < 0) return content;
   content.className = "drillable-cell";
   const inspect = document.createElement("button");
   inspect.type = "button";
@@ -1800,7 +1798,7 @@ function arrowCellFormatter(cell, schema, state) {
   inspect.textContent = "Inspect";
   inspect.setAttribute(
     "aria-label",
-    `Inspect row ${rowIndex}, column ${schema.position ?? schema.index}`,
+    `Inspect row ${rowIndex + 1}, column ${schema.position ?? schema.index}`,
   );
   inspect.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -1856,8 +1854,8 @@ async function requestRows(params) {
         rows: decodeRows(
           schemas,
           data,
-          page.data.row_index,
-          page.data.row_names,
+          page.data.source_row,
+          page.data.row_labels,
         ),
         warnings: page.warnings ?? [],
       };
@@ -1908,8 +1906,8 @@ async function requestPagedRows(state, query) {
       return decodeRows(
         schemas,
         data,
-        result.data.row_index,
-        result.data.row_names,
+        result.data.source_row,
+        result.data.row_labels,
       );
     },
     isCurrent: () => isCurrent(state, query.epoch),
@@ -1919,7 +1917,7 @@ async function requestPagedRows(state, query) {
 function sendPagedRequest(state, params) {
   const promise = transport.request(
     state.session,
-    "table/rows",
+    "grid/rows",
     params,
     60_000,
   );
@@ -2021,7 +2019,7 @@ function openSequential(session, descriptor, returnTree) {
   state.table = new globalThis.Tabulator(windowElement, {
     height: "460px",
     layout: "fitData",
-    index: "row_index",
+    index: "source_row",
     data: state.cache.rows(),
     columnDefaults: { width: COLUMN_WIDTH, resizable: false },
     columns: buildTableColumns(state.columns.map((_, i) => i)),
@@ -2086,11 +2084,13 @@ function updateSequentialProgress(state) {
       `${progress.gap[0]}–${progress.gap[1]} rows advanced but not displayed.`,
     );
   }
-  if (state.cache.evictedThrough > 0) {
+  if (state.cache.evictedThrough >= 0) {
     notices.push(
       state.cacheEnabled
         ? `Older rows were evicted from this browser's display cache; load earlier cached rows to retrieve any pages the host still retains.`
-        : `Rows through ${state.cache.evictedThrough} were evicted from this browser's display cache.`,
+        : `Rows through ${
+          state.cache.evictedThrough + 1
+        } were evicted from this browser's display cache.`,
     );
   }
   sequentialNotice.textContent = notices.join(" ");

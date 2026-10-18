@@ -17,7 +17,11 @@ test_that(
         snapshot <- query_wire_snapshot(snapshot_table(x))
         expect_identical(snapshot$schema, holder$schema)
         for (j in seq_along(case$columns)) {
-          expect_identical(holder$schema[[j]]$type, case$columns[[j]]$type)
+          fixture_type <- case$columns[[j]]$type
+          if (identical(fixture_type, "categorical")) {
+            fixture_type <- "factor"
+          }
+          expect_identical(holder$schema[[j]]$type, fixture_type)
           expect_identical(holder$schema[[j]]$units, case$columns[[j]]$units)
           expect_identical(
             holder$schema[[j]]$filterable,
@@ -45,6 +49,8 @@ test_that(
           expected <- as.integer(unlist(request$expected))
           if (!length(expected)) {
             expected <- integer()
+          } else {
+            expected <- expected + 1L
           }
           actual <- query_indices(holder, sort, request$filter)
           reference <- snapshot_indices(snapshot, sort, request$filter)

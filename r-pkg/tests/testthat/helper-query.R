@@ -123,7 +123,7 @@ query_fixture_table <- function(columns) {
     values <- switch(
       type,
       integer = as.integer(values),
-      factor = factor(
+      categorical = factor(
         values,
         levels = unlist(column$levels),
         ordered = isTRUE(column$ordered)

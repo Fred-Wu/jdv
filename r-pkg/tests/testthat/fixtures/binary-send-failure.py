@@ -28,7 +28,7 @@ def main():
             connection.settimeout(10)
             stream = connection.makefile("rb")
             count = BATCH if mode == "timeout" else 1
-            requests = [{"id": i, "method": "table/rows", "params": {
+            requests = [{"id": i, "method": "grid/rows", "params": {
                 "view": "binary-view", "generation": 1, "max_bytes": BODY_BYTES,
             }} for i in range(count)]
             connection.sendall(b"".join(json.dumps(r).encode() + b"\n" for r in requests))

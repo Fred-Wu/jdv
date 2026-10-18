@@ -48,7 +48,7 @@ test_that("handles do not use the shared registry or notification session", {
   table_handle <- jdv_handle(data.frame(value = c(3L, 1L, 2L)), mode = "paged")
   tree_handle <- jdv_handle(list(items = list(answer = 42L)))
   child <- jdv_handle_open(tree_handle, list(list(type = "index", index = 1L)))
-  jdv_handle_request(table_handle, "table/rows", list(offset = 0L, limit = 2L))
+  jdv_handle_request(table_handle, "grid/rows", list(offset = 0L, limit = 2L))
   jdv_handle_request(
     tree_handle,
     "object/children",
@@ -92,13 +92,13 @@ test_that("handles work without a session and survive ordinary close", {
   jdv_notifications()
   expect_identical(.jdv_session_owner(), "embedded")
   expect_error(
-    jdv_handle_request(handle, "table/rows", list(offset = 0L, limit = 2L)),
+    jdv_handle_request(handle, "grid/rows", list(offset = 0L, limit = 2L)),
     NA
   )
   jdv_disconnect()
   expect_identical(.jdv_session_owner(), "none")
   expect_error(
-    jdv_handle_request(handle, "table/rows", list(offset = 0L, limit = 2L)),
+    jdv_handle_request(handle, "grid/rows", list(offset = 0L, limit = 2L)),
     NA
   )
   expect_length(ls(.jdv_state$entries, all.names = TRUE), 0L)
@@ -174,7 +174,7 @@ test_that("handles remain independent while a viewer transport is connected", {
   expect_silent(jdv_handle_descriptor(handle))
   expect_silent(jdv_handle_request(
     handle,
-    "table/rows",
+    "grid/rows",
     list(offset = 0L, limit = 2L)
   ))
   expect_identical(handle_registry_snapshot(), before)
@@ -182,7 +182,7 @@ test_that("handles remain independent while a viewer transport is connected", {
   jdv_disconnect()
   expect_silent(jdv_handle_request(
     handle,
-    "table/rows",
+    "grid/rows",
     list(offset = 0L, limit = 2L)
   ))
   jdv_handle_close(handle)

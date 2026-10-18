@@ -99,9 +99,9 @@ export function createArrowTreePage(
 export function createArrowCellRoot(page, rowIndex, column) {
   const state = pages.get(page);
   if (!state) invalid("Unknown Arrow page handle.");
-  integer(rowIndex, "source row", 1);
+  integer(rowIndex, "source row", 0);
   integer(column, "column selector");
-  const row = rowIndex - 1 - state.first;
+  const row = rowIndex - state.first;
   if (row < 0 || row >= state.count) {
     invalid("The source row is outside this page.");
   }
