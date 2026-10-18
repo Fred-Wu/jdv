@@ -73,8 +73,9 @@ producer written in another language can use the same host and viewer.
 
 A producer offers data in one of two ways:
 
-- **JSON grids** have a known row count. The producer sorts and filters the
-  data and returns any requested page.
+- **JSON grids** have a known row count. A small grid is sent whole, and the
+  browser sorts and filters it. For a larger grid, the producer sorts and
+  filters the data and returns any requested page.
 - **Arrow streams** are read forward, one page at a time, and the total row
   count does not need to be known. Use them for data that is expensive to
   count, such as query results.
