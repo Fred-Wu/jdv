@@ -16,9 +16,9 @@ for example from a failing \code{format()} method of the user, are not wrapped.
 }
 \details{
 The codes below are the ones R functions can signal. \code{invalid_request},
-\code{unsupported}, \code{unavailable}, \code{limit_exceeded}, \code{schema_changed}, \code{producer_error},
-\code{view_not_found}, and \code{in_use} have the same meaning as the protocol error
-codes of the same name (see \link{jdv_spec}). \code{invalid_argument},
+\code{unsupported}, \code{unavailable}, \code{limit_exceeded}, \code{schema_changed},
+\code{producer_error}, \code{view_not_found}, and \code{in_use} have the same meaning as the
+protocol error codes of the same name (see \link{jdv_spec}). \code{invalid_argument},
 \code{connect_failed}, \code{not_connected}, and \code{shutting_down} exist only in the R
 API; they are never sent to a viewer.\tabular{ll}{
    Code \tab Signaled when \cr

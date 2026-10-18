@@ -991,7 +991,8 @@
 #' parent was refreshed, replaced, or closed. Sequential views are not
 #' refreshable (`unsupported`) because a consumed stream cannot be rewound.
 #' Errors are `invalid_request`, `view_not_found`, `stale_generation`,
-#' `unsupported`, and the usual `limit_exceeded`, `producer_error`, and `interrupted`.
+#' `unsupported`, and the usual `limit_exceeded`, `producer_error`, and
+#' `interrupted`.
 #'
 #' A hub that forwards requests treats a sent `view/refresh` specially. The
 #' successful refresh queues the new generation's `view/open` before its own
@@ -1104,8 +1105,8 @@
 #' A view that has no `tracking` field, or whose state is `"lost"`, fails with
 #' `unsupported`, and the message names the reason. A generation that is not
 #' current fails with `stale_generation`, and an unknown view with
-#' `view_not_found`. The other errors are `invalid_request`, `producer_error`, and
-#' `interrupted`.
+#' `view_not_found`. The other errors are `invalid_request`, `producer_error`,
+#' and `interrupted`.
 #'
 #' `view/tracking` is a notification:
 #'
@@ -1259,11 +1260,11 @@
 #' @section `hello`:
 #'
 #'
-#' At the start of each R-to-host connection, the transport sends a `hello`
-#' notification with no request id. [jdv_connect()] sends it immediately, even
-#' with no open view; a connection opened implicitly by [jdv_view()] sends it
-#' with the first `view/open`. Promoting an implicit connection with
-#' [jdv_connect()] does not send it again:
+#' At the start of each producer-to-host connection, the producer sends a
+#' `hello` notification with no request id. [jdv_connect()] sends it
+#' immediately, even with no open view; a connection opened implicitly by
+#' [jdv_view()] sends it with the first `view/open`. Promoting an implicit
+#' connection with [jdv_connect()] does not send it again:
 #'
 #' ```json
 #' {
@@ -1271,12 +1272,15 @@
 #'   "params": {
 #'     "protocol": 1,
 #'     "session": "r-1234-1",
-#'     "pid": 1234,
-#'     "r_version": "4.6.1",
-#'     "jdv_version": "0.1.0",
+#'     "producer": {
+#'       "name": "jdv",
+#'       "version": "0.1.0",
+#'       "runtime": {"name": "R", "version": "4.6.1"}
+#'     },
+#'     "wake": true,
 #'     "limits": {
-#'       "max_receive_frames": 264,
-#'       "max_receive_bytes": 1048577,
+#'       "max_unacked_frames": 264,
+#'       "max_unacked_bytes": 1048577,
 #'       "queue_messages": 256,
 #'       "queue_bytes": 16777216,
 #'       "max_request_bytes": 1048576,
@@ -1286,13 +1290,21 @@
 #' }
 #' ```
 #'
-#' `session` is `r-<pid>-<connection counter>`. The counter advances for each
-#' connection from that R process. The session id does not use random numbers
-#' and must not change R's random state. `r_version` and `jdv_version` are
-#' version strings. Protocol major version 1 is the v1 contract in this
-#' document. A peer that does not support the announced major version rejects
-#' the handshake with `unsupported`; it must not continue with incompatible
-#' message semantics.
+#' `session` is an opaque session identifier. It is 1–128 ASCII bytes and may
+#' contain only letters, digits, `.`, `_`, `:`, and `-`. A receiver must not
+#' infer a process id or connection counter from it. A host rejects an invalid
+#' identifier, and rejects a duplicate active identifier with `in_use`.
+#' `producer` identifies the producer: `name` and `version` are strings.
+#' `runtime` is optional; when present, it has string `name` and `version`
+#' fields. Protocol major version 1 is the v1 contract in this document. A peer
+#' that does not support the announced major version rejects the handshake with
+#' `unsupported`; it must not continue with incompatible message semantics.
+#'
+#' `wake` is optional and, when present, is a Boolean. An omitted value means
+#' `false`; any other type is invalid. When `true`, the host must send periodic
+#' `wake` notifications while requests await terminal responses. When omitted or
+#' `false`, the host must not send `wake`. A producer that needs periodic wakes
+#' sets `wake` to `true`.
 #'
 #' The transport emits `hello` as part of connection setup. It is not a method
 #' handled by [jdv_rpc()]. For an embedded session it is the first message in
@@ -1303,27 +1315,37 @@
 #' Entries created with [jdv_register()] share this process-wide registry and
 #' are cleared by a viewer disconnect as well.
 #'
-#' `params.limits` reports the effective limits captured for this connection:
-#' the maximum complete frames and bytes read in one receive callback, pending
-#' queue message and byte limits, and maximum request and response bytes. Hosts
-#' use the smaller of each reported value and their own configured bound.
+#' `params.limits` is required and contains all six required limits, each a
+#' positive safe integer: `max_unacked_frames` and `max_unacked_bytes` bound the
+#' complete host-to-producer JSONL frames and bytes sent without cumulative
+#' acknowledgement; `queue_messages` and `queue_bytes` bound producer-side
+#' pending work; `max_request_bytes` and `max_message_bytes` bound one request
+#' and one producer message. A host uses the smaller of each reported value and
+#' its own configured bound. Missing or invalid limits reject the handshake.
+#'
+#' The R producer generates `session` as `r-<pid>-<connection counter>`. The
+#' counter advances for each connection from that R process, and generating an
+#' identifier does not use or change R's random state. Its `producer` metadata
+#' names jdv and the R runtime, and it sets `wake` to `true`.
 #'
 #'
 #' @section `wake` and `cancel`:
 #'
 #'
-#' `wake` has no response and no parameters. In the synchronous API it is a
-#' no-op returning `NULL`. On the local transport it asks the R receiver to
+#' `wake` has no response and no parameters. A host must not send it when
+#' `hello.params.wake` is omitted or `false`; when that value is `true`, the
+#' host must send wakes repeatedly at a regular interval while one or more
+#' requests are awaiting terminal responses. In the synchronous API `wake` is a
+#' no-op returning `NULL`. On the R local transport it asks the receiver to
 #' check whether queued requests can run; receiving a wake does not itself
 #' dispatch a request. A normal package API-entry preflight is receive-only and
 #' does not dispatch requests. While R is executing a function frame, the
-#' receive callback can read and queue a request but cannot dispatch it. Hosts
-#' must send wakes repeatedly at a regular interval while one or more requests
-#' are awaiting terminal responses. A single wake is not guaranteed to cause a
-#' pending request to run because it may arrive during either receive-only
-#' preflight or function-frame execution. A 50 ms interval is a valid host
-#' implementation choice, but that exact interval is not required of every host.
-#' Hosts must keep wakes within applicable frame, byte, and send-rate limits.
+#' receive callback can read and queue a request but cannot dispatch it. A
+#' single wake is not guaranteed to cause a pending request to run because it
+#' may arrive during either receive-only preflight or function-frame execution.
+#' A 50 ms interval is a valid host implementation choice, but that exact
+#' interval is not required of every host. Hosts must keep wakes within
+#' applicable frame, byte, and send-rate limits.
 #'
 #' `cancel` has no response and takes `{ "id": requestId }` in `params`. It
 #' identifies a request by the same string-or-safe-integer rules as envelope
@@ -1345,14 +1367,12 @@
 #' @section `ack`:
 #'
 #'
-#' The R transport sends `{"method":"ack","params":{"frames":N}}` at the end of
-#' a receive callback after it has read at least one complete frame. `N` is the
-#' cumulative number of complete host-to-R JSONL frames read on that connection,
-#' including `wake`, `cancel`, malformed, and rejected frames. It is a safe
-#' integer and never decreases. The host releases frame and byte credit through
-#' that cumulative frame boundary. The acknowledgement is sent after the receive
-#' loop, so frames sent in response to an acknowledgement are read in a later
-#' callback.
+#' Every producer must send `{"method":"ack","params":{"frames":N}}` after it
+#' has read one or more complete frames. `N` is the cumulative number of
+#' complete host-to-producer JSONL frames read on that connection, including
+#' `wake`, `cancel`, malformed, and rejected frames. It is a safe integer and
+#' never decreases. The host releases frame and byte credit through that
+#' cumulative frame boundary.
 #'
 #'
 #' @section Column types:
@@ -1532,7 +1552,7 @@
 #' | `unsupported`      | A known operation or encoding is not supported for this table or protocol version.                                                                              |
 #' | `limit_exceeded`   | A configured request, page, or JSON byte limit was exceeded.                                                                                                    |
 #' | `schema_changed`   | A retained grid source (Paged or a drillable Snapshot) no longer matches its registered dimensions, names, or classes, or a required channel no longer matches. |
-#' | `producer_error`          | A producer method or other request computation failed.                                                                                                                |
+#' | `producer_error`   | A producer method or other request computation failed.                                                                                                          |
 #' | `interrupted`      | Request processing began and was interrupted.                                                                                                                   |
 #' | `cancelled`        | The accepted request was cancelled before processing began.                                                                                                     |
 #' | `expired`          | The request deadline elapsed before processing began.                                                                                                           |
@@ -1540,7 +1560,7 @@
 #' | `stale_generation` | The request names a generation that is no longer active.                                                                                                        |
 #' | `view_not_found`   | The view id is missing or closed.                                                                                                                               |
 #' | `cache_changed`    | A host-only sequential append cursor differs from the observed tail; refresh the host page catalog before advancing.                                            |
-#' | `in_use`           | Another browser owns the sequential lease, a next request is still pending, or a reentrant operation cannot proceed, such as registering during a refresh.      |
+#' | `in_use`           | A session id is already active, another browser owns the sequential lease, a next request is still pending, or a reentrant operation cannot proceed.      |
 #' | `stream_failed`    | A sequential producer encountered a terminal failure; close or register a new stream to continue.                                                               |
 #' | `method_not_found` | No implementation exists for the requested method.                                                                                                              |
 #'
@@ -1603,9 +1623,11 @@
 #' @section Local transport and execution gate:
 #'
 #'
-#' The R transport bounds the pending queue to 256 messages and 16 MiB by
-#' default. Each inbound JSON line is limited by `jdv.max_request_bytes` (1 MiB
-#' by default), and each outbound line by `jdv.max_message_bytes` (10 MiB by
+#' The following limits and dispatch rules describe the R producer transport;
+#' another producer may implement its execution gate differently. The R
+#' transport bounds the pending queue to 256 messages and 16 MiB by default.
+#' Each inbound JSON line is limited by `jdv.max_request_bytes` (1 MiB by
+#' default), and each outbound line by `jdv.max_message_bytes` (10 MiB by
 #' default). A read callback processes at most `max(64 KiB, request limit + 1)`
 #' bytes. One native poll or event callback drains at most eight queued
 #' requests; each request in that batch passes through its own execution-gate
@@ -1625,32 +1647,33 @@
 #' count toward the frame limit. A host that exceeds either callback quota is
 #' disconnected. Each receive callback acknowledges the cumulative number of
 #' complete frames read, including malformed or rejected frames; the host
-#' releases frame and byte credit through that boundary. While at least one
-#' request is awaiting a terminal response, hosts must send `wake` notifications
-#' repeatedly at a regular interval until no live requests remain. A single wake
-#' is insufficient: a normal package API-entry preflight is receive-only and
-#' does not dispatch work, and receiving a wake while R is in a function frame
-#' only allows requests to be queued for later dispatch. A 50 ms interval is a
-#' valid implementation choice, but the protocol does not require every host to
-#' use that interval. Wake frames remain subject to the same applicable credit
-#' and rate limits as other traffic. Hosts must keep at most 32 view requests
-#' awaiting a response. Before sending a page request that makes an unsent page
-#' request obsolete, hosts must replace the unsent request with the newer page.
-#' Hosts must bound the cumulative unconfirmed output prefix to the receive
-#' callback's frame and byte quotas so multiple writes cannot exceed one
-#' callback's budget when coalesced. Each `cancel` and `wake` frame consumes the
-#' same frame and byte credit as a request. Before dispatch, the transport
-#' removes cancelled and expired queued requests and sends their terminal
-#' errors, including while another R method is running. The R adapter returns
-#' `view_not_found` for a closed or missing view and `stale_generation` for an
-#' obsolete generation. For each request, dispatch requires native `busy == 0`
-#' and a single [base::sys.nframe()] evaluation in `R_BaseEnv` to return zero.
-#' If the queue is empty, the gate skips that evaluation. A started request that
-#' fails, including an interrupt, is terminal and is never retried. A
-#' synchronous or queued stale generation returns `stale_generation`. A second
-#' live pending request with the same typed id is rejected as `invalid_request`
-#' on a best-effort basis and closes the connection to avoid ambiguous
-#' responses. Cancelled requests no longer reserve their ids.
+#' releases frame and byte credit through that boundary. Since the R producer
+#' sets `hello.params.wake` to `true`, hosts must send `wake` notifications
+#' repeatedly at a regular interval while a request awaits a terminal response.
+#' A single wake is insufficient for this R execution gate: a normal package
+#' API-entry preflight is receive-only and does not dispatch work, and receiving
+#' a wake while R is in a function frame only allows requests to be queued for
+#' later dispatch. A 50 ms interval is a valid implementation choice, but the
+#' protocol does not require every host to use that interval. Wake frames remain
+#' subject to the same applicable credit and rate limits as other traffic. Hosts
+#' must keep at most 32 view requests awaiting a response. Before sending a page
+#' request that makes an unsent page request obsolete, hosts must replace the
+#' unsent request with the newer page. Hosts must bound the cumulative
+#' unconfirmed output prefix to the receive callback's frame and byte quotas so
+#' multiple writes cannot exceed one callback's budget when coalesced. Each
+#' `cancel` and `wake` frame consumes the same frame and byte credit as a
+#' request. Before dispatch, the transport removes cancelled and expired queued
+#' requests and sends their terminal errors, including while another R method is
+#' running. The R adapter returns `view_not_found` for a closed or missing view
+#' and `stale_generation` for an obsolete generation. For each request, dispatch
+#' requires native `busy == 0` and a single [base::sys.nframe()] evaluation in
+#' `R_BaseEnv` to return zero. If the queue is empty, the gate skips that
+#' evaluation. A started request that fails, including an interrupt, is terminal
+#' and is never retried. A synchronous or queued stale generation returns
+#' `stale_generation`. A second live pending request with the same typed id is
+#' rejected as `invalid_request` on a best-effort basis and closes the
+#' connection to avoid ambiguous responses. Cancelled requests no longer reserve
+#' their ids.
 #'
 #' The gate temporarily saves `R_interrupts_suspended`, sets it to `TRUE` for
 #' the single frame-count evaluation, and restores the prior value with

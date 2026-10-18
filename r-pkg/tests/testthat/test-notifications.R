@@ -48,11 +48,24 @@ test_that("an embedded session queues hello before the first view/open", {
   expect_identical(jdv_notifications(), character())
 
   limits <- .jdv_json_parse(messages[[1L]])$params$limits
+  hello <- .jdv_json_parse(messages[[1L]])$params
+  expect_setequal(
+    names(hello),
+    c("protocol", "session", "producer", "wake", "limits")
+  )
+  expect_identical(hello$producer$name, "jdv")
+  expect_identical(
+    hello$producer$version,
+    as.character(utils::packageVersion("jdv"))
+  )
+  expect_identical(hello$producer$runtime$name, "R")
+  expect_identical(hello$producer$runtime$version, as.character(getRversion()))
+  expect_identical(hello$wake, TRUE)
   expect_setequal(
     names(limits),
     c(
-      "max_receive_frames",
-      "max_receive_bytes",
+      "max_unacked_frames",
+      "max_unacked_bytes",
       "queue_messages",
       "queue_bytes",
       "max_request_bytes",

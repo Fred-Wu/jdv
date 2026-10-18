@@ -278,22 +278,37 @@ local({
     received <- jsonlite::fromJSON(result_path, simplifyVector = FALSE)
     received$debug_transport_status <- transport_status_summary()
     expect_identical(received$hello$method, "hello")
+    expect_setequal(
+      names(received$hello$params),
+      c("protocol", "session", "producer", "wake", "limits")
+    )
+    expect_identical(received$hello$params$producer$name, "jdv")
+    expect_identical(
+      received$hello$params$producer$version,
+      as.character(utils::packageVersion("jdv"))
+    )
+    expect_identical(received$hello$params$producer$runtime$name, "R")
+    expect_identical(
+      received$hello$params$producer$runtime$version,
+      as.character(getRversion())
+    )
+    expect_identical(received$hello$params$wake, TRUE)
     expect_identical(received$open$method, "view/open")
     expect_identical(received$open$params$view, id)
     expect_identical(received$open$params$title, "x")
     expect_setequal(
       names(received$hello$params$limits),
       c(
-        "max_receive_frames",
-        "max_receive_bytes",
+        "max_unacked_frames",
+        "max_unacked_bytes",
         "queue_messages",
         "queue_bytes",
         "max_request_bytes",
         "max_message_bytes"
       )
     )
-    expect_gt(received$hello$params$limits$max_receive_frames, 0)
-    expect_gt(received$hello$params$limits$max_receive_bytes, 0)
+    expect_gt(received$hello$params$limits$max_unacked_frames, 0)
+    expect_gt(received$hello$params$limits$max_unacked_bytes, 0)
     expect_equal(
       received$hello$params$limits$max_message_bytes,
       as.numeric(.jdv_max_message_bytes())
@@ -307,7 +322,7 @@ local({
       as.numeric(queue_bytes)
     )
     expect_equal(
-      received$hello$params$limits$max_receive_frames,
+      received$hello$params$limits$max_unacked_frames,
       as.numeric(
         queue_messages + getOption("jdv.transport.max_drain_requests", 8)
       )
@@ -317,7 +332,7 @@ local({
       as.numeric(.jdv_max_request_bytes())
     )
     expect_equal(
-      received$hello$params$limits$max_receive_bytes,
+      received$hello$params$limits$max_unacked_bytes,
       as.numeric(max(64 * 1024, .jdv_max_request_bytes() + 1))
     )
     if (scenario == "typed-id" && !length(received$responses)) {

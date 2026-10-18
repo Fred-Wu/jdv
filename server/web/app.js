@@ -631,8 +631,10 @@ function renderLists() {
     heading.textContent = `Session ${id}`;
     const detail = document.createElement("p");
     detail.className = "muted";
-    detail.textContent = `R ${info.r_version ?? "unknown"} · jdv ${
-      info.jdv_version ?? "unknown"
+    const producer = info.producer;
+    const runtime = producer.runtime;
+    detail.textContent = `${producer.name} ${producer.version}${
+      runtime ? ` · ${runtime.name} ${runtime.version}` : ""
     }`;
     item.append(heading, detail);
     sessionsElement.append(item);

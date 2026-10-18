@@ -45,9 +45,9 @@
 #' for example from a failing `format()` method of the user, are not wrapped.
 #'
 #' The codes below are the ones R functions can signal. `invalid_request`,
-#' `unsupported`, `unavailable`, `limit_exceeded`, `schema_changed`, `producer_error`,
-#' `view_not_found`, and `in_use` have the same meaning as the protocol error
-#' codes of the same name (see [jdv_spec]). `invalid_argument`,
+#' `unsupported`, `unavailable`, `limit_exceeded`, `schema_changed`,
+#' `producer_error`, `view_not_found`, and `in_use` have the same meaning as the
+#' protocol error codes of the same name (see [jdv_spec]). `invalid_argument`,
 #' `connect_failed`, `not_connected`, and `shutting_down` exist only in the R
 #' API; they are never sent to a viewer.
 #'
@@ -253,10 +253,10 @@ jdv_abort <- function(code, message) stop(jdv_condition(code, message))
 .jdv_embedded_hello_limits <- function() {
   limits <- .jdv_transport_limits()
   list(
-    max_receive_frames = as.integer(
+    max_unacked_frames = as.integer(
       limits$queue_messages + limits$max_drain_requests
     ),
-    max_receive_bytes = limits$max_receive_bytes,
+    max_unacked_bytes = limits$max_receive_bytes,
     queue_messages = limits$queue_messages,
     queue_bytes = limits$queue_bytes,
     max_request_bytes = limits$max_request_bytes,

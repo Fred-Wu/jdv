@@ -414,8 +414,8 @@
   # A new connection must not inherit notifications from an earlier session.
   .jdv_queue_reset(.jdv_notification_limits())
   .jdv_state$transport_limits <- list(
-    max_receive_frames = status$max_receive_frames,
-    max_receive_bytes = status$max_receive_bytes,
+    max_unacked_frames = status$max_receive_frames,
+    max_unacked_bytes = status$max_receive_bytes,
     queue_messages = status$queue_messages_limit,
     queue_bytes = status$queue_bytes_limit,
     max_request_bytes = status$max_request_bytes,
@@ -447,9 +447,12 @@
     params = list(
       protocol = 1L,
       session = paste0("r-", Sys.getpid(), "-", .jdv_state$session_counter),
-      pid = as.integer(Sys.getpid()),
-      r_version = as.character(getRversion()),
-      jdv_version = as.character(utils::packageVersion("jdv")),
+      producer = list(
+        name = "jdv",
+        version = as.character(utils::packageVersion("jdv")),
+        runtime = list(name = "R", version = as.character(getRversion()))
+      ),
+      wake = TRUE,
       limits = limits
     )
   )

@@ -115,18 +115,20 @@ Deno.test({
       sortable: position === 0,
       filterable: position < 2,
     }));
-    const session = `r-${Deno.pid}-71`;
+    const session = `smoke.session-${Deno.pid}-71`;
     await writeFrame(rConnection, {
       method: "hello",
       params: {
         protocol: 1,
         session,
-        pid: Deno.pid,
-        r_version: "4.5.0",
-        jdv_version: "0.0.0",
+        producer: {
+          name: "fixture-producer",
+          version: "2.1",
+          runtime: { name: "fixture-runtime", version: "3.4" },
+        },
         limits: {
-          max_receive_frames: 4096,
-          max_receive_bytes: 64 * 1024 * 1024,
+          max_unacked_frames: 4096,
+          max_unacked_bytes: 64 * 1024 * 1024,
           queue_messages: 256,
           queue_bytes: 16 * 1024 * 1024,
           max_request_bytes: 1024 * 1024,
@@ -216,6 +218,10 @@ Deno.test({
           204,
         );
         await waitForSelector(page, '#status[data-state="connected"]');
+        assertEquals(
+          await text(page, "#sessions article p"),
+          "fixture-producer 2.1 · fixture-runtime 3.4",
+        );
         await clickButton(page, "Open object", "#tables article", 1);
         await waitForSelector(page, "#tree-viewer:not([hidden])");
         await waitForSelector(
@@ -2415,9 +2421,10 @@ Deno.test({
       params: {
         protocol: 1,
         session: "r-86-1",
+        producer: { name: "test", version: "1" },
         limits: {
-          max_receive_frames: 4096,
-          max_receive_bytes: 64 * 1024 * 1024,
+          max_unacked_frames: 4096,
+          max_unacked_bytes: 64 * 1024 * 1024,
           queue_messages: 256,
           queue_bytes: 16 * 1024 * 1024,
           max_request_bytes: 1024 * 1024,
@@ -2901,12 +2908,10 @@ Deno.test({
       params: {
         protocol: 1,
         session: `r-${Deno.pid}-90`,
-        pid: Deno.pid,
-        r_version: "4.5.0",
-        jdv_version: "0.0.0",
+        producer: { name: "test", version: "1" },
         limits: {
-          max_receive_frames: 4096,
-          max_receive_bytes: 64 * 1024 * 1024,
+          max_unacked_frames: 4096,
+          max_unacked_bytes: 64 * 1024 * 1024,
           queue_messages: 256,
           queue_bytes: 16 * 1024 * 1024,
           max_request_bytes: 1024 * 1024,
@@ -3232,12 +3237,10 @@ Deno.test({
       params: {
         protocol: 1,
         session: `r-${Deno.pid}-91`,
-        pid: Deno.pid,
-        r_version: "4.6.0",
-        jdv_version: "0.0.0",
+        producer: { name: "test", version: "1" },
         limits: {
-          max_receive_frames: 4096,
-          max_receive_bytes: 64 * 1024 * 1024,
+          max_unacked_frames: 4096,
+          max_unacked_bytes: 64 * 1024 * 1024,
           queue_messages: 256,
           queue_bytes: 16 * 1024 * 1024,
           max_request_bytes: 1024 * 1024,

@@ -34,8 +34,8 @@ const BINARY_PREFIX_BYTES = 4;
 const encoder = new TextEncoder();
 
 interface ProducerLimits {
-  receiveFrames: number;
-  receiveBytes: number;
+  unackedFrames: number;
+  unackedBytes: number;
   queueMessages: number;
   queueBytes: number;
   maxRequestBytes: number;
@@ -94,6 +94,7 @@ interface ProducerSession {
   id: string;
   hello: JsonObject;
   limits: ProducerLimits;
+  wake: boolean;
   peer: ProtocolPeer;
   views: Map<string, ViewRecord>;
   pending: Map<string, PendingRequest>;
@@ -702,11 +703,16 @@ export class Hub {
     const limits = isObject(params) && isObject(params.limits)
       ? parseLimits(params.limits)
       : null;
+    const producer = isObject(params) && isObject(params.producer)
+      ? parseProducer(params.producer)
+      : null;
     if (
       message.method !== "hello" || !isObject(params) ||
       params.protocol !== 1 ||
       typeof params.session !== "string" ||
-      !/^r-[0-9]+-[0-9]+$/.test(params.session) || !limits
+      !isValidProducerSessionId(params.session) || !limits ||
+      !producer ||
+      (params.wake !== undefined && typeof params.wake !== "boolean")
     ) {
       void peer.send({
         id: null,
@@ -720,11 +726,22 @@ export class Hub {
     }
     const id = params.session;
     const previous = this.#sessions.get(id);
-    if (previous) this.#dropSession(previous, "session_replaced");
+    if (previous) {
+      void peer.send({
+        id: null,
+        error: {
+          code: "in_use",
+          message: "The producer session id is already in use.",
+        },
+        warnings: [],
+      }).catch(() => undefined).finally(() => peer.close());
+      return null;
+    }
     const session: ProducerSession = {
       id,
       hello: message,
       limits,
+      wake: params.wake === true,
       peer,
       views: new Map(),
       pending: new Map(),
@@ -1435,7 +1452,7 @@ export class Hub {
   }
 
   #startWake(session: ProducerSession): void {
-    if (session.wakeTimer !== undefined) return;
+    if (!session.wake || session.wakeTimer !== undefined) return;
     session.wakeTimer = setInterval(() => {
       if (
         session.closed ||
@@ -1514,8 +1531,8 @@ export class Hub {
   ): boolean {
     const usedFrames = session.credits.size;
     const usedBytes = session.ordinaryBytes + session.cancelBytes;
-    const maxFrames = Math.min(WIRE_MAX_FRAMES, session.limits.receiveFrames);
-    const maxBytes = Math.min(WIRE_MAX_BYTES, session.limits.receiveBytes);
+    const maxFrames = Math.min(WIRE_MAX_FRAMES, session.limits.unackedFrames);
+    const maxBytes = Math.min(WIRE_MAX_BYTES, session.limits.unackedBytes);
     if (usedFrames >= maxFrames || usedBytes + bytes > maxBytes) {
       return false;
     }
@@ -1653,23 +1670,23 @@ export class Hub {
   }
 
   #ordinaryFrameLimit(session: ProducerSession): number {
-    const total = Math.min(WIRE_MAX_FRAMES, session.limits.receiveFrames);
+    const total = Math.min(WIRE_MAX_FRAMES, session.limits.unackedFrames);
     return total - this.#cancelFrameReserve(session);
   }
 
   #ordinaryByteLimit(session: ProducerSession): number {
-    const total = Math.min(WIRE_MAX_BYTES, session.limits.receiveBytes);
+    const total = Math.min(WIRE_MAX_BYTES, session.limits.unackedBytes);
     return total - this.#cancelByteReserve(session);
   }
 
   #cancelFrameReserve(session: ProducerSession): number {
-    const total = Math.min(WIRE_MAX_FRAMES, session.limits.receiveFrames);
+    const total = Math.min(WIRE_MAX_FRAMES, session.limits.unackedFrames);
     const messages = this.#liveRequestLimit(session);
     return Math.min(CANCEL_RESERVE_FRAMES, messages, total - 1);
   }
 
   #cancelByteReserve(session: ProducerSession): number {
-    const total = Math.min(WIRE_MAX_BYTES, session.limits.receiveBytes);
+    const total = Math.min(WIRE_MAX_BYTES, session.limits.unackedBytes);
     return Math.min(CANCEL_RESERVE_BYTES, total - 1);
   }
 }
@@ -1744,32 +1761,44 @@ function isTypedPath(value: unknown): boolean {
 
 function parseLimits(value: JsonObject): ProducerLimits | null {
   const fields = [
-    "max_receive_frames",
-    "max_receive_bytes",
+    "max_unacked_frames",
+    "max_unacked_bytes",
     "queue_messages",
     "queue_bytes",
     "max_request_bytes",
+    "max_message_bytes",
   ] as const;
   if (
     fields.some((field) =>
       !Number.isSafeInteger(value[field]) || Number(value[field]) < 1
     )
   ) return null;
-  if (
-    value.max_message_bytes !== undefined &&
-    (!Number.isSafeInteger(value.max_message_bytes) ||
-      Number(value.max_message_bytes) < 1)
-  ) return null;
   return {
-    receiveFrames: Number(value.max_receive_frames),
-    receiveBytes: Number(value.max_receive_bytes),
+    unackedFrames: Number(value.max_unacked_frames),
+    unackedBytes: Number(value.max_unacked_bytes),
     queueMessages: Number(value.queue_messages),
     queueBytes: Number(value.queue_bytes),
     maxRequestBytes: Number(value.max_request_bytes),
-    maxMessageBytes: value.max_message_bytes === undefined
-      ? MAX_PRODUCER_BINARY_FRAME_BYTES
-      : Number(value.max_message_bytes),
+    maxMessageBytes: Number(value.max_message_bytes),
   };
+}
+
+function parseProducer(value: JsonObject): JsonObject | null {
+  if (typeof value.name !== "string" || typeof value.version !== "string") {
+    return null;
+  }
+  if (value.runtime !== undefined) {
+    if (
+      !isObject(value.runtime) || typeof value.runtime.name !== "string" ||
+      typeof value.runtime.version !== "string"
+    ) return null;
+  }
+  return value;
+}
+
+function isValidProducerSessionId(value: string): boolean {
+  return value.length >= 1 && value.length <= 128 &&
+    !/[^A-Za-z0-9._:-]/.test(value);
 }
 
 function effectiveBinaryByteLimit(session: ProducerSession): number {

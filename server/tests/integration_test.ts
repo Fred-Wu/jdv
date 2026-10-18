@@ -274,17 +274,15 @@ Deno.test({
         params: {
           protocol: 1,
           session: "r-4242-1",
+          producer: { name: "test", version: "1" },
           limits: {
-            max_receive_frames: 128,
-            max_receive_bytes: 512 * 1024,
+            max_unacked_frames: 128,
+            max_unacked_bytes: 512 * 1024,
             queue_messages: 128,
             queue_bytes: 16 * 1024 * 1024,
             max_request_bytes: 10 * 1024 * 1024,
             max_message_bytes: 10 * 1024 * 1024,
           },
-          pid: 4242,
-          r_version: "4.6.1",
-          jdv_version: "0.1.0",
         },
       });
       assertMessage(await browser.read(), "session/open");
@@ -427,17 +425,15 @@ Deno.test({
         params: {
           protocol: 1,
           session: "r-4243-1",
+          producer: { name: "test", version: "1" },
           limits: {
-            max_receive_frames: 128,
-            max_receive_bytes: 512 * 1024,
+            max_unacked_frames: 128,
+            max_unacked_bytes: 512 * 1024,
             queue_messages: 128,
             queue_bytes: 16 * 1024 * 1024,
             max_request_bytes: 10 * 1024 * 1024,
             max_message_bytes: 10 * 1024 * 1024,
           },
-          pid: 4243,
-          r_version: "4.6.1",
-          jdv_version: "0.1.0",
         },
       });
       assertMessage(await browser.read(), "session/open");

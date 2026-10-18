@@ -51,8 +51,8 @@ class MemoryConnection implements ByteConnection {
 type JsonRecord = Record<string, unknown>;
 
 const DEFAULT_LIMITS = {
-  max_receive_frames: 128,
-  max_receive_bytes: 512 * 1024,
+  max_unacked_frames: 128,
+  max_unacked_bytes: 512 * 1024,
   queue_messages: 128,
   queue_bytes: 16 * 1024 * 1024,
   max_request_bytes: 10 * 1024 * 1024,
@@ -231,10 +231,8 @@ Deno.test("invalid hello followed by valid hello in one chunk is terminal", asyn
     params: {
       protocol: 1,
       session: "r-1-1",
-      limits: (({ max_message_bytes: _unused, ...legacyLimits }) =>
-        legacyLimits)(
-          DEFAULT_LIMITS,
-        ),
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
     },
   });
   connection.injectRaw(new TextEncoder().encode(`${invalid}\n${valid}\n`));
@@ -249,7 +247,7 @@ Deno.test("invalid hello followed by valid hello in one chunk is terminal", asyn
   hub.close();
 });
 
-Deno.test("hello requires every positive integer receive and queue limit", async () => {
+Deno.test("hello requires every positive integer limit", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
   hub.acceptProducer(connection);
@@ -257,19 +255,70 @@ Deno.test("hello requires every positive integer receive and queue limit", async
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-5000-1", limits: incomplete },
+    params: {
+      protocol: 1,
+      session: "r-5000-1",
+      producer: { name: "test", version: "1" },
+      limits: incomplete,
+    },
   });
   await waitFor(() => connection.closed);
   assertEquals(JSON.parse(connection.writes[0]).error.code, "unsupported");
   hub.close();
 });
 
-Deno.test("hello accepts an omitted max_message_bytes limit for older peers", async () => {
+Deno.test("hello rejects each omitted limit field", async () => {
+  for (const field of Object.keys(DEFAULT_LIMITS)) {
+    const hub = new Hub();
+    const connection = new MemoryConnection();
+    hub.acceptProducer(connection);
+    const limits: Record<string, number> = { ...DEFAULT_LIMITS };
+    delete limits[field];
+    connection.inject({
+      id: "hello",
+      method: "hello",
+      params: {
+        protocol: 1,
+        session: "missing-limit",
+        producer: { name: "test", version: "1" },
+        limits,
+      },
+    });
+    await waitFor(() => connection.closed);
+    assertEquals(JSON.parse(connection.writes[0]).error.code, "unsupported");
+    hub.close();
+  }
+});
+
+Deno.test("hello rejects non-positive or unsafe limit values", async () => {
+  for (const field of Object.keys(DEFAULT_LIMITS)) {
+    for (const value of [0, Number.MAX_SAFE_INTEGER + 1, "1"]) {
+      const hub = new Hub();
+      const connection = new MemoryConnection();
+      hub.acceptProducer(connection);
+      const limits: Record<string, unknown> = { ...DEFAULT_LIMITS };
+      limits[field] = value;
+      connection.inject({
+        id: "hello",
+        method: "hello",
+        params: {
+          protocol: 1,
+          session: "invalid-limit",
+          producer: { name: "test", version: "1" },
+          limits,
+        },
+      });
+      await waitFor(() => connection.closed);
+      assertEquals(JSON.parse(connection.writes[0]).error.code, "unsupported");
+      hub.close();
+    }
+  }
+});
+
+Deno.test("hello rejects a missing max_message_bytes limit", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
   hub.acceptProducer(connection);
-  const browser = new MemoryBrowser();
-  hub.attach(browser);
   const { max_message_bytes: _unused, ...legacyLimits } = DEFAULT_LIMITS;
   connection.inject({
     id: "hello",
@@ -277,14 +326,364 @@ Deno.test("hello accepts an omitted max_message_bytes limit for older peers", as
     params: {
       protocol: 1,
       session: "r-5001-1",
+      producer: { name: "test", version: "1" },
       limits: legacyLimits,
     },
   });
-  await browser.nextMessage((message) =>
-    message.type === "session/open" && message.session === "r-5001-1"
-  );
-  assertEquals(connection.closed, false);
+  await waitFor(() => connection.closed);
+  assertEquals(JSON.parse(connection.writes[0]).error.code, "unsupported");
   hub.close();
+});
+
+Deno.test("hello accepts opaque session ids at both length boundaries", async () => {
+  for (const session of ["x", "A0._:-", "agent.alpha:2", "x".repeat(128)]) {
+    const hub = new Hub();
+    const connection = new MemoryConnection();
+    hub.acceptProducer(connection);
+    const browser = new MemoryBrowser();
+    hub.attach(browser);
+    connection.inject({
+      id: "hello",
+      method: "hello",
+      params: {
+        protocol: 1,
+        session,
+        producer: { name: "other-language", version: "1.0" },
+        limits: { ...DEFAULT_LIMITS },
+      },
+    });
+    await browser.nextMessage((message) =>
+      message.type === "session/open" && message.session === session
+    );
+    assertEquals(connection.closed, false);
+    hub.close();
+  }
+});
+
+Deno.test("hello rejects session ids outside the ASCII byte rule", async () => {
+  for (const session of ["", "x".repeat(129), "agent\n", "agent\r", "é"]) {
+    const hub = new Hub();
+    const connection = new MemoryConnection();
+    hub.acceptProducer(connection);
+    connection.inject({
+      id: "hello",
+      method: "hello",
+      params: {
+        protocol: 1,
+        session,
+        producer: { name: "test", version: "1" },
+        limits: { ...DEFAULT_LIMITS },
+      },
+    });
+    await waitFor(() => connection.closed);
+    assertEquals(JSON.parse(connection.writes[0]).error.code, "unsupported");
+    hub.close();
+  }
+});
+
+Deno.test("hello validates required producer and runtime metadata", async () => {
+  const producerValues: unknown[] = [
+    undefined,
+    null,
+    {},
+    { name: 1, version: "1" },
+    { name: "test", version: null },
+    { name: "test", version: "1", runtime: null },
+    { name: "test", version: "1", runtime: { name: "rt" } },
+  ];
+  for (const producer of producerValues) {
+    const hub = new Hub();
+    const connection = new MemoryConnection();
+    hub.acceptProducer(connection);
+    connection.inject({
+      id: "hello",
+      method: "hello",
+      params: {
+        protocol: 1,
+        session: "metadata-test",
+        ...(producer === undefined ? {} : { producer }),
+        limits: { ...DEFAULT_LIMITS },
+      },
+    });
+    await waitFor(() => connection.closed);
+    assertEquals(JSON.parse(connection.writes[0]).error.code, "unsupported");
+    hub.close();
+  }
+});
+
+Deno.test("hello rejects an invalid wake value", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptProducer(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "wake-invalid",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+      wake: 1,
+    },
+  });
+  await waitFor(() => connection.closed);
+  assertEquals(JSON.parse(connection.writes[0]).error.code, "unsupported");
+  hub.close();
+});
+
+Deno.test("duplicate producer session id is rejected without disturbing live work", async () => {
+  const hub = new Hub();
+  const original = new MemoryConnection();
+  hub.acceptProducer(original);
+  original.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "shared.session",
+      producer: { name: "first", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
+  });
+  openTable(original);
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  await browser.nextMessage((message) => message.type === "view/open");
+  hub.handleBrowser(browser, {
+    type: "request",
+    id: "pending-before-duplicate",
+    session: "shared.session",
+    method: "view/schema",
+    params: { view: "table-1", generation: 1 },
+  });
+  const request = await original.nextWrite(0);
+
+  const duplicate = new MemoryConnection();
+  hub.acceptProducer(duplicate);
+  duplicate.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "shared.session",
+      producer: { name: "second", version: "2" },
+      limits: { ...DEFAULT_LIMITS },
+    },
+  });
+  await waitFor(() => duplicate.closed);
+  assertEquals(JSON.parse(duplicate.writes[0]).error.code, "in_use");
+  assertEquals(original.closed, false);
+
+  const reconnect = new MemoryBrowser();
+  hub.attach(reconnect);
+  const sessions = reconnect.messages[0].sessions as JsonRecord[];
+  assertEquals(sessions.length, 1);
+  assertEquals(sessions[0].hello, {
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "shared.session",
+      producer: { name: "first", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
+  });
+  assertEquals((sessions[0].views as JsonRecord[]).length, 1);
+
+  original.inject({ id: request.id, result: { columns: ["x"] } });
+  const response = await browser.nextMessage((message) =>
+    message.type === "response" && message.id === "pending-before-duplicate"
+  );
+  assertEquals(response.result, { columns: ["x"] });
+  hub.close();
+});
+
+Deno.test("duplicate producer session id preserves cached pages", async () => {
+  const f = await sequentialHubFixture();
+  try {
+    f.request(f.owner, "cache-before-duplicate");
+    await waitFor(() => f.sent().length === 1);
+    injectStreamResult(f, f.sent()[0].id);
+    await waitFor(() => f.owner.binaryMessages.length === 1);
+
+    const duplicate = new MemoryConnection();
+    f.hub.acceptProducer(duplicate);
+    duplicate.inject({
+      id: "hello",
+      method: "hello",
+      params: {
+        protocol: 1,
+        session: "r-9010-1",
+        producer: { name: "second", version: "2" },
+        limits: { ...DEFAULT_LIMITS },
+      },
+    });
+    await waitFor(() => duplicate.closed);
+    assertEquals(JSON.parse(duplicate.writes[0]).error.code, "in_use");
+
+    const info = cachedResult(
+      cacheRequest(f, f.other, "cache-after-duplicate"),
+    );
+    assertEquals(info.last_page, 0);
+    assertEquals(info.rows_seen, 3);
+  } finally {
+    f.hub.close();
+  }
+});
+
+Deno.test("wake false keeps requests and ACK credit independent", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptProducer(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "wake-disabled",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS, max_unacked_frames: 1 },
+      wake: false,
+    },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "view/open");
+    hub.handleBrowser(browser, {
+      type: "request",
+      id: "first",
+      session: "wake-disabled",
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
+    });
+    const first = await connection.nextWrite(0);
+    await new Promise((resolve) => setTimeout(resolve, 125));
+    assertEquals(connection.writes.length, 1);
+
+    connection.inject({ id: first.id, result: { columns: ["x"] } });
+    await browser.nextMessage((message) =>
+      message.type === "response" && message.id === "first"
+    );
+    hub.handleBrowser(browser, {
+      type: "request",
+      id: "second",
+      session: "wake-disabled",
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assertEquals(connection.writes.length, 1);
+
+    connection.inject(notification("ack", { frames: 1 }));
+    const second = await connection.nextWrite(1);
+    assertEquals(second.method, "view/schema");
+    connection.inject({ id: second.id, result: { columns: ["x"] } });
+    await browser.nextMessage((message) =>
+      message.type === "response" && message.id === "second"
+    );
+    assertEquals(
+      connection.writes.some((line) =>
+        (JSON.parse(line) as JsonRecord).method === "wake"
+      ),
+      false,
+    );
+  } finally {
+    hub.close();
+  }
+});
+
+Deno.test("omitted wake defaults off and request timeout still fires", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptProducer(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "wake-default",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "view/open");
+    hub.handleBrowser(browser, {
+      type: "request",
+      id: "timeout-without-wake",
+      session: "wake-default",
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
+      timeoutMs: 100,
+    });
+    await connection.nextWrite(0);
+    const timeout = await browser.nextMessage((message) =>
+      message.type === "error" && message.id === "timeout-without-wake"
+    );
+    assertEquals(timeout.code, "timeout");
+    assertEquals(
+      connection.writes.some((line) =>
+        (JSON.parse(line) as JsonRecord).method === "wake"
+      ),
+      false,
+    );
+  } finally {
+    hub.close();
+  }
+});
+
+Deno.test("wake false still sends a busy notification for a slow request", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptProducer(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "busy-without-wake",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+      wake: false,
+    },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  openTable(connection);
+  try {
+    await browser.nextMessage((message) => message.type === "view/open");
+    hub.handleBrowser(browser, {
+      type: "request",
+      id: "slow-without-wake",
+      session: "busy-without-wake",
+      method: "view/schema",
+      params: { view: "table-1", generation: 1 },
+      timeoutMs: 5_000,
+    });
+    const request = await connection.nextWrite(0);
+    const busy = await browser.nextMessage((message) =>
+      message.type === "busy" && message.id === "slow-without-wake"
+    );
+    assertEquals(busy.id, "slow-without-wake");
+    assertEquals(connection.writes.length, 1);
+    assertEquals(
+      connection.writes.some((line) =>
+        (JSON.parse(line) as JsonRecord).method === "wake"
+      ),
+      false,
+    );
+    connection.inject({ id: request.id, result: { columns: ["x"] } });
+    await browser.nextMessage((message) =>
+      message.type === "response" && message.id === "slow-without-wake"
+    );
+  } finally {
+    hub.close();
+  }
 });
 
 Deno.test("Hub relays a bounded Arrow IPC body in one browser binary frame", async () => {
@@ -294,7 +693,12 @@ Deno.test("Hub relays a bounded Arrow IPC body in one browser binary frame", asy
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-6100-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-6100-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -351,7 +755,12 @@ Deno.test("Hub relays an empty binary body for a zero-byte request budget", asyn
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-6102-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-6102-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -395,7 +804,12 @@ Deno.test("Hub rejects a binary response for a different view generation", async
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-6110-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-6110-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -437,7 +851,12 @@ Deno.test("Hub drains a cancelled binary body before the next JSONL response", a
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-6111-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-6111-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -500,7 +919,12 @@ Deno.test("Hub rejects an over-budget binary response and continues with the nex
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-6101-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-6101-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -555,7 +979,12 @@ Deno.test("R request ids are remapped and table close updates the Snapshot cache
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-1-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-1-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -640,7 +1069,12 @@ Deno.test("tree child requests route typed paths and distinguish stale views", a
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-81-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-81-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -781,7 +1215,12 @@ Deno.test("object/open registers the child from R's notification even after brow
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-82-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-82-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -921,7 +1360,12 @@ Deno.test("an object/open response alone never registers a child view", async ()
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-84-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-84-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -952,7 +1396,12 @@ Deno.test("a closed child is not revived by a late object/open response", async 
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-85-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-85-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -983,7 +1432,12 @@ Deno.test("view lineage rejects self-parent and cycles before cascade close", as
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-83-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-83-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -1091,7 +1545,12 @@ Deno.test("cancelled late replies release their request slot without reaching th
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-2-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-2-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -1130,7 +1589,12 @@ Deno.test("queued row pages coalesce and wait behind the already sent page", asy
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-3-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-3-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -1169,7 +1633,12 @@ Deno.test("terminal replies free request slots without acknowledging wire credit
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-4-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-4-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -1241,7 +1710,12 @@ Deno.test("repeated limit errors release request slots but retain frame credit",
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-11-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-11-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -1310,7 +1784,12 @@ Deno.test("reserved cancellation slots remain usable behind a full ordinary queu
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-5-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-5-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -1369,7 +1848,12 @@ Deno.test("late close results update only their still-current table generation",
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-6-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-6-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -1419,7 +1903,12 @@ Deno.test("a cancelled table close still clears its current Snapshot cache", asy
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-7-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-7-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -1466,7 +1955,12 @@ Deno.test("closing a child clears only that view and cancels its pending work", 
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-83-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-83-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const reader = new MemoryBrowser();
   const closer = new MemoryBrowser();
@@ -1558,7 +2052,13 @@ Deno.test("request timeout stops wakes and ignores a later result", async () => 
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-8-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-8-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+      wake: true,
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -1636,7 +2136,13 @@ Deno.test("silent wake traffic pauses at the frame window and resumes on a resul
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-9-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-9-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+      wake: true,
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -1710,9 +2216,10 @@ Deno.test("future ACKs and terminal replies cannot free wire credit", async () =
     params: {
       protocol: 1,
       session: "r-5001-1",
+      producer: { name: "test", version: "1" },
       limits: {
         ...DEFAULT_LIMITS,
-        max_receive_frames: 9,
+        max_unacked_frames: 9,
         queue_messages: 8,
       },
     },
@@ -1781,6 +2288,7 @@ Deno.test("a request larger than R's negotiated single-request limit is rejected
     params: {
       protocol: 1,
       session: "r-5004-1",
+      producer: { name: "test", version: "1" },
       limits: { ...DEFAULT_LIMITS, max_request_bytes: 128 },
     },
   });
@@ -1816,6 +2324,7 @@ Deno.test("a single request larger than R's queue byte limit is rejected", async
     params: {
       protocol: 1,
       session: "r-5006-1",
+      producer: { name: "test", version: "1" },
       limits: { ...DEFAULT_LIMITS, queue_bytes: 1024 },
     },
   });
@@ -1855,9 +2364,10 @@ Deno.test("a one-message R queue retains the latest unsent page behind a live pa
     params: {
       protocol: 1,
       session: "r-5005-1",
+      producer: { name: "test", version: "1" },
       limits: {
         ...DEFAULT_LIMITS,
-        max_receive_frames: 2,
+        max_unacked_frames: 2,
         queue_messages: 1,
       },
     },
@@ -1911,6 +2421,7 @@ Deno.test("R queue bytes are charged on send and retained through a terminal rep
     params: {
       protocol: 1,
       session: "r-5002-1",
+      producer: { name: "test", version: "1" },
       limits: { ...DEFAULT_LIMITS, queue_bytes: 1024 },
     },
   });
@@ -1965,6 +2476,7 @@ Deno.test("more than 32 cancelled request waves leave the session usable", async
     params: {
       protocol: 1,
       session: "r-5003-1",
+      producer: { name: "test", version: "1" },
       limits: { ...DEFAULT_LIMITS },
     },
   });
@@ -2021,7 +2533,12 @@ Deno.test("large ordinary frames stop at the 496 KiB byte budget", async () => {
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-10-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-10-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -2095,7 +2612,12 @@ Deno.test("grid cell opens validate original row selectors and tree suffixes", a
   connection.inject({
     id: "hello",
     method: "hello",
-    params: { protocol: 1, session: "r-85-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-85-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const browser = new MemoryBrowser();
   hub.attach(browser);
@@ -2211,7 +2733,12 @@ async function sequentialHubFixture(
   hub.acceptProducer(connection);
   connection.inject({
     method: "hello",
-    params: { protocol: 1, session: "r-9010-1", limits: { ...DEFAULT_LIMITS } },
+    params: {
+      protocol: 1,
+      session: "r-9010-1",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
   });
   const owner = new MemoryBrowser();
   const other = new MemoryBrowser();
@@ -2908,6 +3435,7 @@ function refreshFixture(session: string, limits: JsonRecord = {}) {
     params: {
       protocol: 1,
       session,
+      producer: { name: "test", version: "1" },
       limits: { ...DEFAULT_LIMITS, ...limits },
     },
   });
@@ -3268,8 +3796,18 @@ Deno.test("view/update_failed reaches browsers only for the current generation",
     assertEquals((delivered.message as string).length, 1024);
 
     // Unknown views, other generations, and malformed reports are dropped.
-    failed({ view: "other", generation: 1, code: "producer_error", message: "m" });
-    failed({ view: "table-1", generation: 2, code: "producer_error", message: "m" });
+    failed({
+      view: "other",
+      generation: 1,
+      code: "producer_error",
+      message: "m",
+    });
+    failed({
+      view: "table-1",
+      generation: 2,
+      code: "producer_error",
+      message: "m",
+    });
     failed({ view: "table-1", generation: 1, code: 7, message: "m" });
     failed({ view: "table-1", generation: 1, code: "producer_error" });
     failed("not an object" as unknown as JsonRecord);
@@ -3278,8 +3816,18 @@ Deno.test("view/update_failed reaches browsers only for the current generation",
 
     // After a newer view/open the old generation is stale.
     openTable(f.connection, 2);
-    failed({ view: "table-1", generation: 1, code: "producer_error", message: "m" });
-    failed({ view: "table-1", generation: 2, code: "producer_error", message: "m" });
+    failed({
+      view: "table-1",
+      generation: 1,
+      code: "producer_error",
+      message: "m",
+    });
+    failed({
+      view: "table-1",
+      generation: 2,
+      code: "producer_error",
+      message: "m",
+    });
     await barrier("three");
     assertEquals(reports().length, 2);
     assertEquals(

@@ -985,7 +985,8 @@ descriptor repeats \code{parent}); it is refused with \code{view_not_found} once
 parent was refreshed, replaced, or closed. Sequential views are not
 refreshable (\code{unsupported}) because a consumed stream cannot be rewound.
 Errors are \code{invalid_request}, \code{view_not_found}, \code{stale_generation},
-\code{unsupported}, and the usual \code{limit_exceeded}, \code{producer_error}, and \code{interrupted}.
+\code{unsupported}, and the usual \code{limit_exceeded}, \code{producer_error}, and
+\code{interrupted}.
 
 A hub that forwards requests treats a sent \code{view/refresh} specially. The
 successful refresh queues the new generation's \code{view/open} before its own
@@ -1095,8 +1096,8 @@ becomes \code{"lost"} (announced as below) and the result reports it.
 A view that has no \code{tracking} field, or whose state is \code{"lost"}, fails with
 \code{unsupported}, and the message names the reason. A generation that is not
 current fails with \code{stale_generation}, and an unknown view with
-\code{view_not_found}. The other errors are \code{invalid_request}, \code{producer_error}, and
-\code{interrupted}.
+\code{view_not_found}. The other errors are \code{invalid_request}, \code{producer_error},
+and \code{interrupted}.
 
 \code{view/tracking} is a notification:
 
@@ -1251,23 +1252,26 @@ view.
 \section{\code{hello}}{
 
 
-At the start of each R-to-host connection, the transport sends a \code{hello}
-notification with no request id. \code{\link[=jdv_connect]{jdv_connect()}} sends it immediately, even
-with no open view; a connection opened implicitly by \code{\link[=jdv_view]{jdv_view()}} sends it
-with the first \code{view/open}. Promoting an implicit connection with
-\code{\link[=jdv_connect]{jdv_connect()}} does not send it again:
+At the start of each producer-to-host connection, the producer sends a
+\code{hello} notification with no request id. \code{\link[=jdv_connect]{jdv_connect()}} sends it
+immediately, even with no open view; a connection opened implicitly by
+\code{\link[=jdv_view]{jdv_view()}} sends it with the first \code{view/open}. Promoting an implicit
+connection with \code{\link[=jdv_connect]{jdv_connect()}} does not send it again:
 
 \if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
   "method": "hello",
   "params": \{
     "protocol": 1,
     "session": "r-1234-1",
-    "pid": 1234,
-    "r_version": "4.6.1",
-    "jdv_version": "0.1.0",
+    "producer": \{
+      "name": "jdv",
+      "version": "0.1.0",
+      "runtime": \{"name": "R", "version": "4.6.1"\}
+    \},
+    "wake": true,
     "limits": \{
-      "max_receive_frames": 264,
-      "max_receive_bytes": 1048577,
+      "max_unacked_frames": 264,
+      "max_unacked_bytes": 1048577,
       "queue_messages": 256,
       "queue_bytes": 16777216,
       "max_request_bytes": 1048576,
@@ -1277,13 +1281,21 @@ with the first \code{view/open}. Promoting an implicit connection with
 \}
 }\if{html}{\out{</div>}}
 
-\code{session} is \verb{r-<pid>-<connection counter>}. The counter advances for each
-connection from that R process. The session id does not use random numbers
-and must not change R's random state. \code{r_version} and \code{jdv_version} are
-version strings. Protocol major version 1 is the v1 contract in this
-document. A peer that does not support the announced major version rejects
-the handshake with \code{unsupported}; it must not continue with incompatible
-message semantics.
+\code{session} is an opaque session identifier. It is 1–128 ASCII bytes and may
+contain only letters, digits, \code{.}, \verb{_}, \code{:}, and \code{-}. A receiver must not
+infer a process id or connection counter from it. A host rejects an invalid
+identifier, and rejects a duplicate active identifier with \code{in_use}.
+\code{producer} identifies the producer: \code{name} and \code{version} are strings.
+\code{runtime} is optional; when present, it has string \code{name} and \code{version}
+fields. Protocol major version 1 is the v1 contract in this document. A peer
+that does not support the announced major version rejects the handshake with
+\code{unsupported}; it must not continue with incompatible message semantics.
+
+\code{wake} is optional and, when present, is a Boolean. An omitted value means
+\code{false}; any other type is invalid. When \code{true}, the host must send periodic
+\code{wake} notifications while requests await terminal responses. When omitted or
+\code{false}, the host must not send \code{wake}. A producer that needs periodic wakes
+sets \code{wake} to \code{true}.
 
 The transport emits \code{hello} as part of connection setup. It is not a method
 handled by \code{\link[=jdv_rpc]{jdv_rpc()}}. For an embedded session it is the first message in
@@ -1294,27 +1306,37 @@ closes every active registry entry and releases its retained table data.
 Entries created with \code{\link[=jdv_register]{jdv_register()}} share this process-wide registry and
 are cleared by a viewer disconnect as well.
 
-\code{params.limits} reports the effective limits captured for this connection:
-the maximum complete frames and bytes read in one receive callback, pending
-queue message and byte limits, and maximum request and response bytes. Hosts
-use the smaller of each reported value and their own configured bound.
+\code{params.limits} is required and contains all six required limits, each a
+positive safe integer: \code{max_unacked_frames} and \code{max_unacked_bytes} bound the
+complete host-to-producer JSONL frames and bytes sent without cumulative
+acknowledgement; \code{queue_messages} and \code{queue_bytes} bound producer-side
+pending work; \code{max_request_bytes} and \code{max_message_bytes} bound one request
+and one producer message. A host uses the smaller of each reported value and
+its own configured bound. Missing or invalid limits reject the handshake.
+
+The R producer generates \code{session} as \verb{r-<pid>-<connection counter>}. The
+counter advances for each connection from that R process, and generating an
+identifier does not use or change R's random state. Its \code{producer} metadata
+names jdv and the R runtime, and it sets \code{wake} to \code{true}.
 }
 
 \section{\code{wake} and \code{cancel}}{
 
 
-\code{wake} has no response and no parameters. In the synchronous API it is a
-no-op returning \code{NULL}. On the local transport it asks the R receiver to
+\code{wake} has no response and no parameters. A host must not send it when
+\code{hello.params.wake} is omitted or \code{false}; when that value is \code{true}, the
+host must send wakes repeatedly at a regular interval while one or more
+requests are awaiting terminal responses. In the synchronous API \code{wake} is a
+no-op returning \code{NULL}. On the R local transport it asks the receiver to
 check whether queued requests can run; receiving a wake does not itself
 dispatch a request. A normal package API-entry preflight is receive-only and
 does not dispatch requests. While R is executing a function frame, the
-receive callback can read and queue a request but cannot dispatch it. Hosts
-must send wakes repeatedly at a regular interval while one or more requests
-are awaiting terminal responses. A single wake is not guaranteed to cause a
-pending request to run because it may arrive during either receive-only
-preflight or function-frame execution. A 50 ms interval is a valid host
-implementation choice, but that exact interval is not required of every host.
-Hosts must keep wakes within applicable frame, byte, and send-rate limits.
+receive callback can read and queue a request but cannot dispatch it. A
+single wake is not guaranteed to cause a pending request to run because it
+may arrive during either receive-only preflight or function-frame execution.
+A 50 ms interval is a valid host implementation choice, but that exact
+interval is not required of every host. Hosts must keep wakes within
+applicable frame, byte, and send-rate limits.
 
 \code{cancel} has no response and takes \code{{ "id": requestId }} in \code{params}. It
 identifies a request by the same string-or-safe-integer rules as envelope
@@ -1336,14 +1358,12 @@ these errors do not change pending work.
 \section{\code{ack}}{
 
 
-The R transport sends \verb{\{"method":"ack","params":\{"frames":N\}\}} at the end of
-a receive callback after it has read at least one complete frame. \code{N} is the
-cumulative number of complete host-to-R JSONL frames read on that connection,
-including \code{wake}, \code{cancel}, malformed, and rejected frames. It is a safe
-integer and never decreases. The host releases frame and byte credit through
-that cumulative frame boundary. The acknowledgement is sent after the receive
-loop, so frames sent in response to an acknowledgement are read in a later
-callback.
+Every producer must send \verb{\{"method":"ack","params":\{"frames":N\}\}} after it
+has read one or more complete frames. \code{N} is the cumulative number of
+complete host-to-producer JSONL frames read on that connection, including
+\code{wake}, \code{cancel}, malformed, and rejected frames. It is a safe integer and
+never decreases. The host releases frame and byte credit through that
+cumulative frame boundary.
 }
 
 \section{Column types}{
@@ -1527,7 +1547,7 @@ display the code without requiring code-specific recovery behavior.\tabular{ll}{
    \code{stale_generation} \tab The request names a generation that is no longer active. \cr
    \code{view_not_found} \tab The view id is missing or closed. \cr
    \code{cache_changed} \tab A host-only sequential append cursor differs from the observed tail; refresh the host page catalog before advancing. \cr
-   \code{in_use} \tab Another browser owns the sequential lease, a next request is still pending, or a reentrant operation cannot proceed, such as registering during a refresh. \cr
+   \code{in_use} \tab A session id is already active, another browser owns the sequential lease, a next request is still pending, or a reentrant operation cannot proceed. \cr
    \code{stream_failed} \tab A sequential producer encountered a terminal failure; close or register a new stream to continue. \cr
    \code{method_not_found} \tab No implementation exists for the requested method. \cr
 }
@@ -1592,9 +1612,11 @@ report its failure.
 \section{Local transport and execution gate}{
 
 
-The R transport bounds the pending queue to 256 messages and 16 MiB by
-default. Each inbound JSON line is limited by \code{jdv.max_request_bytes} (1 MiB
-by default), and each outbound line by \code{jdv.max_message_bytes} (10 MiB by
+The following limits and dispatch rules describe the R producer transport;
+another producer may implement its execution gate differently. The R
+transport bounds the pending queue to 256 messages and 16 MiB by default.
+Each inbound JSON line is limited by \code{jdv.max_request_bytes} (1 MiB by
+default), and each outbound line by \code{jdv.max_message_bytes} (10 MiB by
 default). A read callback processes at most \verb{max(64 KiB, request limit + 1)}
 bytes. One native poll or event callback drains at most eight queued
 requests; each request in that batch passes through its own execution-gate
@@ -1614,32 +1636,33 @@ callback is also bounded to
 count toward the frame limit. A host that exceeds either callback quota is
 disconnected. Each receive callback acknowledges the cumulative number of
 complete frames read, including malformed or rejected frames; the host
-releases frame and byte credit through that boundary. While at least one
-request is awaiting a terminal response, hosts must send \code{wake} notifications
-repeatedly at a regular interval until no live requests remain. A single wake
-is insufficient: a normal package API-entry preflight is receive-only and
-does not dispatch work, and receiving a wake while R is in a function frame
-only allows requests to be queued for later dispatch. A 50 ms interval is a
-valid implementation choice, but the protocol does not require every host to
-use that interval. Wake frames remain subject to the same applicable credit
-and rate limits as other traffic. Hosts must keep at most 32 view requests
-awaiting a response. Before sending a page request that makes an unsent page
-request obsolete, hosts must replace the unsent request with the newer page.
-Hosts must bound the cumulative unconfirmed output prefix to the receive
-callback's frame and byte quotas so multiple writes cannot exceed one
-callback's budget when coalesced. Each \code{cancel} and \code{wake} frame consumes the
-same frame and byte credit as a request. Before dispatch, the transport
-removes cancelled and expired queued requests and sends their terminal
-errors, including while another R method is running. The R adapter returns
-\code{view_not_found} for a closed or missing view and \code{stale_generation} for an
-obsolete generation. For each request, dispatch requires native \code{busy == 0}
-and a single \code{\link[base:sys.nframe]{base::sys.nframe()}} evaluation in \code{R_BaseEnv} to return zero.
-If the queue is empty, the gate skips that evaluation. A started request that
-fails, including an interrupt, is terminal and is never retried. A
-synchronous or queued stale generation returns \code{stale_generation}. A second
-live pending request with the same typed id is rejected as \code{invalid_request}
-on a best-effort basis and closes the connection to avoid ambiguous
-responses. Cancelled requests no longer reserve their ids.
+releases frame and byte credit through that boundary. Since the R producer
+sets \code{hello.params.wake} to \code{true}, hosts must send \code{wake} notifications
+repeatedly at a regular interval while a request awaits a terminal response.
+A single wake is insufficient for this R execution gate: a normal package
+API-entry preflight is receive-only and does not dispatch work, and receiving
+a wake while R is in a function frame only allows requests to be queued for
+later dispatch. A 50 ms interval is a valid implementation choice, but the
+protocol does not require every host to use that interval. Wake frames remain
+subject to the same applicable credit and rate limits as other traffic. Hosts
+must keep at most 32 view requests awaiting a response. Before sending a page
+request that makes an unsent page request obsolete, hosts must replace the
+unsent request with the newer page. Hosts must bound the cumulative
+unconfirmed output prefix to the receive callback's frame and byte quotas so
+multiple writes cannot exceed one callback's budget when coalesced. Each
+\code{cancel} and \code{wake} frame consumes the same frame and byte credit as a
+request. Before dispatch, the transport removes cancelled and expired queued
+requests and sends their terminal errors, including while another R method is
+running. The R adapter returns \code{view_not_found} for a closed or missing view
+and \code{stale_generation} for an obsolete generation. For each request, dispatch
+requires native \code{busy == 0} and a single \code{\link[base:sys.nframe]{base::sys.nframe()}} evaluation in
+\code{R_BaseEnv} to return zero. If the queue is empty, the gate skips that
+evaluation. A started request that fails, including an interrupt, is terminal
+and is never retried. A synchronous or queued stale generation returns
+\code{stale_generation}. A second live pending request with the same typed id is
+rejected as \code{invalid_request} on a best-effort basis and closes the
+connection to avoid ambiguous responses. Cancelled requests no longer reserve
+their ids.
 
 The gate temporarily saves \code{R_interrupts_suspended}, sets it to \code{TRUE} for
 the single frame-count evaluation, and restores the prior value with
