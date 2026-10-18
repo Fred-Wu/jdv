@@ -991,7 +991,7 @@
 #' parent was refreshed, replaced, or closed. Sequential views are not
 #' refreshable (`unsupported`) because a consumed stream cannot be rewound.
 #' Errors are `invalid_request`, `view_not_found`, `stale_generation`,
-#' `unsupported`, and the usual `limit_exceeded`, `r_error`, and `interrupted`.
+#' `unsupported`, and the usual `limit_exceeded`, `producer_error`, and `interrupted`.
 #'
 #' A hub that forwards requests treats a sent `view/refresh` specially. The
 #' successful refresh queues the new generation's `view/open` before its own
@@ -1104,7 +1104,7 @@
 #' A view that has no `tracking` field, or whose state is `"lost"`, fails with
 #' `unsupported`, and the message names the reason. A generation that is not
 #' current fails with `stale_generation`, and an unknown view with
-#' `view_not_found`. The other errors are `invalid_request`, `r_error`, and
+#' `view_not_found`. The other errors are `invalid_request`, `producer_error`, and
 #' `interrupted`.
 #'
 #' `view/tracking` is a notification:
@@ -1523,13 +1523,16 @@
 #' Error codes are stable machine-readable values. The `error` object contains
 #' `code` and `message`, with optional `details`. The current codes include:
 #'
+#' A consumer treats an unrecognized code as a general producer failure and may
+#' display the code without requiring code-specific recovery behavior.
+#'
 #' | Code               | Meaning                                                                                                                                                         |
 #' | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 #' | `invalid_request`  | Malformed JSON, missing required fields, strict filter/sort field errors, or invalid parameters.                                                                |
 #' | `unsupported`      | A known operation or encoding is not supported for this table or protocol version.                                                                              |
 #' | `limit_exceeded`   | A configured request, page, or JSON byte limit was exceeded.                                                                                                    |
 #' | `schema_changed`   | A retained grid source (Paged or a drillable Snapshot) no longer matches its registered dimensions, names, or classes, or a required channel no longer matches. |
-#' | `r_error`          | An R method or other request computation failed.                                                                                                                |
+#' | `producer_error`          | A producer method or other request computation failed.                                                                                                                |
 #' | `interrupted`      | Request processing began and was interrupted.                                                                                                                   |
 #' | `cancelled`        | The accepted request was cancelled before processing began.                                                                                                     |
 #' | `expired`          | The request deadline elapsed before processing began.                                                                                                           |

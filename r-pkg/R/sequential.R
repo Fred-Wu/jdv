@@ -293,7 +293,7 @@
     error = function(e) {
       if (isTRUE(e$terminal)) {
         entry$stream_failure <- list(
-          code = e$code %||% "r_error",
+          code = e$code %||% "producer_error",
           message = conditionMessage(e)
         )
         .jdv_sequential_release(entry)

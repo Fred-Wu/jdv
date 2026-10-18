@@ -216,7 +216,7 @@ test_that("a failed rebuild leaves the generation, children, and state", {
       fail <- TRUE
       response <- refresh_json(root)
       expect_false(is.null(response$error))
-      expect_identical(response$error$code, "r_error")
+      expect_identical(response$error$code, "producer_error")
       expect_identical(refresh_entry(root$id), entry)
       expect_identical(entry$generation, 1)
       expect_false(entry$closed)

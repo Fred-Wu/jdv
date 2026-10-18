@@ -106,7 +106,7 @@ test_that("only protocol codes reach a viewer as error codes", {
   response <- jsonlite::fromJSON(jdv_rpc(
     '{"id":1,"method":"view/schema","params":{}}'
   ))
-  expect_identical(response$error$code, "r_error")
+  expect_identical(response$error$code, "producer_error")
   testthat::local_mocked_bindings(
     .jdv_process_request = function(parsed, request_id) {
       jdv_abort("in_use", "Busy.")

@@ -2994,13 +2994,13 @@ Deno.test("a failed refresh response is delivered even after a newer view/open",
     const second = await f.connection.nextWrite(1);
     f.connection.inject({
       id: second.id,
-      error: { code: "r_error", message: "boom" },
+      error: { code: "producer_error", message: "boom" },
       warnings: [],
     });
     const failure = await f.browser.nextMessage((message) =>
       message.id === "r-error" && message.type === "response"
     );
-    assertEquals((failure.error as JsonRecord).code, "r_error");
+    assertEquals((failure.error as JsonRecord).code, "producer_error");
   } finally {
     f.hub.close();
   }
@@ -3268,18 +3268,18 @@ Deno.test("view/update_failed reaches browsers only for the current generation",
     assertEquals((delivered.message as string).length, 1024);
 
     // Unknown views, other generations, and malformed reports are dropped.
-    failed({ view: "other", generation: 1, code: "r_error", message: "m" });
-    failed({ view: "table-1", generation: 2, code: "r_error", message: "m" });
+    failed({ view: "other", generation: 1, code: "producer_error", message: "m" });
+    failed({ view: "table-1", generation: 2, code: "producer_error", message: "m" });
     failed({ view: "table-1", generation: 1, code: 7, message: "m" });
-    failed({ view: "table-1", generation: 1, code: "r_error" });
+    failed({ view: "table-1", generation: 1, code: "producer_error" });
     failed("not an object" as unknown as JsonRecord);
     await barrier("two");
     assertEquals(reports().length, 1);
 
     // After a newer view/open the old generation is stale.
     openTable(f.connection, 2);
-    failed({ view: "table-1", generation: 1, code: "r_error", message: "m" });
-    failed({ view: "table-1", generation: 2, code: "r_error", message: "m" });
+    failed({ view: "table-1", generation: 1, code: "producer_error", message: "m" });
+    failed({ view: "table-1", generation: 2, code: "producer_error", message: "m" });
     await barrier("three");
     assertEquals(reports().length, 2);
     assertEquals(

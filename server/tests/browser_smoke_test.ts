@@ -968,7 +968,7 @@ Deno.test({
           }).document;
           return document.querySelector('#warnings li[data-state="error"]')
             ?.textContent?.includes(
-              "r_error: <img src=x onerror=alert(1)>",
+              "producer_error: <img src=x onerror=alert(1)>",
             ) ===
             true;
         });
@@ -2240,7 +2240,7 @@ async function respondToR(
       await writeFrame(connection, {
         id: request.id,
         error: {
-          code: "r_error",
+          code: "producer_error",
           message: "<img src=x onerror=alert(1)>",
         },
         warnings: [],
@@ -3094,7 +3094,7 @@ Deno.test({
           params: {
             view: "refresh-grid",
             generation: 3,
-            code: "r_error",
+            code: "producer_error",
             message: "stale report",
           },
         });

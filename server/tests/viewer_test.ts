@@ -200,6 +200,89 @@ Deno.test("browser transport settles one exact matching binary response", async 
   assertEquals(socket.sent, []);
 });
 
+Deno.test("browser transport rejects producer errors and continues after unknown codes", async () => {
+  const socket = new FakeSocket();
+  const transport = createBrowserTransport(socket);
+  const first = transport.request("r-1-1", "table/rows", {
+    view: "t1",
+    generation: 1,
+  }, 10);
+  const firstFrame = socket.take();
+  transport.handleMessage({
+    type: "response",
+    id: firstFrame.id,
+    session: "r-1-1",
+    error: {
+      message: "The producer rejected this request.",
+      details: { field: "offset", value: -1 },
+    },
+  });
+
+  let failure: unknown;
+  try {
+    await first;
+  } catch (error) {
+    failure = error;
+  }
+  assert(failure instanceof Error);
+  const producerFailure = failure as Error & {
+    code?: unknown;
+    details?: unknown;
+  };
+  assertEquals(producerFailure.message, "The producer rejected this request.");
+  assertEquals(producerFailure.code, "producer_error");
+  assertEquals(producerFailure.details, { field: "offset", value: -1 });
+
+  const second = transport.request("r-1-1", "table/rows", {
+    view: "t1",
+    generation: 1,
+  }, 10);
+  const secondFrame = socket.take();
+  const details = { producer: "other", retryable: false };
+  transport.handleMessage({
+    type: "response",
+    id: secondFrame.id,
+    session: "r-1-1",
+    error: {
+      code: "future_producer_failure",
+      message: "An unfamiliar producer failure.",
+      details,
+    },
+  });
+
+  let unknownFailure: unknown;
+  try {
+    await second;
+  } catch (error) {
+    unknownFailure = error;
+  }
+  assert(unknownFailure instanceof Error);
+  const futureFailure = unknownFailure as Error & {
+    code?: unknown;
+    details?: unknown;
+  };
+  assertEquals(futureFailure.message, "An unfamiliar producer failure.");
+  assertEquals(futureFailure.code, "future_producer_failure");
+  assertEquals(futureFailure.details, details);
+
+  const third = transport.request("r-1-1", "table/rows", {
+    view: "t1",
+    generation: 1,
+  }, 10);
+  const thirdFrame = socket.take();
+  const response = {
+    type: "response",
+    id: thirdFrame.id,
+    session: "r-1-1",
+    result: { data: { row_index: [1] } },
+  };
+  transport.handleMessage(response);
+  assertEquals(await third, response);
+
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assertEquals(socket.sent, []);
+});
+
 Deno.test("browser transport rejects malformed binary envelopes and ignores cancelled late bodies", async () => {
   const socket = new FakeSocket();
   const transport = createBrowserTransport(socket);

@@ -1468,7 +1468,7 @@ static void send_callback_response(jdv_dispatch *dispatch)
         return;
     }
     if (TYPEOF(dispatch->response) != VECSXP) {
-        send_error(state, dispatch->request.id_json, "r_error", "Unexpected callback response type.");
+        send_error(state, dispatch->request.id_json, "producer_error", "Unexpected callback response type.");
         return;
     }
     const char *failure = dispatch->binary_failure;
@@ -1523,11 +1523,11 @@ static SEXP dispatch_frame_body(void *data)
                        "The request was interrupted.");
         } else if (dispatch->failure == JDV_FAILURE_R_ERROR ||
                    dispatch->failure == JDV_FAILURE_UNKNOWN) {
-            send_error(state, dispatch->request.id_json, "r_error",
+            send_error(state, dispatch->request.id_json, "producer_error",
                        "The request could not be processed.");
         } else if (dispatch->response_preserved) send_callback_response(dispatch);
         else if (dispatch->request.id_kind != 0)
-            send_error(state, dispatch->request.id_json, "r_error", "The callback returned no response.");
+            send_error(state, dispatch->request.id_json, "producer_error", "The callback returned no response.");
     }
     return R_NilValue;
 }

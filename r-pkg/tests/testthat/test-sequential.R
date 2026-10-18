@@ -177,12 +177,12 @@ test_that("sequential validation and recoverable errors preserve the stream", {
     list(
       message = "retry encoding",
       call = NULL,
-      code = "r_error",
+      code = "producer_error",
       terminal = FALSE
     ),
     class = c("jdv_stream_error", "error", "condition")
   )
-  expect_identical(sequential_error(sequential_request(view)), "r_error")
+  expect_identical(sequential_error(sequential_request(view)), "producer_error")
   expect_identical(state$released, 0L)
   state$failure <- NULL
   expect_s3_class(sequential_request(view), "jdv_binary_packet")

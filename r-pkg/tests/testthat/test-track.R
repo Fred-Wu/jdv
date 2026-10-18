@@ -374,7 +374,7 @@ test_that("a failed rebuild keeps the view and is reported once", {
       failed <- .jdv_json_parse(messages)$params
       expect_identical(failed$view, view$id)
       expect_equal(failed$generation, 1)
-      expect_identical(failed$code, "r_error")
+      expect_identical(failed$code, "producer_error")
       expect_match(failed$message, "boom")
       expect_identical(track_entry(view$id), entry)
       expect_false(entry$closed)
@@ -410,7 +410,7 @@ test_that("a failed rebuild keeps the view and is reported once", {
       fail <- TRUE
       env$x <- make(7)
       response <- refresh_json(view$id, 3)
-      expect_identical(response$error$code, "r_error")
+      expect_identical(response$error$code, "producer_error")
       jdv_rpc(NULL)
       expect_identical(jdv_notifications(), character())
     }

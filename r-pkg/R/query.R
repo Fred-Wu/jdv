@@ -3,7 +3,7 @@ query_error <- function(code, message, details = NULL) {
   stop(jdv_condition(code, message, details, "jdv_query_error"))
 }
 
-query_try <- function(fun, code = "r_error") {
+query_try <- function(fun, code = "producer_error") {
   tryCatch(
     fun(),
     error = function(e) {
@@ -436,7 +436,7 @@ query_channel <- function(holder, j, channel, budget = NULL) {
     ) {
       "schema_changed"
     } else {
-      "r_error"
+      "producer_error"
     }
     query_error(code, paste0("Could not compute ", channel, "."), result)
   }

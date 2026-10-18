@@ -18,12 +18,12 @@ def main():
         ("invalid_header", "invalid_request"), ("newline_header", "invalid_request"),
         ("scalar_transfer", "invalid_request"), ("header_limit", "limit_exceeded"),
         ("whole_limit", "limit_exceeded"), ("request_limit", "limit_exceeded"),
-        ("invalid_request_limit", "invalid_request"), ("null", "r_error"),
-        ("integer", "r_error"), ("final_valid", None),
+        ("invalid_request_limit", "invalid_request"), ("null", "producer_error"),
+        ("integer", "producer_error"), ("final_valid", None),
         ("method_header", "invalid_request"), ("scalar_newline", "invalid_request"),
         ("scalar_cr", "invalid_request"), ("null_request_limit", "invalid_request"),
-        ("raw_error", "r_error"), ("header_error", "r_error"),
-        ("scalar_header_error", "r_error"), ("header_once", None),
+        ("raw_error", "producer_error"), ("header_error", "producer_error"),
+        ("scalar_header_error", "producer_error"), ("header_once", None),
     ]
     valid_packets = errors = 0
     with socket.socket() as listener:

@@ -487,7 +487,7 @@ and optional \code{details}:\tabular{ll}{
    \code{unsupported} \tab A valid request uses a column capability/type/operator combination that is unavailable. \cr
    \code{limit_exceeded} \tab Registration, page width, sort width, AST, or string budget is exceeded. \cr
    \code{schema_changed} \tab A column's full shape/class differs from its probe, subsetting changes class/size, or a required channel returns an invalid/missing result. \cr
-   \code{r_error} \tab Source access, class methods, or another requested R operation fails. \cr
+   \code{producer_error} \tab Source access, class methods, or another requested R operation fails. \cr
    \code{view_not_found} \tab The holder has been disposed. \cr
 }
 }

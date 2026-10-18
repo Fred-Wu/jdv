@@ -45,7 +45,7 @@
 #' for example from a failing `format()` method of the user, are not wrapped.
 #'
 #' The codes below are the ones R functions can signal. `invalid_request`,
-#' `unsupported`, `unavailable`, `limit_exceeded`, `schema_changed`, `r_error`,
+#' `unsupported`, `unavailable`, `limit_exceeded`, `schema_changed`, `producer_error`,
 #' `view_not_found`, and `in_use` have the same meaning as the protocol error
 #' codes of the same name (see [jdv_spec]). `invalid_argument`,
 #' `connect_failed`, `not_connected`, and `shutting_down` exist only in the R
@@ -62,7 +62,7 @@
 #' | `unsupported` | The operation is not available for the object, such as tracking a sequential source or tracking on R older than 4.6.0. |
 #' | `unavailable` | A binding cannot be read without evaluating it. |
 #' | `limit_exceeded` | A configured limit is exceeded, including a notification queue overflow. |
-#' | `schema_changed`, `r_error`, `view_not_found` | Errors of the query layer; see [jdv_query_spec]. |
+#' | `schema_changed`, `producer_error`, `view_not_found` | Errors of the query layer; see [jdv_query_spec]. |
 #'
 #' The registry-free handle functions (see [jdv_handle()]) use the same
 #' conditions. A malformed handle, mode, collation, or `max_bytes` argument
@@ -134,13 +134,13 @@ jdv_abort <- function(code, message) stop(jdv_condition(code, message))
 }
 
 # The error codes of the wire protocol. Other jdv_error codes belong to the R
-# API only and are reported to a viewer as `r_error`.
+# API only and are reported to a viewer as `producer_error`.
 .jdv_protocol_codes <- c(
   "invalid_request",
   "unsupported",
   "limit_exceeded",
   "schema_changed",
-  "r_error",
+  "producer_error",
   "interrupted",
   "cancelled",
   "expired",
@@ -1719,7 +1719,7 @@ jdv_register <- function(
     response$result <- result
   } else {
     response$error <- list(
-      code = error$code %||% "r_error",
+      code = error$code %||% "producer_error",
       message = substr(conditionMessage(error), 1L, 1024L)
     )
     if (!is.null(error$details)) response$error$details <- error$details
@@ -1827,7 +1827,7 @@ jdv_rpc <- function(request = NULL) {
         list(
           message = "RPC re-entry is not supported.",
           call = NULL,
-          code = "r_error"
+          code = "producer_error"
         ),
         class = c("jdv_rpc_error", "error", "condition")
       )
@@ -1916,9 +1916,9 @@ jdv_rpc <- function(request = NULL) {
   }
   response <- if (inherits(result, "error")) {
     if (!inherits(result, "jdv_query_error")) {
-      code <- if (!is.null(result$code)) result$code else "r_error"
+      code <- if (!is.null(result$code)) result$code else "producer_error"
       if (inherits(result, "jdv_error") && !code %in% .jdv_protocol_codes) {
-        code <- "r_error"
+        code <- "producer_error"
       }
       result <- structure(
         list(message = conditionMessage(result), call = NULL, code = code),
@@ -2009,7 +2009,7 @@ jdv_rpc <- function(request = NULL) {
   ) {
     result$code
   } else {
-    "r_error"
+    "producer_error"
   }
   fallback_message <- if (identical(fallback_code, "limit_exceeded")) {
     "Response exceeds the byte limit."

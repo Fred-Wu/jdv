@@ -985,7 +985,7 @@ descriptor repeats \code{parent}); it is refused with \code{view_not_found} once
 parent was refreshed, replaced, or closed. Sequential views are not
 refreshable (\code{unsupported}) because a consumed stream cannot be rewound.
 Errors are \code{invalid_request}, \code{view_not_found}, \code{stale_generation},
-\code{unsupported}, and the usual \code{limit_exceeded}, \code{r_error}, and \code{interrupted}.
+\code{unsupported}, and the usual \code{limit_exceeded}, \code{producer_error}, and \code{interrupted}.
 
 A hub that forwards requests treats a sent \code{view/refresh} specially. The
 successful refresh queues the new generation's \code{view/open} before its own
@@ -1095,7 +1095,7 @@ becomes \code{"lost"} (announced as below) and the result reports it.
 A view that has no \code{tracking} field, or whose state is \code{"lost"}, fails with
 \code{unsupported}, and the message names the reason. A generation that is not
 current fails with \code{stale_generation}, and an unknown view with
-\code{view_not_found}. The other errors are \code{invalid_request}, \code{r_error}, and
+\code{view_not_found}. The other errors are \code{invalid_request}, \code{producer_error}, and
 \code{interrupted}.
 
 \code{view/tracking} is a notification:
@@ -1510,13 +1510,16 @@ R's handling of missing and special values follow
 
 
 Error codes are stable machine-readable values. The \code{error} object contains
-\code{code} and \code{message}, with optional \code{details}. The current codes include:\tabular{ll}{
+\code{code} and \code{message}, with optional \code{details}. The current codes include:
+
+A consumer treats an unrecognized code as a general producer failure and may
+display the code without requiring code-specific recovery behavior.\tabular{ll}{
    Code \tab Meaning \cr
    \code{invalid_request} \tab Malformed JSON, missing required fields, strict filter/sort field errors, or invalid parameters. \cr
    \code{unsupported} \tab A known operation or encoding is not supported for this table or protocol version. \cr
    \code{limit_exceeded} \tab A configured request, page, or JSON byte limit was exceeded. \cr
    \code{schema_changed} \tab A retained grid source (Paged or a drillable Snapshot) no longer matches its registered dimensions, names, or classes, or a required channel no longer matches. \cr
-   \code{r_error} \tab An R method or other request computation failed. \cr
+   \code{producer_error} \tab A producer method or other request computation failed. \cr
    \code{interrupted} \tab Request processing began and was interrupted. \cr
    \code{cancelled} \tab The accepted request was cancelled before processing began. \cr
    \code{expired} \tab The request deadline elapsed before processing began. \cr

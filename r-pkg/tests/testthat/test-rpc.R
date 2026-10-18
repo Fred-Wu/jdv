@@ -300,7 +300,7 @@ test_that("RPC retains typed query error details", {
           sort = list(list(col = 0, desc = FALSE))
         )
       )
-      expect_rpc_code(response, "r_error")
+      expect_rpc_code(response, "producer_error")
       expect_identical(response$error$message, "Could not compute sortKey.")
       expect_identical(response$error$details$errors$sortKey, "sort key failed")
     }

@@ -489,7 +489,7 @@
 #' | `unsupported` | A valid request uses a column capability/type/operator combination that is unavailable. |
 #' | `limit_exceeded` | Registration, page width, sort width, AST, or string budget is exceeded. |
 #' | `schema_changed` | A column's full shape/class differs from its probe, subsetting changes class/size, or a required channel returns an invalid/missing result. |
-#' | `r_error` | Source access, class methods, or another requested R operation fails. |
+#' | `producer_error` | Source access, class methods, or another requested R operation fails. |
 #' | `view_not_found` | The holder has been disposed. |
 #'
 #'

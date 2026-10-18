@@ -443,7 +443,7 @@ jdv_binding <- function(name, env = parent.frame()) {
   ) {
     code
   } else {
-    "r_error"
+    "producer_error"
   }
 }
 

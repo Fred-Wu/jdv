@@ -80,7 +80,7 @@ export function createBrowserTransport(socket, handlers = {}) {
         const error = new Error(
           message.error.message ?? "The producer request failed.",
         );
-        error.code = message.error.code ?? "r_error";
+        error.code = message.error.code ?? "producer_error";
         error.details = message.error.details;
         finish(item.id, error);
       } else {

@@ -16,7 +16,7 @@ for example from a failing \code{format()} method of the user, are not wrapped.
 }
 \details{
 The codes below are the ones R functions can signal. \code{invalid_request},
-\code{unsupported}, \code{unavailable}, \code{limit_exceeded}, \code{schema_changed}, \code{r_error},
+\code{unsupported}, \code{unavailable}, \code{limit_exceeded}, \code{schema_changed}, \code{producer_error},
 \code{view_not_found}, and \code{in_use} have the same meaning as the protocol error
 codes of the same name (see \link{jdv_spec}). \code{invalid_argument},
 \code{connect_failed}, \code{not_connected}, and \code{shutting_down} exist only in the R
@@ -31,7 +31,7 @@ API; they are never sent to a viewer.\tabular{ll}{
    \code{unsupported} \tab The operation is not available for the object, such as tracking a sequential source or tracking on R older than 4.6.0. \cr
    \code{unavailable} \tab A binding cannot be read without evaluating it. \cr
    \code{limit_exceeded} \tab A configured limit is exceeded, including a notification queue overflow. \cr
-   \code{schema_changed}, \code{r_error}, \code{view_not_found} \tab Errors of the query layer; see \link{jdv_query_spec}. \cr
+   \code{schema_changed}, \code{producer_error}, \code{view_not_found} \tab Errors of the query layer; see \link{jdv_query_spec}. \cr
 }
 
 
