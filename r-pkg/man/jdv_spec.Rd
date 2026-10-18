@@ -5,11 +5,11 @@
 \alias{jdv_protocol}
 \title{jdv JSON Lines Protocol Specification}
 \description{
-This document defines the JSON protocol implemented by \code{\link[=jdv_register]{jdv_register()}},
-\code{\link[=jdv_rpc]{jdv_rpc()}}, and the local transport. It describes the R view registry, JSON
-Lines (JSONL) messages, optional Arrow IPC binary response bodies, and
-request and response messages shared by the package, reference server, and
-viewer, including object-tree navigation.
+This document is organized into four parts: the common protocol, the R
+producer extension, the reference host, and the browser viewer. The common
+protocol describes wire behavior without requiring R. The remaining parts
+identify behavior specific to the current R producer, the reference host, and
+the browser client.
 }
 \details{
 The envelope is JSON-RPC-like, but it is not JSON-RPC 2.0: messages use a
@@ -17,8 +17,8 @@ The envelope is JSON-RPC-like, but it is not JSON-RPC 2.0: messages use a
 \code{warnings}. A request that expects a response has an \code{id}. Notifications such
 as \code{wake}, \code{cancel}, and \code{ack} omit the id and have no response.
 }
-\section{Compatibility and encoding}{
-
+\section{Common protocol}{
+ Compatibility and encoding:
 \itemize{
 \item Each JSON transport message is one UTF-8 JSON value framed as one complete
 JSON value per line with a trailing LF. A partial line is retained only up to
@@ -45,25 +45,1026 @@ strict. Duplicate object keys are rejected. Unknown methods return
 \code{params.view}. Lifecycle methods use the view names listed below; the former
 \code{table/open}, \code{table/closed}, \code{table/schema}, and \code{table/close} names are not
 aliases.
-\item Unknown optional schema fields must be ignored by clients. Protocol v1 defines
-child views opened from tree objects; it does not define cell inspection.
+\item Unknown optional schema fields must be ignored by clients. Protocol v1 does
+not define cell inspection.
 \item The parser rejects malformed JSON number grammar, invalid UTF-8, decoded
 U+0000, trailing non-whitespace data, nesting deeper than 128, more than
 100,000 JSON nodes, or an object with more than 1,024 members. The literal
 six-character content \verb{\\u0000} is valid when represented in JSON as
 \code{"\\\\u0000"}; a JSON escape that decodes to U+0000 is rejected. These
-structural limits apply to inbound requests. Generated R messages are bounded
-by the outbound byte limit and are not revalidated with the request parser's
-node or object-member limits.
+structural limits apply to inbound requests.
 }
 
-The R package uses base R and its bundled cJSON implementation at runtime. It
+ Message envelopes:
+
+A view descriptor is sent as a notification:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
+  "method": "view/open",
+  "params": \{
+    "view": "v-1",
+    "generation": 1,
+    "title": "example",
+    "reason": "register",
+    "kind": "grid",
+    "access": "random",
+    "encoding": "jdv-json",
+    "capabilities": \{
+      "seek": true,
+      "sort": true,
+      "filter": true,
+      "known_total": true,
+      "next": false,
+      "children": false,
+      "refresh": true,
+      "track": false
+    \},
+    "collation": "C",
+    "nrow": 100,
+    "ncol": 2,
+    "row_labels": null,
+    "columns": []
+  \}
+\}
+}\if{html}{\out{</div>}}
+
+The example omits schema entries for brevity. \code{view/open} is a producer-to-
+viewer notification with no request id. \code{kind} is \code{grid}; \code{access} is
+\code{snapshot} or \code{random}; and \code{encoding} is \code{jdv-json}. The \code{capabilities}
+object and any known capability fields may be omitted; an omitted object or
+field means \code{false}. A grid descriptor declares the operations it supports.
+Each column's \code{sortable} field constrains sorting, and \code{filterable}
+constrains value-based filter operators. Grid \code{children} is true if and only
+if at least one column has \code{drillable: true}. \code{refresh} tells the host that
+\code{view/refresh} is accepted.\tabular{ll}{
+   Descriptor field \tab Grid \cr
+   \code{view}, \code{generation}, \code{kind}, \code{access}, \code{encoding} \tab Required \cr
+   \code{capabilities} \tab Optional; missing flags are false \cr
+   \code{title}, \code{reason} \tab Optional \cr
+   \code{collation}, \code{nrow}, \code{ncol}, \code{row_labels}, \code{columns} \tab Required \cr
+   \code{data} \tab Required for snapshot access; otherwise omitted \cr
+}
+
+
+\code{reason} is a fixed token that tells the host why a \code{view/open} was sent.
+More values may be added; a host treats an unknown or missing value as
+\code{"register"}.\tabular{ll}{
+   \code{reason} \tab Sent when \cr
+   \code{"register"} \tab A producer opens or replaces a view. \cr
+   \code{"child"} \tab A child view is opened by \code{object/open}. \cr
+   \code{"tracked"} \tab A producer rebuilds a tracked view automatically. \cr
+   \code{"refresh"} \tab A view is rebuilt by \code{view/refresh}. \cr
+}
+
+
+A host can bring a view to the front for \code{"register"} and \code{"child"}, and
+update it quietly for \code{"tracked"} and \code{"refresh"}.
+
+Grid-level flags declare the operations available in protocol v1; each
+column's \code{sortable} field constrains sorting, and \code{filterable} constrains
+value-based filter operators. \code{filterable} is false for columns of type
+\code{list} and \code{other}, and \code{is_na} remains valid when a valid missingness mask
+is available, even when \code{filterable} is false. Clients must accept
+\code{nrow: null} when a grid row count is unknown; the protocol does not define
+\code{total_rows}. The descriptor's \code{encoding} field does not change the
+envelope's \code{encoding: "json"} setting. Snapshot access's \code{params.data}
+contains the full data payload as described under the Column payloads section
+below.
+
+Tree descriptors and navigation are an R producer extension described below.
+
+A request envelope has this shape:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
+  "id": 1,
+  "method": "grid/rows",
+  "params": \{
+    "view": "v-1",
+    "generation": 1,
+    "offset": 0,
+    "limit": 200
+  \},
+  "encoding": "json",
+  "compression": "none",
+  "deadline": 1791849600.0
+\}
+}\if{html}{\out{</div>}}
+
+Only \code{method} is required at the envelope level. \code{id} is required for methods
+that return a result. \code{params} is required by view methods and \code{cancel}.
+Unknown envelope and method-parameter fields are ignored. \code{encoding},
+\code{compression}, and \code{deadline} are optional. \code{deadline}, when provided, must
+be a finite JSON number containing an absolute Unix timestamp in seconds. A
+synchronous or queued request that is past its deadline before execution
+begins receives an \code{expired} error response.
+
+The configured request byte limit applies to the entire JSON text. The parser
+also validates strict JSON number syntax and rejects duplicate object keys.
+
+Warnings are collected up to 100 messages, each truncated to 512 characters.
+If more warnings occur, the array ends with
+\code{"Additional warnings were omitted."}.
+
+A successful response is:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
+  "id": 1,
+  "result": \{\},
+  "warnings": []
+\}
+}\if{html}{\out{</div>}}
+
+Every response includes a \code{warnings} array, including an empty array when no
+warnings were raised. An error response is:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
+  "id": 1,
+  "error": \{
+    "code": "invalid_request",
+    "message": "Invalid request."
+  \},
+  "warnings": []
+\}
+}\if{html}{\out{</div>}}
+
+Errors raised after request processing begins are returned to the request
+caller. Their \code{code} distinguishes the failure class; \code{message} is bounded
+text and must not be used as a stable machine-readable discriminator. An
+error may also include \code{details}. Every accepted request receives exactly one
+terminal response. Work cancelled, expired, or stale before it begins
+receives an error response with code \code{cancelled}, \code{expired}, or
+\code{stale_generation}; a closed view receives \code{view_not_found}. The host matches
+cancellation ids to pending work before execution. \code{ack} is transport-owned.
+
+ Arrow IPC binary responses:
+
+An Arrow IPC body is reserved for a successful, id-bearing response. Its
+JSONL header has the ordinary response envelope and a \code{result.transfer}
+descriptor:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
+  "id": "jdv-request-id",
+  "result": \{
+    "view": "v-1",
+    "generation": 1,
+    "transfer": \{ "encoding": "arrow-ipc", "byte_length": 1234 \}
+  \},
+  "warnings": []
+\}
+}\if{html}{\out{</div>}}
+
+The header line is followed immediately by exactly \code{byte_length} opaque
+bytes, then by the next JSONL message. The receiver must not decode the body
+as UTF-8, scan it for LF, or call the response handler before all bytes
+arrive. The descriptor is not valid on notifications, errors, or \code{ack}.
+\code{byte_length} is a non-negative safe integer. The response \code{id} is the
+host-issued request id and must be a string. The UTF-8 JSON header is limited
+to 64 KiB, and the header, its LF, and body together are limited to 10 MiB.
+The body has an absolute 30-second receive timeout; fragments do not extend
+it. Invalid lengths, oversized frames, EOF, or timeout close the producer
+connection and fail pending requests as disconnected. Cancellation, expiry,
+and stale or unknown response ids still drain a valid body before the next
+JSONL message is read.
+
+There is no checksum or delimiter after the raw body. A sender that declares
+a shorter length may be detected when the remaining bytes cannot form a valid
+JSONL frame, but framing alone cannot detect a remainder that happens to be a
+valid JSONL message.
+
+The host forwards a response to the browser as one WebSocket binary message:
+four bytes containing the UTF-8 JSON header length as an unsigned
+little-endian integer, followed by the JSON header, followed by the unchanged
+raw body. The header is rewritten with the browser request id and session.
+The rewritten header remains limited to 64 KiB, and the complete WebSocket
+message to 10 MiB. If either limit or the request's \code{max_bytes} is exceeded,
+the host returns one \code{limit_exceeded} error after draining the producer body
+and continues with the next JSONL frame.
+
+For a request that can return a binary body, \code{params.max_bytes} is optional.
+When present it must be a non-negative safe integer; zero is valid. Its
+default is the effective binary body cap. The producer caps a response at the
+smaller of \code{params.max_bytes} and its configured message budget after
+reserving space for the JSON header and framing. The host applies the
+producer-reported cap and checks the returned byte length against the request
+before forwarding it. After draining the body, the host checks that the
+response view and generation match the pending request; a mismatch returns
+one \code{invalid_request} or \code{stale_generation} terminal error.
+
+ Sequential Arrow views:
+
+Sequential descriptors have \code{kind: "grid"}, \code{access: "sequential"},
+\code{encoding: "arrow-ipc"}, \code{nrow: null}, and a known \code{ncol}. Only the \code{next}
+capability is true; \code{seek}, \code{sort}, \code{filter}, \code{known_total}, \code{children},
+\code{refresh}, and \code{track} are false. The producer supplies the schema and owns
+the forward-only Arrow stream for the lifetime of the view generation.
+
+Each Arrow IPC body carries its logical schema. The descriptor's \code{columns}
+array remains in original source order and retains each column's \code{index},
+\code{name}, \code{type}, \code{unsupported}, \code{ipc_index}, \code{position}, \code{sortable},
+\code{filterable}, and \code{drillable} fields. \code{index}, \code{position}, and non-null
+\code{ipc_index} values are zero-based. \code{unsupported} is null for supported
+columns and otherwise explains why a column was omitted from IPC; its
+\code{ipc_index} is null. Names may repeat and must not be used to identify IPC
+vectors; use \code{ipc_index}. Even a page with no supported columns reports its
+row count in page metadata.
+
+\code{stream/next} accepts only \code{view}, \code{generation}, \code{max_rows}, and \code{max_bytes}.
+\code{max_page_rows} is a required descriptor field containing the positive
+safe-integer row cap captured when the view is opened. \code{max_rows} defaults to
+\verb{min(200, captured cap)} and must be a positive safe integer no larger than
+that cap. The viewer requests \code{min(200, descriptor.max_page_rows)} rows and
+validates returned row counts against that request. The host rejects an
+invalid or missing \code{max_page_rows}, and rejects \code{max_rows} above the captured
+cap before granting a lease. \code{max_bytes} uses the shared binary response
+budget above. Zero is a valid budget but returns \code{limit_exceeded} before
+fetching because it cannot hold an IPC stream. Offset, sorting, filtering,
+and count requests are rejected. Random \code{grid/rows} is unavailable for
+sequential views.
+
+A successful binary response carries \code{view}, \code{generation}, \code{first_row},
+\code{rows_fetched}, \code{rows_seen}, \code{done}, and the reserved \code{transfer} object.
+\code{first_row} is the zero-based source cursor before this page;
+\code{rows_seen = first_row + rows_fetched}. Each page is a self-contained IPC
+stream and never crosses an input batch boundary. \code{done} becomes true only
+after the producer's end-of-stream sentinel has been observed. A data page
+can therefore have \code{done: false} even when it contains the last rows. A
+following schema-only zero-row page can report \code{done: true}. Empty batches
+are skipped with bounded work; reaching that bound yields zero rows and
+\code{done: false}, which clients must not treat as EOF.
+
+The host leases a view generation to the first attached browser whose next
+request is accepted. Other browsers receive \code{in_use} while that owner remains
+attached, including between pages. At most one next request is pending per
+view generation. Cancellation, timeout, or owner detachment does not fail the
+producer stream and does not rewind a sent request. Its slot remains reserved
+until the late terminal response is drained and discarded. Detachment
+releases the lease; a new owner then starts at the current source cursor. No
+additional host-to-producer failure control is sent. The host validates
+current generation and budgets before granting a lease. A producer connection
+loss closes all its views.
+
+Producer schema/array/next failures and a single row exceeding the page
+budget make the producer stream terminally failed and release its resources.
+Later next requests return \code{stream_failed}. Ordinary encoder/allocation
+failures retain the carry and uncommitted offset for retry. Request
+cancellation and host timeout are separate from these producer failures.
+
+ Methods:\tabular{llll}{
+   Method \tab Direction \tab Kind \tab Result \cr
+   \code{view/open} \tab Producer to viewer \tab Notification \tab Descriptor and, for snapshot access, all column payloads. \cr
+   \code{view/schema} \tab Host to producer \tab Request \tab Current dimensions and schema. \cr
+   \code{stream/next} \tab Host to producer \tab Request \tab One forward-only Arrow IPC page and cursor metadata. \cr
+   \code{grid/rows} \tab Host to producer \tab Request \tab One selected page from a random-access grid. \cr
+   \code{view/refresh} \tab Host to producer \tab Request \tab Rebuilds a view as the next generation of the same id. \cr
+   \code{view/close} \tab Host to producer \tab Request \tab Closes one view generation. \cr
+   \code{view/closed} \tab Producer to host \tab Notification \tab Removes a closed or replaced generation from the host cache. \cr
+   \code{hello} \tab Producer to host \tab Notification \tab Announces protocol and producer metadata for a new connection. \cr
+   \code{wake} \tab Host to producer \tab Notification \tab No result; asks the producer to check for pending work. \cr
+   \code{cancel} \tab Host to producer \tab Notification \tab Names pending work for the producer to cancel. \cr
+   \code{ack} \tab Producer to host \tab Notification \tab Cumulatively acknowledges complete host-to-producer JSONL frames read. \cr
+}
+
+ \code{view/schema}:
+
+Parameters are \code{view} and \code{generation}. The result contains \code{view},
+\code{generation}, \code{nrow}, \code{ncol}, and \code{columns}. A generation that is no longer
+current produces \code{stale_generation} when handled synchronously. A missing or
+closed view produces \code{view_not_found}.
+
+ \code{view/refresh}:
+
+\code{view/refresh} is a request with an id. Its \code{params} identify the active view
+using the required \code{view} and \code{generation} fields. The descriptor's
+\code{capabilities.refresh} field gates this operation: when it is false or
+omitted, the host must not offer refresh, and a request that nevertheless
+reaches the producer fails with \code{unsupported}. A missing view fails with
+\code{view_not_found}; a generation that is no longer current fails with
+\code{stale_generation}.
+
+On success, the producer replaces the descriptor under the same view id and
+advances its generation by exactly one. It sends the replacement \code{view/open}
+notification before the successful response. The result contains the view id,
+\code{previous_generation}, the new \code{generation}, and \code{refreshed: true}. The
+\code{view/open} is authoritative for the active descriptor; the response confirms
+the operation and must not restore an older generation in the host or viewer.
+A failed refresh returns an error without publishing a new generation. The
+replaced generation does not need a separate \code{view/closed} notification.
+
+ \code{view/close} and \code{view/closed}:
+
+\code{view/close} is a request with an id. Its \code{params} identify the active view
+using the required \code{view} and \code{generation} fields. A missing view fails with
+\code{view_not_found}; a generation that is no longer current fails with
+\code{stale_generation}. On success, the producer removes that generation and
+returns a result containing the same \code{view} and \code{generation} with
+\code{closed: true}. The response completes an explicit host-initiated close; the
+producer does not also send \code{view/closed} for that close.
+
+A producer sends \code{view/closed} as a notification when a view generation
+becomes unavailable without a matching host-initiated \code{view/close} request or
+a successor \code{view/open} notification replacing it. Its \code{params} contain
+\code{view} and \code{generation}; an optional \code{reason} may provide additional
+producer-defined context. A host removes the cached view only when both
+identifiers still match its active descriptor. It ignores a notification for
+a generation that has already been replaced or removed.
+
+ \code{grid/rows}:
+
+Parameters are:\tabular{lll}{
+   Field \tab Required \tab Meaning \cr
+   \code{view} \tab Yes \tab Registered view id. \cr
+   \code{generation} \tab Yes \tab Generation returned by \code{view/open}. \cr
+   \code{offset} \tab No \tab Zero-based offset after filtering and sorting; defaults to 0. \cr
+   \code{limit} \tab No \tab Requested page size; defaults to 200 and is clamped to the producer's page row limit. \cr
+   \code{sort} \tab No \tab Array of \verb{\{ "col": zeroBasedPosition, "desc": boolean \}} objects; defaults to no sort. \cr
+   \code{filter} \tab No \tab Filter AST defined by \link[=jdv_query_spec]{query specification}; defaults to no filter. \cr
+   \code{cols} \tab No \tab Array of zero-based column positions; omitted or \code{null} selects all columns. \cr
+}
+
+
+The result contains \code{view}, \code{generation}, \code{total}, \code{total_unfiltered},
+\code{offset}, \code{limit}, and \code{data}. \code{data} contains \code{source_row}, optional
+\code{row_labels}, and \code{columns}. The effective \code{limit} is clamped to the query
+engine's row limit and may be reduced further to fit the JSON output budget.
+For an empty page, \code{source_row} and explicit \code{row_labels} are empty arrays;
+\code{columns} still contains one schema/data/errors wrapper per selected column,
+with empty channel arrays. Only \verb{cols: []} produces an empty \code{columns} array.
+
+Column selectors are positions rather than names, so duplicate or unusual
+column names are safe. \verb{cols: []} requests only the row metadata. An omitted
+or \code{null} \code{cols} selects every column. A producer may reduce the effective
+\code{limit} to satisfy its response budget; if the fixed page schema or one row
+cannot fit, the request returns \code{limit_exceeded}. Snapshot access rejects row
+requests with \code{unsupported} because its payload is host-cached.
+
+ \code{hello}:
+
+At the start of each producer-to-host connection, the producer sends a
+\code{hello} notification with no request id:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
+  "method": "hello",
+  "params": \{
+    "protocol": 1,
+    "session": "producer-1",
+    "producer": \{
+      "name": "example-producer",
+      "version": "1.0.0"
+    \},
+    "wake": true,
+    "limits": \{
+      "max_unacked_frames": 264,
+      "max_unacked_bytes": 1048577,
+      "queue_messages": 256,
+      "queue_bytes": 16777216,
+      "max_request_bytes": 1048576,
+      "max_message_bytes": 10485760
+    \}
+  \}
+\}
+}\if{html}{\out{</div>}}
+
+\code{session} is an opaque session identifier. It is 1–128 ASCII bytes and may
+contain only letters, digits, \code{.}, \verb{_}, \code{:}, and \code{-}. A receiver must not
+infer a process id or connection counter from it. A host rejects an invalid
+identifier, and rejects a duplicate active identifier with \code{in_use}.
+\code{producer} identifies the producer: \code{name} and \code{version} are UTF-8 strings
+from 1 through 256 bytes each. \code{runtime} is optional; when present, it has
+string \code{name} and \code{version} fields, each also 1 through 256 UTF-8 bytes. A
+receiver rejects the handshake if any supplied metadata value is empty,
+invalid UTF-8, or exceeds the byte limit. Protocol major version 1 is the v1
+contract in this document. A peer that does not support the announced major
+version rejects the handshake with \code{unsupported}; it must not continue with
+incompatible message semantics.
+
+\code{wake} is optional and, when present, is a Boolean. An omitted value means
+\code{false}; any other type is invalid. When \code{true}, the host must send periodic
+\code{wake} notifications while requests await terminal responses. When omitted or
+\code{false}, the host must not send \code{wake}. A producer that needs periodic wakes
+sets \code{wake} to \code{true}.
+
+\code{hello} is the first producer message on a new connection. A disconnect
+closes the views associated with that connection.
+
+\code{params.limits} is required and contains all six required limits, each a
+positive safe integer: \code{max_unacked_frames} and \code{max_unacked_bytes} bound the
+complete host-to-producer JSONL frames and bytes sent without cumulative
+acknowledgement; \code{queue_messages} and \code{queue_bytes} bound producer-side
+pending work; \code{max_request_bytes} and \code{max_message_bytes} bound one request
+and one producer message. A host uses the smaller of each reported value and
+its own configured bound. Missing or invalid limits reject the handshake.
+
+ \code{wake} and \code{cancel}:
+
+\code{wake} has no response and no parameters. A host must not send it when
+\code{hello.params.wake} is omitted or \code{false}; when that value is \code{true}, the
+host must send wakes repeatedly at a regular interval while one or more
+requests are awaiting terminal responses. A producer that needs periodic
+wakes sets \code{wake} to \code{true}. A host may choose any regular interval and must
+keep wakes within applicable frame, byte, and send-rate limits.
+
+\code{cancel} has no response and takes \code{{ "id": requestId }} in \code{params}. It
+identifies a request by the same string-or-safe-integer rules as envelope
+ids. Ids retain their JSON type, so the string \code{"1"} does not match numeric
+id \code{1}. A producer cancels matching work that has not begun and sends one
+\code{cancelled} terminal error. Work already running is not forcibly interrupted
+by this notification and produces its ordinary terminal response. The
+producer validates the full control envelope, including encoding,
+compression, and deadline, before it changes pending work. Unsupported
+encoding or compression and an expired recognized cancel have no effect and
+produce no notification response. Malformed JSON, an invalid raw id token, or
+an invalid deadline type can be rejected during request validation with a
+best-effort \code{invalid_request} response whose id is \code{null}; these errors do
+not change pending work.
+
+ \code{ack}:
+
+Every producer must send \verb{\{"method":"ack","params":\{"frames":N\}\}} after it
+has read one or more complete frames. \code{N} is the cumulative number of
+complete host-to-producer JSONL frames read on that connection, including
+\code{wake}, \code{cancel}, malformed, and rejected frames. It is a safe integer and
+never decreases. The host releases frame and byte credit through that
+cumulative frame boundary.
+
+ Column types:
+
+The schema \code{type} of a column is one of the following values. This table and
+the rules below are the protocol contract; filter operators and operand forms
+are defined in the \link[=jdv_query_spec]{query specification}.\tabular{lll}{
+   \code{type} \tab Additional schema fields \tab Value filter operators \cr
+   \code{boolean} \tab  \tab \code{is_true}, \code{is_false} \cr
+   \code{integer}, \code{number} \tab  \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
+   \code{string} \tab  \tab \code{contains}, \code{starts_with}, \code{ends_with}, \code{text_equals} \cr
+   \code{categorical} \tab \code{levels}, \code{ordered} \tab The text operators, and \verb{in} \cr
+   \code{date} \tab  \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
+   \code{datetime} \tab \code{tz} \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
+   \code{int64} \tab  \tab \code{eq}, \code{between} \cr
+   \code{duration} \tab \code{units} \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
+   \code{list}, \code{other} \tab  \tab None \cr
+}
+
+
+Every column type also accepts \code{is_na} when a valid missingness mask is
+available. A client decides what it can do with a column from \code{type},
+\code{filterable}, \code{sortable}, and the grid \code{capabilities} alone. The schema's
+\code{native_type} field is a producer-defined array of display strings. A client
+may show those strings as a hint but must not infer semantics from them. How
+R vectors map to protocol types is described, as informative text, in the R
+column mapping section of \link[=jdv_query_spec]{query specification}, and
+can change without a protocol version change.
+
+A client that receives a \code{type} it does not know must treat the column as
+display-only, exactly like \code{other}: it follows the column's \code{sortable} for
+sorting, offers no value-based filter, and uses only \code{is_na}. It must not
+fail, hide the column, or guess from \code{native_type}. Because of this rule, a
+new \code{type} can be added without changing the protocol major version. For the
+same reason, a later release may add operators or operand forms to a known
+type; a client offers only the operators it knows for that type and must be
+prepared for the server to answer a request with an \code{unsupported} error,
+which is an ordinary failure of that request and not a protocol violation.
+
+ Column payloads:
+
+Column identity is its zero-based \code{position}; \code{name} is display metadata and
+may be empty, duplicated, or otherwise unusual. A schema entry includes
+\code{position}, \code{name}, \code{type}, \code{native_type}, \code{sortable}, and \code{filterable}.
+Categorical schemas also include \code{levels} and \code{ordered}; datetime schemas
+include \code{tz}; duration schemas include \code{units}. Unknown optional schema
+fields must be ignored by clients so future schema extensions remain
+compatible; the Column types section defines how to treat an unknown \code{type}
+value.
+
+A column payload is columnar. Channel arrays may be omitted when absent:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
+  "values": [1, null, null],
+  "display": ["1", "NaN", "NA"],
+  "special": [null, "nan", "na"],
+  "na": [false, true, true]
+\}
+}\if{html}{\out{</div>}}
+
+\code{values}, \code{display}, \code{sort_key}, \code{special}, and \code{na}, when present, have one
+entry for each row in the payload. \code{na} is sent whenever its extraction
+succeeds and is the authoritative missingness mask; clients must not infer
+missingness from display text. A producer may omit a channel that is
+unavailable, while keeping other channels usable. Clients use the
+descriptor's capability fields to decide which operations are available.
+
+In snapshot access, \code{data.columns} entries contain the complete channel data.
+A random-access response wraps each selected column as \verb{\{ "schema": ..., "data": ..., "errors": ... \}}, preserving the page-time schema. The \code{data}
+object inside that wrapper uses the same channel format. Random-access rows
+do not include \code{sort_key}; sorting remains on the producer side.
+
+The following encoding rules apply:
+\itemize{
+\item \code{boolean}, \code{integer}, and finite \code{number} values use JSON booleans or numbers.
+\code{duration} values are numbers in the schema's \code{units} (\code{secs}, \code{mins},
+\code{hours}, \code{days}, or \code{weeks}), with the same missing and non-finite rules as
+\code{number}; \code{display} carries the formatted text.
+Missing values use JSON \code{null} and are identified by \code{na}.
+\item Non-finite doubles use JSON \code{null} in \code{values}; the parallel \code{special} entry
+distinguishes \code{na}, \code{nan}, \code{pos_inf}, and \code{neg_inf}. Numeric comparisons and
+sorting restore infinities from \code{special}; \code{na} controls missingness
+and NA-last placement.
+\item \code{int64} values are canonical base-10 JSON strings, never JSON numbers, to
+preserve exact integer precision. \code{na} identifies missing entries. The
+\code{display} channel may be omitted only when its nonmissing labels equal
+\code{values} and every missing label is \code{"NA"}. The client reconstructs display
+from values, using \code{"NA"} for missing entries. A producer may retain
+\code{display} when its display text does not meet this rule.
+\item \code{string} and \code{categorical} values are strings. The \code{display} channel may be omitted
+under the same equality and missing-label rule. Categorical order and labels come
+from \code{levels} and \code{ordered} in the schema.
+\item \code{date} values are ISO \code{YYYY-MM-DD} strings. \code{datetime} values are ISO
+timestamp strings; the schema's \code{tz} records the source time-zone setting.
+\item In snapshot access, \code{sort_key} is present when a value's ordering cannot be
+recovered from its \code{values} and \code{special} entries. It carries the producer's ordering
+key; consumers compare keys rather than recomputing a producer's native
+ordering. A \code{null} sort key is ordered after every non-null key, regardless
+of the \code{na} mask. random-access rows never include sort keys.
+\item \code{source_row} always reports zero-based positions in original source order.
+Snapshot-access \code{row_labels} and random-access page \code{row_labels} contain
+one label per row when supplied; otherwise the field is \code{null}. A random-access \code{view/open} descriptor
+has \code{row_labels: null}; labels arrive with the page.
+}
+
+Snapshot-access payloads contain all table rows in one \code{data} object.
+Random-access payloads contain only the requested row slice. The protocol
+guarantees matching sort and filter semantics, not identical display strings.
+
+ Filter and sort request shape:
+
+The filter is the neutral AST defined by
+\link[=jdv_query_spec]{query specification}, not a UI library's filter model.
+Objects contain exactly the fields required by their operator. Sort is an
+array of objects with exactly \code{col} and \code{desc}; \code{desc} is a required scalar
+Boolean. Duplicate sort and page columns are invalid. Cross-consumer examples
+of filters, values, and expected original row indices are in the fixture
+described in the \link[=jdv_query_spec]{query specification}.
+
+Numeric filter special values use an explicit object, never a non-JSON
+number:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{ "op": "eq", "col": 0, "value": \{ "special": "pos_inf" \} \}
+}\if{html}{\out{</div>}}
+
+\code{int64} filter values are canonical decimal strings. Missing and special
+value semantics follow the \link[=jdv_query_spec]{query specification}.
+
+ Errors and limits:
+
+Error codes are stable machine-readable values. The \code{error} object contains
+\code{code} and \code{message}, with optional \code{details}. The current codes include:
+
+A consumer treats an unrecognized code as a general producer failure and may
+display the code without requiring code-specific recovery behavior.\tabular{ll}{
+   Code \tab Meaning \cr
+   \code{invalid_request} \tab Malformed JSON, missing required fields, strict filter/sort field errors, or invalid parameters. \cr
+   \code{unsupported} \tab A known operation or encoding is not supported for this table or protocol version. \cr
+   \code{limit_exceeded} \tab A configured request, page, or JSON byte limit was exceeded. \cr
+   \code{schema_changed} \tab The active view schema no longer matches its descriptor, or a required channel is unavailable. \cr
+   \code{producer_error} \tab A producer method or other request computation failed. \cr
+   \code{interrupted} \tab Request processing began and was interrupted. \cr
+   \code{cancelled} \tab The accepted request was cancelled before processing began. \cr
+   \code{expired} \tab The request deadline elapsed before processing began. \cr
+   \code{unavailable} \tab A well-formed object path no longer resolves or cannot be read safely. \cr
+   \code{stale_generation} \tab The request names a generation that is no longer active. \cr
+   \code{view_not_found} \tab The view id is missing or closed. \cr
+   \code{cache_changed} \tab A host-only sequential append cursor differs from the observed tail; refresh the host page catalog before advancing. \cr
+   \code{in_use} \tab A session id is already active, another browser owns the sequential lease, a next request is still pending, or a reentrant operation cannot proceed. \cr
+   \code{stream_failed} \tab A sequential producer encountered a terminal failure; close or register a new stream to continue. \cr
+   \code{method_not_found} \tab No implementation exists for the requested method. \cr
+}
+
+
+Request and response size limits are negotiated in \code{hello}. A producer that
+cannot satisfy a request or configured budget returns \code{limit_exceeded}.
+Per-column channel failures may be reported in the page payload without
+failing the entire request.
+}
+
+\section{R producer extension}{
+ \code{object/children}:
+
+This method is available only on tree views. A grid with \code{children: true}
+uses \code{object/open} to capture a cell; it does not expose \code{object/children}.
+
+Parameters are \code{view}, \code{generation}, \code{path}, and optionally \code{offset},
+\code{limit}, and \code{attributes}. The path is a full typed path from the root value
+held by the named tree view; an empty path selects that root. \code{offset} is
+zero-based and defaults to 0; \code{limit} defaults to 200 and must be between 1
+and 500. \code{attributes} is a Boolean that defaults to \code{true}; any other value,
+including \code{null}, returns \code{invalid_request}. A path contains at most 32
+steps. Each step is one of:\tabular{lll}{
+   Step \code{type} \tab Fields \tab Meaning \cr
+   \code{index} \tab \code{index} \tab One-based position in an unnamed or positional object. \cr
+   \code{binding} \tab \code{name} \tab Environment binding name. \cr
+   \code{slot} \tab \code{name} \tab S4 slot name. \cr
+   \code{attr} \tab \code{name} \tab Attribute name. \cr
+}
+
+
+The result contains the same \code{view}, \code{generation}, full \code{path}, and \code{offset},
+plus \code{children} and \code{total_children}. Each child has its one-based \code{index},
+bounded \code{label}, string-array \code{class}, \code{type}, bounded \code{summary},
+\code{has_children}, \code{viewable}, and its full typed \code{path} when the child is
+addressable. \code{class} and \code{type} have the same meaning as in a tree
+descriptor; a child that is unavailable has an empty \code{class} and no \code{type}. A
+child whose binding, slot, or attribute name exceeds 1,000 characters is not
+addressable: it has \code{viewable: false}, \code{has_children: false},
+\code{unavailable: "path_limit"}, and may omit \code{path}. Other children include the
+full typed path. When a value cannot safely be read, the child carries a
+bounded \code{unavailable} reason. Child text, each class string, and each summary
+are at most 1,000 characters. Summaries inspect at most five values or
+children and at most three levels deep. Environment names are enumerated
+locally and paged; active and delayed bindings are reported as unavailable
+without reading their values.
+
+Children are the elements of the object followed by its attributes. Within an
+atomic vector (logical, integer, double, complex, character, or raw), every
+element is a leaf with \code{has_children: false}. Its \code{summary} has the form
+\verb{<class> (1): <value>}, for example \code{double (1): 1.5}, and always includes
+the value regardless of depth. A page of elements is read and formatted as
+one range, so only the requested range of an ALTREP vector is read. A missing
+value is shown as \code{NA}, and strings and formatted values are cut at 160
+characters. A factor element, and every value in a factor's summary, is shown
+as its level name; a missing code is \code{NA}, and a code outside the levels is
+shown as \verb{<invalid code N>}. An atomic vector has children only if it has
+more than one element, or if attributes are listed and it has any, so a
+length-one vector without attributes is a leaf.
+
+With \code{attributes: false}, the attribute children (\code{attr} steps) are left out:
+of every vector and other object, including a vector's \code{names}, which remains
+visible as the label of each element. \code{total_children}, paging, and
+\code{has_children} of the listed children follow the setting, and attributes that
+are present are neither counted nor paged. Environment bindings and S4 slots
+are the contents of those objects, not attribute children, so the setting
+does not hide them.
+
+Tree navigation never evaluates a promise, active binding, classed \code{[[}, \code{$},
+or \code{names} method. Paths are resolved again for each \code{object/children}
+request.
+
+ \code{object/open}:
+
+Parameters are \code{view}, \code{generation}, a non-empty \code{path}, and optional \code{mode}
+and \code{collation}. \code{mode} must be exactly \code{"auto"}, \code{"snapshot"}, or \code{"paged"};
+when omitted, it defaults to \code{"auto"}. \code{collation} must be exactly \code{"C"} or
+\code{"locale"}; when omitted, it uses the same \code{getOption("jdv.collation", "C")}
+default as \code{\link[=jdv_register]{jdv_register()}}. These options apply when the selected value
+opens as a grid and do not inherit from the parent view. If the selected
+value opens as a tree, valid \code{mode} and \code{collation} values are ignored.
+Invalid values, including explicit \code{null}, return \code{invalid_request}.
+\code{object/children} does not accept these options.
+
+On a tree view, every path step uses the \code{type} discriminant from the table
+above. On a grid view, the first step must select a drillable cell:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
+  "view": "v-1",
+  "generation": 1,
+  "path": [\{ "kind": "cell", "source_row": 204, "column": 2 \}],
+  "mode": "paged",
+  "collation": "C"
+\}
+}\if{html}{\out{</div>}}
+
+\code{source_row} is the original, zero-based source-row position, independent of
+sorting, filtering, and pagination. \code{column} is the zero-based schema
+position, including when column names are duplicated. \code{kind: "cell"} is
+allowed only at the start of a grid path. Remaining steps, if any, use the
+tree \code{type} forms above and are resolved within the captured cell value. The
+complete path, including its cell step, contains at most 32 steps. Grid
+\code{object/open} requires \code{capabilities.children: true} and
+\verb{columns[column].drillable: true}; malformed selectors or non-drillable
+columns return \code{invalid_request}.
+
+Each grid column schema includes the Boolean \code{drillable}, which says whether
+the column's cells can be selected by \code{kind: "cell"}. This metadata is
+independent of \code{type}, \code{sortable}, and \code{filterable}; clients must not infer
+drillability from the type, \code{native_type}, or display text. The R columns
+that are drillable are listed in the R column mapping (informative) section
+of \link[=jdv_query_spec]{query specification}. Snapshot views retain the R
+source only when a drillable column needs subsequent cell capture. Retained
+source references are released when the view closes.
+
+\code{object/open} resolves the selected value once, holding that captured value
+in the new view. A path that cannot be resolved returns \code{unavailable};
+malformed paths return \code{invalid_request}, missing views return
+\code{view_not_found}, and old generations return \code{stale_generation}. The result
+is the child's \code{view/open.params} descriptor, but the child is registered by
+the \code{view/open} notification that precedes the response (see the Notification
+delivery section); a host must not create or revive a view from the response,
+and may use it only to find the child. If building the response fails, the
+child is closed and no \code{view/open} for it is sent. The child descriptor has
+\code{reason: "child"}. If the parent has a \code{title}, the child's \code{title} is an R
+expression built from the parent's \code{title} and the opened path; if the parent
+has none, the child has none either. A list element uses \code{x$name} when its
+name is nonempty and unique and \code{x$`a b`} when the name is not a
+syntactic name, and \code{x[[3]]} (one-based) otherwise. An element of a named
+atomic vector uses \code{x[["name"]]} under the same rule. An S4 slot is \code{x@slot},
+an environment binding is \code{x$name}, an attribute is \code{attr(x, "names")}, and a
+grid cell is \code{df[12, "col"]} with the original zero-based \code{source_row} 11, or
+\code{df[12, 3]} with a one-based column position when the column name is missing,
+empty, or duplicated. A child of a child continues from the child's \code{title},
+for example \code{x$a[[2]]@data}. The \code{title} is truncated to 4,096 bytes. It is a
+display label only: it is not guaranteed to be valid R, a host must not
+evaluate it, and it does not identify the view or take a title slot. A tree
+child starts a new root with an empty path; the descriptor may identify its
+parent with \code{parent}. The limit is 32 live descendant views total per root,
+counting nested tree and grid views across all levels. Closing a child
+releases its slot for a later child view. Closing, replacing, or evicting a
+parent closes its descendants; each cascaded child emits \code{view/closed} with
+\code{reason: "parent_closed"}.
+
+The browser uses the same child-view navigation for tree and grid parents.
+Opening controls appear only in drillable cells and use the displayed row's
+original \code{source_row} (shown as a one-based row number). The tree viewer
+shows the root \code{class}, and a checkbox, checked by default, sets the
+\code{attributes} parameter of its \code{object/children} requests. View breadcrumbs
+restore the parent's sort, filter, page, horizontal scroll, or tree path and
+child-page offset. A pending child open is tied to the active parent view and
+generation, separately from page query epochs: Snapshot sort, filter, and
+page operations remain local and do not cancel the captured cell request.
+Returning to the R prompt lets that original request complete without another
+browser request. Selecting a different view, replacing its generation, or
+closing it cancels its pending browser requests. Display text and navigation
+labels are inserted as DOM text.
+
+R 4.6 and newer use the public experimental \code{R_GetBindingType()} and
+\code{R_getVarEx()} APIs to distinguish \code{Value}, \code{Forced}, \code{Delayed}, \code{Unbound},
+\code{Missing}, and \code{Active} bindings. Only \code{Value} and \code{Forced} bindings are
+read; \code{Delayed}, \code{Unbound}, \code{Missing}, and \code{Active} bindings are opaque, and
+delayed expressions are never deparsed. On older R versions only active
+bindings can be identified; other environment bindings are treated as opaque.
+For ALTREP values, bounded element or region access may call the class's
+representation callbacks to read values needed for a page or summary. This
+does not force delayed promises or invoke active bindings. Tree access does
+not request \code{DATAPTR}; the protocol does not guarantee total memory use by an
+ALTREP implementation. If reading an individual child fails, that child is
+returned with an \code{unavailable} reason and sibling children remain available.
+S4 \code{.Data} is opaque; slots are inspected as stored values.
+
+ \code{view/refresh}:
+
+The common request, capability gate, generation transition, notification, and
+response contract is defined above. This section describes how the R producer
+performs that operation.
+
+The view is rebuilt from the value captured when it was registered, so the
+rebuild shows the same data unless the captured object is a reference object
+that changed in place. A tracked view (see Binding tracking) is instead
+rebuilt from the current value of its variable, read without evaluation; it
+fails with \code{unavailable} when tracking has ended (the reason is in the
+message) or the variable is a promise or active binding. A view whose
+tracking is \code{"paused"} can be refreshed too: it is rebuilt from the current
+value of its variable, the new object becomes the baseline, and the state
+stays \code{"paused"}. The rebuild happens even if nothing changed and always
+advances the generation by one. The registration \code{mode} and \code{collation} are
+reused as they were requested: an \code{"auto"} mode is decided again (a grid may
+move between Snapshot and Paged, and the effective mode is never frozen), an
+explicit mode is kept, and an omitted collation reads \code{jdv.collation} again.
+A refresh of a titled view keeps its title association, so a later
+registration with that title continues from the refreshed generation.
+
+The replacement is built first. Only if the view, its generation, and (for a
+child view) its parent are still current is it published, as one step, under
+the same view id with the new generation, and the new \code{view/open} is queued.
+Then every descendant view is closed, deepest first, with \code{view/closed}
+notifications carrying \code{reason: "parent_closed"}. If releasing the old
+generation closes the refreshed view, its \code{view/closed} follows the new
+\code{view/open}, so the host never keeps a generation R no longer has. The old
+generation of the refreshed view itself gets no \code{view/closed}; its
+\code{view/open} successor replaces it. As for any request, these notifications
+precede the response. A refresh that fails, is interrupted, or finds the view
+stale leaves the generation and all children unchanged. A \code{\link[=jdv_close]{jdv_close()}} or
+\code{\link[=jdv_disconnect]{jdv_disconnect()}} issued by user code while the replacement is being built
+keeps its effect: the closed view is not revived and the request fails with
+\code{view_not_found}. \code{\link[=jdv_register]{jdv_register()}}, \code{object/open}, or another refresh
+attempted by user code during the rebuild fails with \code{in_use}. If the
+notification queue overflows, the session ends as described under
+Notification delivery.
+
+Refreshing a child view keeps it a child of the same parent generation (the
+descriptor repeats \code{parent}); it is refused with \code{view_not_found} once the
+parent was refreshed, replaced, or closed. Sequential views are not
+refreshable (\code{unsupported}) because a consumed stream cannot be rewound.
+Errors are \code{invalid_request}, \code{view_not_found}, \code{stale_generation},
+\code{unsupported}, and the usual \code{limit_exceeded}, \code{producer_error}, and
+\code{interrupted}.
+
+A hub that forwards requests treats a sent \code{view/refresh} specially. The
+successful refresh queues the new generation's \code{view/open} before its own
+response, and a hub normally discards pending requests of an older generation
+when it sees a newer \code{view/open}. The response of a sent \code{view/refresh} is
+not discarded for that reason, whether it reports success or failure, as long
+as the request was not timed out, cancelled, or lost to a disconnect. The hub
+checks that the response matches the request (same id, view, and requested
+generation as \code{previous_generation}, and a generation one higher on success).
+The \code{view/open} notifications alone update what is displayed; the response
+only confirms the operation and must never move the display back to an older
+generation.
+
+ \code{view/track} and \code{view/tracking}:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"id": "track-1", "method": "view/track",
+ "params": \{"view": "v-1", "generation": 3, "enabled": false\}\}
+}\if{html}{\out{</div>}}\tabular{lll}{
+   Field \tab Request \tab Result \cr
+   \code{view} \tab Required; the view id \tab The view id \cr
+   \code{generation} \tab Required; must be the current generation \tab The generation after the request; one higher when rebuilt \cr
+   \code{enabled} \tab Required boolean; \code{false} stops, \code{true} resumes \tab Omitted \cr
+   \code{tracking} \tab Omitted \tab The \code{tracking} object after the request \cr
+}
+
+
+Other fields are rejected with \code{invalid_request}, as is a non-boolean
+\code{enabled}.
+
+\code{enabled: false} changes the state from \code{"active"} to \code{"paused"}. The binding
+and the baseline object are kept, and the variable is not examined while the
+view is paused. \code{enabled: true} changes \code{"paused"} back to \code{"active"}. At
+that moment the current value of the variable is read and compared with the
+baseline. If it differs, the view is rebuilt in the same way as an automatic
+update: a new \code{view/open} with \code{reason: "tracked"}, \code{tracking.state: "active"}, and the next generation is queued, and the result carries the new
+generation. If it is the same object, the generation does not change. A value
+that cannot be read without evaluation (a promise or an active binding) is
+looked at again later, as for any check. If the rebuild fails, a
+\code{view/update_failed} is queued as for an automatic update and the view stays
+active at the same generation. A request for the state the view already has
+succeeds and changes nothing. If the variable turns out to be gone, the state
+becomes \code{"lost"} (announced as below) and the result reports it.
+
+A view that has no \code{tracking} field, or whose state is \code{"lost"}, fails with
+\code{unsupported}, and the message names the reason. A generation that is not
+current fails with \code{stale_generation}, and an unknown view with
+\code{view_not_found}. The other errors are \code{invalid_request}, \code{producer_error},
+and \code{interrupted}.
+
+\code{view/tracking} is a notification:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"method": "view/tracking",
+ "params": \{"view": "v-1", "generation": 3,
+            "tracking": \{"name": "df", "state": "lost",
+                         "reason": "removed",
+                         "message": "the binding was removed"\}\}\}
+}\if{html}{\out{</div>}}
+
+R queues it when the state changes without a new \code{view/open}: when following
+is lost, and when \code{view/track} pauses, or resumes without rebuilding. When
+\code{view/track} resumes and rebuilds, the new \code{view/open} carries the state and
+no \code{view/tracking} is sent. \code{generation} is the generation the state belongs
+to; a host ignores a notification for a generation it no longer shows, and it
+updates its record of the view's \code{tracking} and \code{capabilities.track} (false
+for \code{"lost"}). The notification precedes the response of the request that
+caused it, like every notification. Following is lost when the variable is
+removed or its environment is garbage collected, which R finds in the task
+callback, in a \code{view/refresh}, or when \code{view/track} resumes.
+
+A hub that forwards requests may treat a sent \code{view/track} like a sent
+\code{view/refresh}: a successful rebuild raises the generation by one, and the
+\code{view/open} alone updates the display.
+
+ \code{view/close} and \code{view/closed}:
+
+The common request, response, and notification contract is defined above. In
+R, a successful \code{view/close} removes the entry from the active registry
+immediately. If a request is already using its entry, source and holder
+cleanup is deferred until that request releases it.
+
+When the registry evicts its oldest active table to satisfy \code{jdv.max_tables},
+it queues a \code{view/closed} notification with the evicted \code{view} and
+\code{generation}. The notification enters the session queue ahead of the
+associated new \code{view/open}, and the host delivers both in queue order.
+\code{\link[=jdv_close]{jdv_close()}} queues \code{view/closed} for views it closes. Re-registering an
+active title replaces the same id with a newer generation; after close or
+eviction, a later registration uses a new id and generation 1.
+
+Closing a tree view removes its child views recursively. A \code{view/closed}
+notification for a child closed by its parent includes
+\code{reason: "parent_closed"}; the explicitly closed root has no such reason.
+Replacing or evicting a parent has the same descendant-close effect.
+
+ R-specific descriptor and runtime details:
+
+The R producer adds \code{class} and \code{type} to tree descriptors. \code{class} is a
+string array following \code{\link[base:class]{base::class()}} semantics for the root object, and
+\code{type} is the string returned by \code{\link[base:typeof]{base::typeof()}} (for example \code{"list"},
+\code{"double"}, \code{"environment"}, or \code{"S4"}). Its tree descriptors use
+\code{kind: "tree"}, \code{access: "random"}, \code{encoding: "jdv-json"}, and include a
+\code{path} array that is empty at the root. Grid descriptors omit \code{class} and
+\code{type}.
+
+R may include a \code{tracking} object when a view follows a variable. It has the
+form \verb{\{"name": "df", "state": "active"\}}: \code{name} is the variable name and
+\code{state} is \code{"active"}, \code{"paused"}, or \code{"lost"}. The lost state includes a
+\code{reason} token and optional \code{message}. A view that does not follow a variable
+omits \code{tracking} and sets \code{capabilities.track} to false. The R producer sends
+\code{reason} on every \code{view/open}; it sets the token according to the table in
+the common descriptor section.
+
+R column channel diagnostics use an empty \code{errors} array on random-access
+pages when no channel failed, and a named object of channel-specific messages
+when errors are present. Snapshot-access columns include \code{errors} only when a
+channel failed. Channel failures are reflected in the schema capability
+flags; failed channel results are not cached.
+
+The R package uses base R and its bundled cJSON implementation at runtime; it
 does not require jsonlite. Consumers can parse and construct JSON with their
-own tooling and pass the resulting JSON string to \code{\link[=jdv_rpc]{jdv_rpc()}}.
-}
+own tooling and pass a JSON string to \code{\link[=jdv_rpc]{jdv_rpc()}}. Inbound requests follow
+the common parser limits above. Generated R messages are bounded by the
+outbound byte limit and are not revalidated with the request parser's node or
+object-member limits.
 
-\section{Registration API}{
+The R producer generates session ids as \verb{r-<pid>-<connection counter>} and
+does not use or change R's random state. It identifies itself as jdv running
+on R and sets \code{wake: true}. Its grid descriptors send all eight known
+capability flags. The R API emits \code{hello} on explicit connect or with the
+first registered view on an implicit connection; a disconnect releases the
+process-wide view registry.
 
+In the R local transport, \code{wake} checks whether queued requests can run, but
+a wake does not dispatch work while R is in a function frame or at a
+receive-only API preflight. A 50 ms interval is a valid host choice but is
+not required by the protocol. A running R method is not forcibly interrupted
+by \code{cancel}.
+
+The cJSON writer first tries a 15-significant-digit representation for a
+finite double and accepts it only when its own read-back is exactly equal to
+the source; otherwise it falls back to 17 significant digits. The emitted
+text round-trips to the source double with correctly rounded parsers.
+Negative zero is written as \code{0}, without its sign.
+
+The nanoarrow adapter obtains the schema during registration without
+advancing the stream, then transfers stream ownership to the native layer.
+Close, replacement, eviction, parent cascade, namespace unload, and producer
+disconnection release the stream and any carried batch exactly once. A
+release callback may execute R code; registry identity and generation are
+checked again before publishing a result. Releases requested inside an active
+producer callback are deferred until that callback finishes. The synchronous
+\code{\link[=jdv_rpc]{jdv_rpc()}} API rejects \code{stream/next} before consuming the producer; the
+local transport uses its private binary-capable entry point.
+
+R producer budgets, page retries, and interruption behavior are described in
+the following implementation notes.
+
+Per-column channel failures are represented in the page payload and do not
+necessarily fail the whole request. The request and response byte limits are
+\code{jdv.max_request_bytes} (default 1 MiB, minimum 128 bytes) and
+\code{jdv.max_message_bytes} (default 10 MiB, minimum 1,024 bytes). The JSON
+output limit applies to final JSON text, not peak allocation; Arrow IPC
+bodies use the separate binary-transfer limits above. For finite doubles, the
+cJSON writer first tries a 15-significant-digit representation and accepts it
+only when its own double read-back is exactly equal to the source value;
+otherwise it falls back to 17 significant digits. It releases each completed
+column tree while appending it to the output.
+
+If a Paged response exceeds the output limit, the already-computed result is
+retried as progressively shorter row prefixes; the R query and user methods
+are not run again. If even one row cannot fit, \code{limit_exceeded} is returned
+with a \code{warnings} array, which may be empty.
+
+Full sort and filter operations have no work or row limit by default because
+they are explicit user requests. An explicitly finite \code{jdv.max_work_bytes} or
+\code{jdv.max_query_rows} caps that work. Interrupt delivery in the event-loop
+path depends on the suspension state at callback entry: an interrupt caught
+during a started request returns \code{interrupted}, while R may defer delivery if
+the callback began with interrupts already suspended. The viewer UI should
+show that R is busy while a request runs.
+
+Snapshot construction, Paged registration probes, page extraction, and JSON
+encoding use separate finite budgets. Each derived budget is the smaller of
+\code{INT_MAX}, six times the applicable output allowance plus 4 MiB, and an
+explicitly configured \code{jdv.max_work_bytes}. For Snapshot, the output
+allowance is \code{min(jdv.snapshot_max_bytes, jdv.max_message_bytes)}; for page
+work it is \code{jdv.max_message_bytes}. This preserves a 64 MiB work allowance
+with the 10 MiB defaults while allowing Snapshot construction to scale with
+its configured threshold. When \code{jdv.max_work_bytes} is finite, query work,
+page extraction, and response encoding draw from the same per-operation
+allowance. The cache budget limits the combined estimated bytes across
+column, channel, and index caches; oversized entries are skipped and old
+entries are evicted. The cache allowance is held by the registered table and
+is separate from per-operation work. Unfiltered page requests do not
+materialize a complete row index and are limited by page size.
+
+These are conservative engine-work estimates, not process-memory or RSS
+limits: source storage, arbitrary user method allocations, R allocator and GC
+overhead, and transient R-internal string conversion or sorting scratch are
+outside the guarantee. Snapshot checks raw source strings before formatting
+and checks returned channel sizes before further encoding; Paged registration
+avoids scanning the full source and charges requested pages and queries.
+Oversized common metadata is rejected at registration, while explicit Paged
+row names are checked only for requested rows. If Auto selects Snapshot but
+full explicit row names exceed Snapshot's metadata budget, registration
+retries as Paged; forced Snapshot registration returns \code{limit_exceeded}.
+Packed matrix columns are summarized by shape for display when copying a wide
+row would exceed the cell preview bound, and missingness scans are budgeted
+before allocating masks. Minimal control and error responses have a separate
+fixed 64 KiB encoder-work allowance, so a depleted request budget can still
+report its failure.
+
+ Registration API:
 
 \if{html}{\out{<div class="sourceCode r">}}\preformatted{jdv_register(
   x,
@@ -178,832 +1179,8 @@ checks actual source string lengths and generated channel sizes. A sampled
 estimate can therefore miss a large value, in which case automatic mode
 discards the incomplete Snapshot attempt and registers a Paged holder. Forced
 Snapshot mode returns \code{limit_exceeded} instead.
-}
 
-\section{Message envelopes}{
-
-
-A view descriptor is sent as a notification:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
-  "method": "view/open",
-  "params": \{
-    "view": "v-1",
-    "generation": 1,
-    "title": "example",
-    "reason": "register",
-    "kind": "grid",
-    "access": "random",
-    "encoding": "jdv-json",
-    "capabilities": \{
-      "seek": true,
-      "sort": true,
-      "filter": true,
-      "known_total": true,
-      "next": false,
-      "children": false,
-      "refresh": true,
-      "track": false
-    \},
-    "collation": "C",
-    "nrow": 100,
-    "ncol": 2,
-    "row_labels": null,
-    "columns": []
-  \}
-\}
-}\if{html}{\out{</div>}}
-
-The example omits schema entries for brevity. \code{view/open} has no request id
-and is not passed to \code{\link[=jdv_rpc]{jdv_rpc()}}; \code{\link[=jdv_register]{jdv_register()}} queues it for the host to
-deliver (see the Notification delivery section). \code{kind} is \code{grid}; \code{access}
-is \code{snapshot} or \code{random} for Snapshot or Paged mode, respectively; and
-\code{encoding} is \code{jdv-json}. The \code{capabilities} object and any known capability
-fields may be omitted; an omitted object or field means \code{false}. R continues
-to send all eight known fields. Its grid descriptors set \code{seek}, \code{sort},
-\code{filter}, \code{known_total}, and \code{refresh} to \code{true}; \code{next} is \code{false}; \code{track}
-is \code{true} only for a view that has a \code{tracking} field whose state is not
-\code{"lost"} (see Binding tracking). Grid \code{children} is \code{true} if and only if at
-least one column has \code{drillable: true}. \code{refresh} tells the host that
-\code{view/refresh} is accepted. Tree descriptors use \code{kind: "tree"},
-\code{access: "random"}, \code{encoding: "jdv-json"}, and capabilities \code{seek: true},
-\code{sort: false}, \code{filter: false}, \code{known_total: true}, \code{next: false},
-\code{children: true}, \code{refresh: true}, and \code{track} as for a grid. Tree
-descriptors omit grid-only fields (\code{nrow}, \code{ncol}, \code{row_labels}, \code{columns},
-and \code{data}). A tree descriptor includes an empty \code{path} at its root. A child
-descriptor may include \code{parent}, the parent view id. \code{title} is optional.
-\code{reason} says why the descriptor was sent (see below). A tree descriptor also
-has \code{class}, a string array that follows \code{\link[base:class]{base::class()}} semantics for the
-root object, and \code{type}, the string \code{\link[base:typeof]{base::typeof()}} returns for it (for
-example \code{"list"}, \code{"double"}, \code{"environment"}, or \code{"S4"}). A grid descriptor
-omits both.\tabular{lll}{
-   Descriptor field \tab Grid \tab Tree \cr
-   \code{view}, \code{generation}, \code{kind}, \code{access}, \code{encoding} \tab Required \tab Required \cr
-   \code{capabilities} \tab Optional; missing flags are false \tab Optional; missing flags are false \cr
-   \code{title} \tab Optional \tab Optional \cr
-   \code{reason} \tab Always sent by R; see below \tab Always sent by R; see below \cr
-   \code{collation}, \code{nrow}, \code{ncol}, \code{row_labels}, \code{columns} \tab Required \tab Omitted \cr
-   \code{data} \tab Required for Snapshot; omitted for Paged \tab Omitted \cr
-   \code{path} \tab Omitted \tab Required; empty for the root \cr
-   \code{class}, \code{type} \tab Omitted \tab Required \cr
-   \code{parent} \tab Optional on child views \tab Optional on child views \cr
-   \code{tracking} \tab Optional; see below \tab Optional; see below \cr
-}
-
-
-\code{tracking} is present only on a view that follows a variable. It is an object
-\verb{\{"name": "df", "state": "active"\}}: \code{name} is the variable name and \code{state}
-is \code{"active"} (the view follows the variable), \code{"paused"} (the host stopped
-following with \code{view/track}; the binding is kept), or \code{"lost"} (following
-ended; the object also has a \code{reason} token and an optional \code{message}). A
-\code{view/open} from a registration carries \code{"active"}. A view that does not
-follow a variable (created from an expression, a child view, a sequential
-view, or registered without tracking) has no \code{tracking} field and
-\code{capabilities.track: false}. The state changes afterwards are announced by
-\code{view/tracking}, and the host changes them with \code{view/track}.\tabular{ll}{
-   \code{tracking.reason} \tab Meaning \cr
-   \code{"removed"} \tab The variable was removed. \cr
-   \code{"collected"} \tab The environment of the variable was garbage collected. \cr
-}
-
-
-\code{reason} is a fixed token, like \code{view/open.reason}. More values may be added,
-so a host treats an unknown value as a general loss of following. \code{message}
-is an optional English sentence for display; a host does not parse it.
-
-\code{reason} is a fixed token that tells the host why a \code{view/open} was sent, so
-it can tell an explicit request from an automatic update when a view id
-reappears with a higher \code{generation}. R always sends it. A host treats a
-missing or unknown value as \code{"register"}.\tabular{ll}{
-   \code{reason} \tab Sent when \cr
-   \code{"register"} \tab A view is registered with \code{\link[=jdv_register]{jdv_register()}} or \code{\link[=jdv_view]{jdv_view()}}, including a registration that replaces the view with the same title and Arrow sequential views. \cr
-   \code{"child"} \tab A child view is opened by \code{object/open}. \cr
-   \code{"tracked"} \tab A tracked view is rebuilt automatically because its variable changed (see \code{\link[=jdv_view]{jdv_view()}}), including when \code{view/track} resumes following. \cr
-   \code{"refresh"} \tab A view is rebuilt by \code{view/refresh}. \cr
-}
-
-
-A host can bring a view to the front for \code{"register"} and \code{"child"}, and
-update it quietly for \code{"tracked"} and \code{"refresh"}.
-
-Grid-level flags declare the operations available in protocol v1; each
-column's \code{sortable} field constrains sorting, and \code{filterable} constrains
-value-based filter operators. \code{filterable} is false for columns of type
-\code{list} and \code{other}, and \code{is_na} remains valid when a valid missingness mask
-is available, even when \code{filterable} is false. Clients must accept
-\code{nrow: null} when a grid row count is unknown; the protocol does not define
-\code{total_rows}. The descriptor's \code{encoding} field does not change the
-envelope's \code{encoding: "json"} setting. Snapshot mode's \code{params.data} contains
-the full data payload as described under the Column payloads section below.
-
-A tree descriptor has no grid fields:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
-  "method": "view/open",
-  "params": \{
-    "view": "v-2",
-    "generation": 1,
-    "title": "object",
-    "reason": "register",
-    "path": [],
-    "kind": "tree",
-    "access": "random",
-    "encoding": "jdv-json",
-    "class": ["list"],
-    "type": "list",
-    "capabilities": \{
-      "seek": true,
-      "sort": false,
-      "filter": false,
-      "known_total": true,
-      "next": false,
-      "children": true
-    \}
-  \}
-\}
-}\if{html}{\out{</div>}}
-
-A request envelope has this shape:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
-  "id": 1,
-  "method": "grid/rows",
-  "params": \{
-    "view": "v-1",
-    "generation": 1,
-    "offset": 0,
-    "limit": 200
-  \},
-  "encoding": "json",
-  "compression": "none",
-  "deadline": 1791849600.0
-\}
-}\if{html}{\out{</div>}}
-
-Only \code{method} is required at the envelope level. \code{id} is required for methods
-that return a result. \code{params} is required by view methods and \code{cancel}.
-Unknown envelope and method-parameter fields are ignored. \code{encoding},
-\code{compression}, and \code{deadline} are optional. \code{deadline}, when provided, must
-be a finite JSON number containing an absolute Unix timestamp in seconds. A
-synchronous or queued request that is past its deadline before execution
-begins receives an \code{expired} error response.
-
-The configured request byte limit applies to the entire JSON text. The parser
-also validates strict JSON number syntax and rejects duplicate object keys.
-
-Warnings are collected up to 100 messages, each truncated to 512 characters.
-If more warnings occur, the array ends with
-\code{"Additional warnings were omitted."}.
-
-A successful response is:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
-  "id": 1,
-  "result": \{\},
-  "warnings": []
-\}
-}\if{html}{\out{</div>}}
-
-Every response includes a \code{warnings} array, including an empty array when no
-warnings were raised. Warnings from R methods invoked while handling the
-request are collected and muffled at the request boundary. An error response
-is:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
-  "id": 1,
-  "error": \{
-    "code": "invalid_request",
-    "message": "Invalid request."
-  \},
-  "warnings": []
-\}
-}\if{html}{\out{</div>}}
-
-Errors raised after request processing begins, including user method errors
-and interrupts, are returned to the request caller. Their \code{code}
-distinguishes the failure class; \code{message} is bounded text and must not be
-used as a stable machine-readable discriminator. An error may also include
-\code{details}. Every accepted request receives exactly one terminal response.
-Work cancelled, expired, or stale before it begins receives an error response
-with code \code{cancelled}, \code{expired}, or \code{stale_generation}; a closed view
-receives \code{view_not_found}. A synchronous \code{\link[=jdv_rpc]{jdv_rpc()}} call is an embedding
-path and does not apply the local transport execution gate. It treats \code{wake}
-and \code{cancel} as no-op notifications and returns \code{NULL} for them; the
-transport queue matches cancellation ids to pending work before execution.
-\code{ack} is transport-owned and flows only from R to the host; it is not passed
-to \code{\link[=jdv_rpc]{jdv_rpc()}}.
-}
-
-\section{Arrow IPC binary responses}{
-
-
-An Arrow IPC body is reserved for a successful, id-bearing response. Its
-JSONL header has the ordinary response envelope and a \code{result.transfer}
-descriptor:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
-  "id": "jdv-request-id",
-  "result": \{
-    "view": "v-1",
-    "generation": 1,
-    "transfer": \{ "encoding": "arrow-ipc", "byte_length": 1234 \}
-  \},
-  "warnings": []
-\}
-}\if{html}{\out{</div>}}
-
-The header line is followed immediately by exactly \code{byte_length} opaque
-bytes, then by the next JSONL message. The receiver must not decode the body
-as UTF-8, scan it for LF, or call the response handler before all bytes
-arrive. The descriptor is not valid on notifications, errors, or \code{ack}.
-\code{byte_length} is a non-negative safe integer. The response \code{id} is the
-host-issued request id and must be a string. The UTF-8 JSON header is limited
-to 64 KiB, and the header, its LF, and body together are limited to 10 MiB.
-The body has an absolute 30-second receive timeout; fragments do not extend
-it. Invalid lengths, oversized frames, EOF, or timeout close the R connection
-and fail pending requests as disconnected. Cancellation, expiry, and stale or
-unknown response ids still drain a valid body before the next JSONL message
-is read.
-
-There is no checksum or delimiter after the raw body. A sender that declares
-a shorter length may be detected when the remaining bytes cannot form a valid
-JSONL frame, but framing alone cannot detect a remainder that happens to be a
-valid JSONL message.
-
-The host forwards a response to the browser as one WebSocket binary message:
-four bytes containing the UTF-8 JSON header length as an unsigned
-little-endian integer, followed by the JSON header, followed by the unchanged
-raw body. The header is rewritten with the browser request id and session.
-The rewritten header remains limited to 64 KiB, and the complete WebSocket
-message to 10 MiB. If either limit or the request's \code{max_bytes} is exceeded,
-the host returns one \code{limit_exceeded} error after draining the R body and
-continues with the next JSONL frame.
-
-For a request that can return a binary body, \code{params.max_bytes} is optional.
-When present it must be a non-negative safe integer; zero is valid. Its
-default is the effective binary body cap. R caps a response at
-\verb{min(params.max_bytes, max(0, min(jdv.max_message_bytes, 10 MiB) - (64 KiB + 4)))}.
-The \code{max_message_bytes} member of the R hello limits is optional for
-compatibility with older peers; when omitted, the host uses 10 MiB. If
-present, it must be a positive safe integer. The host applies the negotiated
-R cap and checks the returned byte length against the request before
-forwarding it. After draining the body, the host checks that the response
-view and generation match the pending request; a mismatch returns one
-\code{invalid_request} or \code{stale_generation} terminal error.
-
-Internally, page encoding is isolated behind one private encoder boundary. It
-accepts an already-owned Arrow stream and the page budgets, and returns a
-self-contained IPC byte sequence with the metadata needed for the response.
-Codec-specific work stays inside this boundary; stream movement and release,
-view registration, binary framing and sending, and viewer behavior stay
-outside it. This keeps the codec replaceable without changing those
-surrounding responsibilities. The function signature and encoder
-implementation are specified separately.
-}
-
-\section{Sequential Arrow views}{
-
-
-Sequential descriptors have \code{kind: "grid"}, \code{access: "sequential"},
-\code{encoding: "arrow-ipc"}, \code{nrow: null}, and a known \code{ncol}. Only the \code{next}
-capability is true; \code{seek}, \code{sort}, \code{filter}, \code{known_total}, \code{children},
-\code{refresh}, and \code{track} are false. Registration calls the producer's
-\code{get_schema} but never \code{get_next}. It moves one exported Arrow stream into
-native ownership. Close, replacement, eviction, parent cascade, namespace
-unload, and R disconnection release the stream and any carried batch exactly
-once. A release callback may execute R code; registry identity and generation
-are rechecked before publishing its result. Releases requested inside an
-active producer callback are deferred until that callback has finished.
-
-Each Arrow IPC body carries its logical schema. The descriptor's \code{columns}
-array remains in original source order and retains each column's \code{index},
-\code{name}, \code{type}, \code{unsupported}, \code{ipc_index}, \code{position}, \code{sortable},
-\code{filterable}, and \code{drillable} fields. \code{index}, \code{position}, and non-null
-\code{ipc_index} values are zero-based. \code{unsupported} is null for supported
-columns and otherwise explains why a column was omitted from IPC; its
-\code{ipc_index} is null. Names may repeat and must not be used to identify IPC
-vectors; use \code{ipc_index}. Even a page with no supported columns reports its
-row count in page metadata.
-
-\code{stream/next} accepts only \code{view}, \code{generation}, \code{max_rows}, and \code{max_bytes}.
-\code{max_page_rows} is a required descriptor field containing the positive
-safe-integer row cap captured at registration. Changing the R option later
-does not change an existing view's cap. \code{max_rows} defaults to
-\verb{min(200, captured cap)} and must be a positive safe integer no larger than
-that cap. The viewer requests \code{min(200, descriptor.max_page_rows)} rows and
-validates returned row counts against that request. The host rejects an
-invalid or missing \code{max_page_rows}, and rejects \code{max_rows} above the captured
-cap before granting a lease. \code{max_bytes} uses the shared binary response
-budget above. Zero is a valid budget but returns \code{limit_exceeded} before
-fetching because it cannot hold an IPC stream. Offset, sorting, filtering,
-and count requests are rejected. The public synchronous \code{jdv_rpc(JSON)} entry
-rejects \code{stream/next} before consuming the producer; only the transport's
-private binary-capable entry can execute it. Random \code{grid/rows} and object
-navigation are unavailable for sequential views.
-
-A successful binary response carries \code{view}, \code{generation}, \code{first_row},
-\code{rows_fetched}, \code{rows_seen}, \code{done}, and the reserved \code{transfer} object.
-\code{first_row} is the zero-based source cursor before this page;
-\code{rows_seen = first_row + rows_fetched}. Each page is a self-contained IPC
-stream and never crosses an input batch boundary. \code{done} becomes true only
-after the producer's end-of-stream sentinel has been observed. A data page
-can therefore have \code{done: false} even when it contains the last rows. A
-following schema-only zero-row page can report \code{done: true}. Empty batches
-are skipped with bounded work; reaching that bound yields zero rows and
-\code{done: false}, which clients must not treat as EOF.
-
-The host leases a view generation to the first attached browser whose next
-request is accepted. Other browsers receive \code{in_use} while that owner remains
-attached, including between pages. At most one next request is pending per
-view generation. Cancellation, timeout, or owner detachment does not fail the
-R stream and does not rewind a sent request. Its slot remains reserved until
-the late terminal response is drained and discarded. Detachment releases the
-lease; a new owner then starts at the current source cursor. No additional
-host-to-R failure control is sent. The host validates current generation and
-budgets before granting a lease. An R connection loss closes all its views.
-
-Producer schema/array/next failures and a single row exceeding the page
-budget make the R stream terminally failed and release its resources. Later
-next requests return \code{stream_failed}. Ordinary encoder/allocation failures
-retain the carry and uncommitted offset for retry, as reported by the native
-boundary. Request cancellation and host timeout are separate from these
-producer failures.
-
-The viewer exposes Load next and an unknown total, without random navigation,
-sorting, or filtering. It displays gaps between the last received cursor and
-a new \code{first_row} as rows advanced but not displayed, including a skipped
-prefix when a new browser takes over. Per-view-generation progress survives
-selecting another view and display-cache eviction; zero-row non-EOF pages do
-not advance that cursor. EOF pages still report any skipped prefix. The
-display cache counts UTF-16 text bytes plus 64 bytes per row and 16 per cell,
-capped at 8 MiB and 32 pages per view, with a 32 MiB aggregate display
-budget. View selection preserves these per-generation caches while they fit.
-They retain formatted rows rather than both raw IPC and decoded vectors.
-These counts are separate from the host IPC cache described below and are not
-a JavaScript heap guarantee. Cell strings and binary hex are visibly
-truncated beyond 4,096 code units. Decimal fixed-point output that would
-exceed this limit uses exact coefficient/exponent notation, such as
-\code{123e-2147483647}, without expanding the scale. Invalid non-integer or unsafe
-scales produce an explicit error. Timestamp formatting remains exact. Rows no
-longer retained by the host cannot be fetched from R again. Decimal
-coefficients and signed/unsigned 64-bit integers are formatted exactly;
-timestamps use raw integer ticks, including negative fractions and declared
-time zones, rather than rounded millisecond getters. Nested values show a
-summary, and omitted columns display their unsupported reason.
-}
-
-\section{Browser inspection of nested Arrow cells}{
-
-
-Nested sequential cells are inspected from the page's IPC buffers and schema
-in this browser. No \code{object/children}, \code{object/open}, R conversion, or
-additional R request is involved. Selecting a cell uses its original
-one-based source row and original zero-based column position; the
-descriptor's \code{ipc_index} selects the decoded vector. Column names are labels
-only and may repeat.
-
-The inspector expands list, large-list, fixed-size-list, struct, and map
-values. Maps expose entries, then each entry's key and value. Dictionaries
-are resolved at each position, including dictionaries inside nested values.
-Breadcrumb paths are arrays of zero-based child positions, so duplicate
-struct field names remain unambiguous. Parent nulls are leaves regardless of
-their child buffers. Signed and unsigned 64-bit integers, decimals, and
-timestamps use the same exact physical-buffer formatting as ordinary Arrow
-cells, including slices and chunks. Unsupported types are leaves at their
-position. A column omitted from IPC by the producer's existing support rules
-instead shows its unsupported reason at the cell root; the browser cannot
-recover omitted data. Core handling of an unsupported nested node does not
-imply the R encoder emits that node.
-
-Only the requested child page is materialized, with at most 200 children.
-Paths are limited to 32 steps; values at that depth show a depth-limit reason
-instead of an expansion control. Dictionary resolution has a separate 32-hop
-and cycle guard. Labels and summaries are bounded to 4,096 UTF-16 code units,
-including any truncation marker. Composite summaries use shallow type labels
-and counts rather than recursively formatting schemas or subtrees. These
-bounds also apply to very large lists of nulls.
-
-Decoded page and cell handles are private browser objects. Their lifetime is
-owned by the UI's bounded raw IPC cache (at most eight pages and 32 MiB
-aggregate) and its single active inspector page, separately from the
-formatted-row cache. If the local page is absent, inspection may restore it
-from the host cache; if it is no longer retained there, the UI reports it
-unavailable and does not advance the forward-only R stream.
-}
-
-\section{Host cache for sequential pages}{
-
-
-The reference host caches opaque IPC bytes per R session, view, and
-generation. It does not parse Arrow. Valid pages are saved before delivery
-decisions, so a reply arriving after cancellation, timeout, or owner
-detachment can still be read later. Old-generation, over-budget, malformed,
-or regressing replies are not cached. Page metadata must have non-negative
-safe-integer row counts, \code{rows_seen = first_row + rows_fetched}, a Boolean
-\code{done}, and no more rows than requested. After EOF, a later next request may
-return a zero-row EOF at the same cursor; it may not introduce data or
-reverse EOF.
-
-\code{welcome.capabilities.stream_cache} advertises the host feature:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
-  "version": 1,
-  "max_total_bytes": 268435456,
-  "max_view_bytes": 67108864,
-  "page_overhead_bytes": 1024
-\}
-}\if{html}{\out{</div>}}
-
-A false or absent capability means the host cache is unavailable; sequential
-viewing continues in forward-only mode without cache-cursor validation. The
-reference host defaults to 256 MiB across sessions and views, and 64 MiB per
-view, clamped to the total limit. Startup options \code{--stream-cache-bytes} and
-\code{--stream-cache-view-bytes} accept non-negative safe-integer byte counts;
-zero for either disables the feature. The corresponding \code{startServer()}
-options are \code{streamCacheBytes} and \code{streamCacheViewBytes}.
-
-Every page, including an empty page, is charged its IPC body length plus
-1,024 bytes. Only a copy of that body and the explicit metadata below are
-retained; full response headers and warnings are not saved. The copy does not
-retain a larger receive buffer. Both global and per-view limits evict oldest
-pages first, without refreshing FIFO order on reads. A view's retained pages
-therefore form a suffix of its observed pages. An oversized insertion can
-evict the complete suffix including itself. The page counter, row watermark,
-and EOF flag still advance. Fixed charges bound empty-page metadata as well
-as payload bytes; this accounting is not an exact process-heap limit.
-
-Cache calls use the ordinary browser request envelope, with \code{session}, \code{id},
-\code{method}, and \code{params}, but are handled locally and never forwarded to R:\tabular{lll}{
-   Method \tab Parameters beyond \code{view} and \code{generation} \tab Result \cr
-   \code{stream/cache/info} \tab Optional \code{after_page}, optional \code{limit} \tab Bounded JSON page catalog and cursor state. \cr
-   \code{stream/cache/get} \tab Required \code{page}, optional \code{max_bytes} \tab One cached page in the existing binary response envelope. \cr
-}
-
-
-Both methods require the current view generation and strict parameter
-objects. They need no lease, including while another browser owns the stream.
-Existing active-request id checks run before these operations. Disabled hosts
-return \code{unsupported}; a missing retained page returns \code{unavailable}. A
-missing or stale view keeps the usual \code{view_not_found} or \code{stale_generation}
-error.
-
-The catalog defaults to 64 entries and allows \code{limit} from 1 through 128.
-Omitting \code{after_page} starts at the first retained page (internal cursor -1);
-when supplied, it must be a non-negative safe integer. Entries are ordered by
-monotonic, zero-based page number, including distinct zero-row pages. Each
-entry has \code{page}, \code{first_row}, \code{rows_fetched}, \code{rows_seen}, \code{done}, and
-\code{byte_length}. An optional \verb{unavailable_before_range: [start, end]}
-identifies a source-row gap immediately before that page, using zero-based
-half-open row coordinates. No unbounded history of gaps is kept. Gaps
-preceding the retained suffix are covered by the lost prefix below. These
-ranges can overlap that prefix; clients combine them as a union rather than
-counting overlapping rows twice.
-
-The result also contains \code{view}, \code{generation}, \code{next_after} (the last
-returned page number when more entries exist, otherwise null), \code{last_page}
-(-1 before any observed page), \code{rows_seen}, \code{done}, and \code{unavailable_before}.
-The latter means rows in \verb{[0, unavailable_before)} are no longer held by the
-host. When all pages have been evicted, it equals the watermark even if the
-catalog is empty. \code{last_page}, \code{rows_seen}, and \code{done} distinguish this state
-from a new stream. Catalog JSON is limited to 64 KiB; clients paginate rather
-than requesting an unbounded index. Eviction between catalog lookup and get
-returns \code{unavailable}; clients can refresh the catalog.
-
-Get accepts a non-negative safe-integer \code{page}. Its optional non-negative
-safe-integer \code{max_bytes} uses the existing effective binary budget; zero can
-retrieve a zero-byte body. Insufficient budget returns one \code{limit_exceeded}
-error without sending a partial body or consulting R. Binary JSON headers
-stay within 64 KiB and whole frames within 10 MiB. The result preserves the
-existing \code{view}, \code{generation}, row metadata, and \code{transfer} fields and adds
-\code{cache_page}, an object with the same metadata as a catalog entry. A live
-cached \code{stream/next} response gets the same object, even if that page was
-immediately evicted. Cache reads use an empty warnings array rather than
-replaying old R warnings.
-
-When caching is enabled, \code{stream/next} requires \code{after_page}, a safe integer
-greater than or equal to -1. The host compares it with \code{last_page} before
-granting a lease or sending an R frame. A missing value returns
-\code{invalid_request}; a mismatch returns \code{type: "error"},
-\code{code: "cache_changed"}, and \verb{details: \{last_page, rows_seen, done\}}. The
-browser refreshes info/get before advancing. The host removes \code{after_page}
-before forwarding to R, so it is a host-only cursor. When caching is
-disabled, sequential viewing remains forward-only and the host does not
-compare a cache cursor. Omitting \code{after_page} from \code{stream/cache/info} still
-starts the catalog at its first retained page. Reading an older cached page
-does not rewind the append cursor. Cache reads do not claim a lease, and
-append requests retain the existing owner and single-pending-request rules.
-
-View close, ancestor cascade, generation replacement, and R session
-disconnect invalidate the corresponding bytes and metadata; late replies
-cannot resurrect them. The cache is memory-only and is cleared at host
-shutdown. Cache info/get replies have a separate 32 MiB queued-byte admission
-limit: exceeding it closes and detaches that browser while the R session and
-host cache remain available to other browsers. This limit does not apply to
-existing welcome messages, notifications, or live R replies. Send failures on
-any output path detach the browser. Repeated close/detach is harmless.
-}
-
-\section{Methods}{
-\tabular{llll}{
-   Method \tab Direction \tab Kind \tab Result \cr
-   \code{view/open} \tab R/host to viewer \tab Notification \tab Descriptor and, for Snapshot, all column payloads. Queued by \code{\link[=jdv_register]{jdv_register()}}. \cr
-   \code{view/schema} \tab Host to R \tab Request \tab Current dimensions and schema. \cr
-   \code{stream/next} \tab Host to R \tab Request \tab One forward-only Arrow IPC page and cursor metadata. \cr
-   \code{grid/rows} \tab Host to R \tab Request \tab One selected page from a Paged view. \cr
-   \code{object/children} \tab Host to R \tab Request \tab One page of children at a typed object path. \cr
-   \code{object/open} \tab Host to R \tab Request \tab Registers the captured value at a typed path as a child view. \cr
-   \code{view/refresh} \tab Host to R \tab Request \tab Rebuilds a view from its captured value as the next generation of the same id. \cr
-   \code{view/track} \tab Host to R \tab Request \tab Stops or resumes following the variable of a tracked view. \cr
-   \code{view/close} \tab Host to R \tab Request \tab Closes one view generation. \cr
-   \code{view/closed} \tab R to host \tab Notification \tab Removes a closed, replaced, or evicted generation from the host cache. \cr
-   \code{view/update_failed} \tab R to host \tab Notification \tab A tracked view could not be rebuilt; the previous generation stays. \cr
-   \code{view/tracking} \tab R to host \tab Notification \tab The tracking state of a view changed without a new \code{view/open}. \cr
-   \code{hello} \tab R to host \tab Notification \tab Announces protocol and runtime versions for a new connection. \cr
-   \code{wake} \tab Host to R \tab Notification \tab No result; asks the event loop to check its execution gate again. \cr
-   \code{cancel} \tab Host to R \tab Notification \tab Names pending work for the local queue to cancel. \cr
-   \code{ack} \tab R to host \tab Notification \tab Cumulatively acknowledges complete host-to-R JSONL frames read on this connection. \cr
-}
-}
-
-\section{\code{view/schema}}{
-
-
-Parameters are \code{view} and \code{generation}. The result contains \code{view},
-\code{generation}, \code{nrow}, \code{ncol}, and \code{columns}. A generation that is no longer
-current produces \code{stale_generation} when handled synchronously. A missing or
-closed view produces \code{view_not_found}.
-}
-
-\section{\code{object/children}}{
-
-
-This method is available only on tree views. A grid with \code{children: true}
-uses \code{object/open} to capture a cell; it does not expose \code{object/children}.
-
-Parameters are \code{view}, \code{generation}, \code{path}, and optionally \code{offset},
-\code{limit}, and \code{attributes}. The path is a full typed path from the root value
-held by the named tree view; an empty path selects that root. \code{offset} is
-zero-based and defaults to 0; \code{limit} defaults to 200 and must be between 1
-and 500. \code{attributes} is a Boolean that defaults to \code{true}; any other value,
-including \code{null}, returns \code{invalid_request}. A path contains at most 32
-steps. Each step is one of:\tabular{lll}{
-   Step \code{type} \tab Fields \tab Meaning \cr
-   \code{index} \tab \code{index} \tab One-based position in an unnamed or positional object. \cr
-   \code{binding} \tab \code{name} \tab Environment binding name. \cr
-   \code{slot} \tab \code{name} \tab S4 slot name. \cr
-   \code{attr} \tab \code{name} \tab Attribute name. \cr
-}
-
-
-The result contains the same \code{view}, \code{generation}, full \code{path}, and \code{offset},
-plus \code{children} and \code{total_children}. Each child has its one-based \code{index},
-bounded \code{label}, string-array \code{class}, \code{type}, bounded \code{summary},
-\code{has_children}, \code{viewable}, and its full typed \code{path} when the child is
-addressable. \code{class} and \code{type} have the same meaning as in a tree
-descriptor; a child that is unavailable has an empty \code{class} and no \code{type}. A
-child whose binding, slot, or attribute name exceeds 1,000 characters is not
-addressable: it has \code{viewable: false}, \code{has_children: false},
-\code{unavailable: "path_limit"}, and may omit \code{path}. Other children include the
-full typed path. When a value cannot safely be read, the child carries a
-bounded \code{unavailable} reason. Child text, each class string, and each summary
-are at most 1,000 characters. Summaries inspect at most five values or
-children and at most three levels deep. Environment names are enumerated
-locally and paged; active and delayed bindings are reported as unavailable
-without reading their values.
-
-Children are the elements of the object followed by its attributes. Within an
-atomic vector (logical, integer, double, complex, character, or raw), every
-element is a leaf with \code{has_children: false}. Its \code{summary} has the form
-\verb{<class> (1): <value>}, for example \code{double (1): 1.5}, and always includes
-the value regardless of depth. A page of elements is read and formatted as
-one range, so only the requested range of an ALTREP vector is read. A missing
-value is shown as \code{NA}, and strings and formatted values are cut at 160
-characters. A factor element, and every value in a factor's summary, is shown
-as its level name; a missing code is \code{NA}, and a code outside the levels is
-shown as \verb{<invalid code N>}. An atomic vector has children only if it has
-more than one element, or if attributes are listed and it has any, so a
-length-one vector without attributes is a leaf.
-
-With \code{attributes: false}, the attribute children (\code{attr} steps) are left out:
-of every vector and other object, including a vector's \code{names}, which remains
-visible as the label of each element. \code{total_children}, paging, and
-\code{has_children} of the listed children follow the setting, and attributes that
-are present are neither counted nor paged. Environment bindings and S4 slots
-are the contents of those objects, not attribute children, so the setting
-does not hide them.
-
-Tree navigation never evaluates a promise, active binding, classed \code{[[}, \code{$},
-or \code{names} method. Paths are resolved again for each \code{object/children}
-request.
-}
-
-\section{\code{object/open}}{
-
-
-Parameters are \code{view}, \code{generation}, a non-empty \code{path}, and optional \code{mode}
-and \code{collation}. \code{mode} must be exactly \code{"auto"}, \code{"snapshot"}, or \code{"paged"};
-when omitted, it defaults to \code{"auto"}. \code{collation} must be exactly \code{"C"} or
-\code{"locale"}; when omitted, it uses the same \code{getOption("jdv.collation", "C")}
-default as \code{\link[=jdv_register]{jdv_register()}}. These options apply when the selected value
-opens as a grid and do not inherit from the parent view. If the selected
-value opens as a tree, valid \code{mode} and \code{collation} values are ignored.
-Invalid values, including explicit \code{null}, return \code{invalid_request}.
-\code{object/children} does not accept these options.
-
-On a tree view, every path step uses the \code{type} discriminant from the table
-above. On a grid view, the first step must select a drillable cell:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
-  "view": "v-1",
-  "generation": 1,
-  "path": [\{ "kind": "cell", "source_row": 204, "column": 2 \}],
-  "mode": "paged",
-  "collation": "C"
-\}
-}\if{html}{\out{</div>}}
-
-\code{source_row} is the original, zero-based source-row position, independent of
-sorting, filtering, and pagination. \code{column} is the zero-based schema
-position, including when column names are duplicated. \code{kind: "cell"} is
-allowed only at the start of a grid path. Remaining steps, if any, use the
-tree \code{type} forms above and are resolved within the captured cell value. The
-complete path, including its cell step, contains at most 32 steps. Grid
-\code{object/open} requires \code{capabilities.children: true} and
-\verb{columns[column].drillable: true}; malformed selectors or non-drillable
-columns return \code{invalid_request}.
-
-Each grid column schema includes the Boolean \code{drillable}, which says whether
-the column's cells can be selected by \code{kind: "cell"}. This metadata is
-independent of \code{type}, \code{sortable}, and \code{filterable}; clients must not infer
-drillability from the type, \code{native_type}, or display text. The R columns
-that are drillable are listed in the R column mapping (informative) section
-of \link[=jdv_query_spec]{query specification}. Snapshot views retain the R
-source only when a drillable column needs subsequent cell capture. Retained
-source references are released when the view closes.
-
-\code{object/open} resolves the selected value once, holding that captured value
-in the new view. A path that cannot be resolved returns \code{unavailable};
-malformed paths return \code{invalid_request}, missing views return
-\code{view_not_found}, and old generations return \code{stale_generation}. The result
-is the child's \code{view/open.params} descriptor, but the child is registered by
-the \code{view/open} notification that precedes the response (see the Notification
-delivery section); a host must not create or revive a view from the response,
-and may use it only to find the child. If building the response fails, the
-child is closed and no \code{view/open} for it is sent. The child descriptor has
-\code{reason: "child"}. If the parent has a \code{title}, the child's \code{title} is an R
-expression built from the parent's \code{title} and the opened path; if the parent
-has none, the child has none either. A list element uses \code{x$name} when its
-name is nonempty and unique and \code{x$`a b`} when the name is not a
-syntactic name, and \code{x[[3]]} (one-based) otherwise. An element of a named
-atomic vector uses \code{x[["name"]]} under the same rule. An S4 slot is \code{x@slot},
-an environment binding is \code{x$name}, an attribute is \code{attr(x, "names")}, and a
-grid cell is \code{df[12, "col"]} with the original zero-based \code{source_row} 11, or
-\code{df[12, 3]} with a one-based column position when the column name is missing,
-empty, or duplicated. A child of a child continues from the child's \code{title},
-for example \code{x$a[[2]]@data}. The \code{title} is truncated to 4,096 bytes. It is a
-display label only: it is not guaranteed to be valid R, a host must not
-evaluate it, and it does not identify the view or take a title slot. A tree
-child starts a new root with an empty path; the descriptor may identify its
-parent with \code{parent}. The limit is 32 live descendant views total per root,
-counting nested tree and grid views across all levels. Closing a child
-releases its slot for a later child view. Closing, replacing, or evicting a
-parent closes its descendants; each cascaded child emits \code{view/closed} with
-\code{reason: "parent_closed"}.
-
-The browser uses the same child-view navigation for tree and grid parents.
-Opening controls appear only in drillable cells and use the displayed row's
-original \code{source_row} (shown as a one-based row number). The tree viewer
-shows the root \code{class}, and a checkbox, checked by default, sets the
-\code{attributes} parameter of its \code{object/children} requests. View breadcrumbs
-restore the parent's sort, filter, page, horizontal scroll, or tree path and
-child-page offset. A pending child open is tied to the active parent view and
-generation, separately from page query epochs: Snapshot sort, filter, and
-page operations remain local and do not cancel the captured cell request.
-Returning to the R prompt lets that original request complete without another
-browser request. Selecting a different view, replacing its generation, or
-closing it cancels its pending browser requests. Display text and navigation
-labels are inserted as DOM text.
-
-R 4.6 and newer use the public experimental \code{R_GetBindingType()} and
-\code{R_getVarEx()} APIs to distinguish \code{Value}, \code{Forced}, \code{Delayed}, \code{Unbound},
-\code{Missing}, and \code{Active} bindings. Only \code{Value} and \code{Forced} bindings are
-read; \code{Delayed}, \code{Unbound}, \code{Missing}, and \code{Active} bindings are opaque, and
-delayed expressions are never deparsed. On older R versions only active
-bindings can be identified; other environment bindings are treated as opaque.
-For ALTREP values, bounded element or region access may call the class's
-representation callbacks to read values needed for a page or summary. This
-does not force delayed promises or invoke active bindings. Tree access does
-not request \code{DATAPTR}; the protocol does not guarantee total memory use by an
-ALTREP implementation. If reading an individual child fails, that child is
-returned with an \code{unavailable} reason and sibling children remain available.
-S4 \code{.Data} is opaque; slots are inspected as stored values.
-}
-
-\section{\code{grid/rows}}{
-
-
-Parameters are:\tabular{lll}{
-   Field \tab Required \tab Meaning \cr
-   \code{view} \tab Yes \tab Registered view id. \cr
-   \code{generation} \tab Yes \tab Generation returned by \code{view/open}. \cr
-   \code{offset} \tab No \tab Zero-based offset after filtering and sorting; defaults to 0. \cr
-   \code{limit} \tab No \tab Requested page size; defaults to 200 and is clamped to the query engine's page row limit. \cr
-   \code{sort} \tab No \tab Array of \verb{\{ "col": zeroBasedPosition, "desc": boolean \}} objects; defaults to no sort. \cr
-   \code{filter} \tab No \tab Filter AST defined by \link[=jdv_query_spec]{query specification}; defaults to no filter. \cr
-   \code{cols} \tab No \tab Array of zero-based column positions; omitted or \code{null} selects all columns. \cr
-}
-
-
-The result contains \code{view}, \code{generation}, \code{total}, \code{total_unfiltered},
-\code{offset}, \code{limit}, and \code{data}. \code{data} contains \code{source_row}, optional
-\code{row_labels}, and \code{columns}. The effective \code{limit} is clamped to the query
-engine's row limit and may be reduced further to fit the JSON output budget.
-For an empty page, \code{source_row} and explicit \code{row_labels} are empty arrays;
-\code{columns} still contains one schema/data/errors wrapper per selected column,
-with empty channel arrays. Only \verb{cols: []} produces an empty \code{columns} array.
-
-Column selectors are positions rather than names, so duplicate or unusual
-column names are safe. \verb{cols: []} requests only the row metadata. An omitted
-or \code{null} \code{cols} selects every column and is not subject to the explicit
-\code{page_columns} limit. Before extracting page channels, jdv estimates a row
-count that fits the selected schemas, page work budget, and JSON message
-budget; it preserves every selected column and reduces the effective \code{limit}.
-Explicit \code{cols} arrays remain capped by \code{page_columns} (256 by default). If
-the fixed page schema or one row cannot fit, the request returns
-\code{limit_exceeded}. Final JSON encoding can still shorten the page to protect
-against unusually large values or custom formatters. Snapshot registrations
-reject row requests with \code{unsupported} because their payload is host-cached.
-}
-
-\section{\code{view/refresh}}{
-
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"id": "refresh-1", "method": "view/refresh",
- "params": \{"view": "v-1", "generation": 3\}\}
-}\if{html}{\out{</div>}}
-
-Parameters are \code{view} and \code{generation}; other fields are rejected with
-\code{invalid_request}. The result is
-\verb{\{"view": "v-1", "previous_generation": 3, "generation": 4, "refreshed": true\}}.
-A view is refreshable when its descriptor says \code{capabilities.refresh: true}.
-
-The view is rebuilt from the value captured when it was registered, so the
-rebuild shows the same data unless the captured object is a reference object
-that changed in place. A tracked view (see Binding tracking) is instead
-rebuilt from the current value of its variable, read without evaluation; it
-fails with \code{unavailable} when tracking has ended (the reason is in the
-message) or the variable is a promise or active binding. A view whose
-tracking is \code{"paused"} can be refreshed too: it is rebuilt from the current
-value of its variable, the new object becomes the baseline, and the state
-stays \code{"paused"}. The rebuild happens even if nothing changed and always
-advances the generation by one. The registration \code{mode} and \code{collation} are
-reused as they were requested: an \code{"auto"} mode is decided again (a grid may
-move between Snapshot and Paged, and the effective mode is never frozen), an
-explicit mode is kept, and an omitted collation reads \code{jdv.collation} again.
-A refresh of a titled view keeps its title association, so a later
-registration with that title continues from the refreshed generation.
-
-The replacement is built first. Only if the view, its generation, and (for a
-child view) its parent are still current is it published, as one step, under
-the same view id with the new generation, and the new \code{view/open} is queued.
-Then every descendant view is closed, deepest first, with \code{view/closed}
-notifications carrying \code{reason: "parent_closed"}. If releasing the old
-generation closes the refreshed view, its \code{view/closed} follows the new
-\code{view/open}, so the host never keeps a generation R no longer has. The old
-generation of the refreshed view itself gets no \code{view/closed}; its
-\code{view/open} successor replaces it. As for any request, these notifications
-precede the response. A refresh that fails, is interrupted, or finds the view
-stale leaves the generation and all children unchanged. A \code{\link[=jdv_close]{jdv_close()}} or
-\code{\link[=jdv_disconnect]{jdv_disconnect()}} issued by user code while the replacement is being built
-keeps its effect: the closed view is not revived and the request fails with
-\code{view_not_found}. \code{\link[=jdv_register]{jdv_register()}}, \code{object/open}, or another refresh
-attempted by user code during the rebuild fails with \code{in_use}. If the
-notification queue overflows, the session ends as described under
-Notification delivery.
-
-Refreshing a child view keeps it a child of the same parent generation (the
-descriptor repeats \code{parent}); it is refused with \code{view_not_found} once the
-parent was refreshed, replaced, or closed. Sequential views are not
-refreshable (\code{unsupported}) because a consumed stream cannot be rewound.
-Errors are \code{invalid_request}, \code{view_not_found}, \code{stale_generation},
-\code{unsupported}, and the usual \code{limit_exceeded}, \code{producer_error}, and
-\code{interrupted}.
-
-A hub that forwards requests treats a sent \code{view/refresh} specially. The
-successful refresh queues the new generation's \code{view/open} before its own
-response, and a hub normally discards pending requests of an older generation
-when it sees a newer \code{view/open}. The response of a sent \code{view/refresh} is
-not discarded for that reason, whether it reports success or failure, as long
-as the request was not timed out, cancelled, or lost to a disconnect. The hub
-checks that the response matches the request (same id, view, and requested
-generation as \code{previous_generation}, and a generation one higher on success).
-The \code{view/open} notifications alone update what is displayed; the response
-only confirms the operation and must never move the display back to an older
-generation.
-}
-
-\section{Binding tracking and \code{view/update_failed}}{
-
+ Binding tracking and \code{view/update_failed}:
 
 \strong{Protocol contract.} A view that follows a variable carries a \code{tracking}
 object in its \code{view/open} (see Message envelopes). While the state is
@@ -1061,97 +1238,8 @@ until the variable holds a different object or \code{view/refresh} is requested.
 host that forwards the notification ignores one for a generation it no longer
 shows. A notification queue overflow ends the session as described under
 Notification delivery.
-}
 
-\section{\code{view/track} and \code{view/tracking}}{
-
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"id": "track-1", "method": "view/track",
- "params": \{"view": "v-1", "generation": 3, "enabled": false\}\}
-}\if{html}{\out{</div>}}\tabular{lll}{
-   Field \tab Request \tab Result \cr
-   \code{view} \tab Required; the view id \tab The view id \cr
-   \code{generation} \tab Required; must be the current generation \tab The generation after the request; one higher when rebuilt \cr
-   \code{enabled} \tab Required boolean; \code{false} stops, \code{true} resumes \tab Omitted \cr
-   \code{tracking} \tab Omitted \tab The \code{tracking} object after the request \cr
-}
-
-
-Other fields are rejected with \code{invalid_request}, as is a non-boolean
-\code{enabled}.
-
-\code{enabled: false} changes the state from \code{"active"} to \code{"paused"}. The binding
-and the baseline object are kept, and the variable is not examined while the
-view is paused. \code{enabled: true} changes \code{"paused"} back to \code{"active"}. At
-that moment the current value of the variable is read and compared with the
-baseline. If it differs, the view is rebuilt in the same way as an automatic
-update: a new \code{view/open} with \code{reason: "tracked"}, \code{tracking.state: "active"}, and the next generation is queued, and the result carries the new
-generation. If it is the same object, the generation does not change. A value
-that cannot be read without evaluation (a promise or an active binding) is
-looked at again later, as for any check. If the rebuild fails, a
-\code{view/update_failed} is queued as for an automatic update and the view stays
-active at the same generation. A request for the state the view already has
-succeeds and changes nothing. If the variable turns out to be gone, the state
-becomes \code{"lost"} (announced as below) and the result reports it.
-
-A view that has no \code{tracking} field, or whose state is \code{"lost"}, fails with
-\code{unsupported}, and the message names the reason. A generation that is not
-current fails with \code{stale_generation}, and an unknown view with
-\code{view_not_found}. The other errors are \code{invalid_request}, \code{producer_error},
-and \code{interrupted}.
-
-\code{view/tracking} is a notification:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"method": "view/tracking",
- "params": \{"view": "v-1", "generation": 3,
-            "tracking": \{"name": "df", "state": "lost",
-                         "reason": "removed",
-                         "message": "the binding was removed"\}\}\}
-}\if{html}{\out{</div>}}
-
-R queues it when the state changes without a new \code{view/open}: when following
-is lost, and when \code{view/track} pauses, or resumes without rebuilding. When
-\code{view/track} resumes and rebuilds, the new \code{view/open} carries the state and
-no \code{view/tracking} is sent. \code{generation} is the generation the state belongs
-to; a host ignores a notification for a generation it no longer shows, and it
-updates its record of the view's \code{tracking} and \code{capabilities.track} (false
-for \code{"lost"}). The notification precedes the response of the request that
-caused it, like every notification. Following is lost when the variable is
-removed or its environment is garbage collected, which R finds in the task
-callback, in a \code{view/refresh}, or when \code{view/track} resumes.
-
-A hub that forwards requests may treat a sent \code{view/track} like a sent
-\code{view/refresh}: a successful rebuild raises the generation by one, and the
-\code{view/open} alone updates the display.
-}
-
-\section{\code{view/close} and \code{view/closed}}{
-
-
-A \code{view/close} request has \code{view} and \code{generation} parameters. The result
-contains the same view id and generation with \code{closed: true}. The entry is
-removed from the active registry immediately. If a request is already using
-its entry, source and holder cleanup is deferred until that request releases
-it.
-
-When the registry evicts its oldest active table to satisfy \code{jdv.max_tables},
-it queues a \code{view/closed} notification with the evicted \code{view} and
-\code{generation}. The notification enters the session queue ahead of the
-associated new \code{view/open}, and the host delivers both in queue order.
-Explicit host-initiated \code{view/close} returns a successful close result
-without a separate \code{view/closed} notification. \code{\link[=jdv_close]{jdv_close()}} queues
-\code{view/closed} for views it closes. Re-registering an active title replaces
-the same id with a newer generation; after close or eviction, a later
-registration uses a new id and generation 1.
-
-Closing a tree view removes its child views recursively. A \code{view/closed}
-notification for a child closed by its parent includes
-\code{reason: "parent_closed"}; the explicitly closed root has no such reason.
-Replacing or evicting a parent has the same descendant-close effect.
-}
-
-\section{Registry-free R handles}{
-
+ Registry-free R handles:
 
 \code{\link[=jdv_handle]{jdv_handle()}} captures a data frame, matrix, or list for an embedding host
 without registering a viewer slot. Handles do not consume \code{jdv.max_tables},
@@ -1198,10 +1286,8 @@ of a parent variable does not invalidate the child. Explicit parent close
 still invalidates descendants. Unreachable handles release their resources
 through finalizers. Handles belong to the current R session and are not
 transferable between processes. See \code{\link[=jdv_handle]{jdv_handle()}} for examples and limits.
-}
 
-\section{Notification delivery}{
-
+ Notification delivery:
 
 Every notification R produces for a session (\code{hello}, \code{view/open},
 \code{view/closed}, including evictions, cascaded child closes, the \code{view/open} of
@@ -1248,371 +1334,8 @@ is normally sent right away, so an overflow mostly affects an embedded host
 that does not take its notifications. A host must treat the end of a session,
 seen as an error from R or as \code{last_disconnect_reason}, as the loss of every
 view.
-}
 
-\section{\code{hello}}{
-
-
-At the start of each producer-to-host connection, the producer sends a
-\code{hello} notification with no request id. \code{\link[=jdv_connect]{jdv_connect()}} sends it
-immediately, even with no open view; a connection opened implicitly by
-\code{\link[=jdv_view]{jdv_view()}} sends it with the first \code{view/open}. Promoting an implicit
-connection with \code{\link[=jdv_connect]{jdv_connect()}} does not send it again:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
-  "method": "hello",
-  "params": \{
-    "protocol": 1,
-    "session": "r-1234-1",
-    "producer": \{
-      "name": "jdv",
-      "version": "0.1.0",
-      "runtime": \{"name": "R", "version": "4.6.1"\}
-    \},
-    "wake": true,
-    "limits": \{
-      "max_unacked_frames": 264,
-      "max_unacked_bytes": 1048577,
-      "queue_messages": 256,
-      "queue_bytes": 16777216,
-      "max_request_bytes": 1048576,
-      "max_message_bytes": 10485760
-    \}
-  \}
-\}
-}\if{html}{\out{</div>}}
-
-\code{session} is an opaque session identifier. It is 1–128 ASCII bytes and may
-contain only letters, digits, \code{.}, \verb{_}, \code{:}, and \code{-}. A receiver must not
-infer a process id or connection counter from it. A host rejects an invalid
-identifier, and rejects a duplicate active identifier with \code{in_use}.
-\code{producer} identifies the producer: \code{name} and \code{version} are UTF-8 strings
-from 1 through 256 bytes each. \code{runtime} is optional; when present, it has
-string \code{name} and \code{version} fields, each also 1 through 256 UTF-8 bytes. A
-receiver rejects the handshake if any supplied metadata value is empty,
-invalid UTF-8, or exceeds the byte limit. Protocol major version 1 is the v1
-contract in this document. A peer that does not support the announced major
-version rejects the handshake with \code{unsupported}; it must not continue with
-incompatible message semantics.
-
-\code{wake} is optional and, when present, is a Boolean. An omitted value means
-\code{false}; any other type is invalid. When \code{true}, the host must send periodic
-\code{wake} notifications while requests await terminal responses. When omitted or
-\code{false}, the host must not send \code{wake}. A producer that needs periodic wakes
-sets \code{wake} to \code{true}.
-
-The transport emits \code{hello} as part of connection setup. It is not a method
-handled by \code{\link[=jdv_rpc]{jdv_rpc()}}. For an embedded session it is the first message in
-the queue; see the Notification delivery section. The R process does not
-retry a failed request or automatically reconnect after disconnect; the next
-\code{\link[=jdv_view]{jdv_view()}} or \code{\link[=jdv_connect]{jdv_connect()}} call starts a new session. A disconnect
-closes every active registry entry and releases its retained table data.
-Entries created with \code{\link[=jdv_register]{jdv_register()}} share this process-wide registry and
-are cleared by a viewer disconnect as well.
-
-\code{params.limits} is required and contains all six required limits, each a
-positive safe integer: \code{max_unacked_frames} and \code{max_unacked_bytes} bound the
-complete host-to-producer JSONL frames and bytes sent without cumulative
-acknowledgement; \code{queue_messages} and \code{queue_bytes} bound producer-side
-pending work; \code{max_request_bytes} and \code{max_message_bytes} bound one request
-and one producer message. A host uses the smaller of each reported value and
-its own configured bound. Missing or invalid limits reject the handshake.
-
-The R producer generates \code{session} as \verb{r-<pid>-<connection counter>}. The
-counter advances for each connection from that R process, and generating an
-identifier does not use or change R's random state. Its \code{producer} metadata
-names jdv and the R runtime, and it sets \code{wake} to \code{true}.
-}
-
-\section{\code{wake} and \code{cancel}}{
-
-
-\code{wake} has no response and no parameters. A host must not send it when
-\code{hello.params.wake} is omitted or \code{false}; when that value is \code{true}, the
-host must send wakes repeatedly at a regular interval while one or more
-requests are awaiting terminal responses. In the synchronous API \code{wake} is a
-no-op returning \code{NULL}. On the R local transport it asks the receiver to
-check whether queued requests can run; receiving a wake does not itself
-dispatch a request. A normal package API-entry preflight is receive-only and
-does not dispatch requests. While R is executing a function frame, the
-receive callback can read and queue a request but cannot dispatch it. A
-single wake is not guaranteed to cause a pending request to run because it
-may arrive during either receive-only preflight or function-frame execution.
-A 50 ms interval is a valid host implementation choice, but that exact
-interval is not required of every host. Hosts must keep wakes within
-applicable frame, byte, and send-rate limits.
-
-\code{cancel} has no response and takes \code{{ "id": requestId }} in \code{params}. It
-identifies a request by the same string-or-safe-integer rules as envelope
-ids. Ids retain their JSON type, so the string \code{"1"} does not match numeric
-id \code{1}. The synchronous API validates this id and returns \code{NULL}; it has no
-pending queue and creates no cancellation tombstone for an unknown or
-completed id. The local queue removes a matching request that has not begun
-and sends one \code{cancelled} terminal error for that request. A running R method
-is not forcibly interrupted by this notification and produces its ordinary
-terminal response. The adapter validates the full control envelope, including
-encoding, compression, and deadline, before it changes pending work.
-Unsupported encoding or compression and an expired recognized cancel have no
-effect and produce no notification response. Malformed JSON, an invalid raw
-id token, or an invalid deadline type can be rejected during native request
-validation with a best-effort \code{invalid_request} response whose id is \code{null};
-these errors do not change pending work.
-}
-
-\section{\code{ack}}{
-
-
-Every producer must send \verb{\{"method":"ack","params":\{"frames":N\}\}} after it
-has read one or more complete frames. \code{N} is the cumulative number of
-complete host-to-producer JSONL frames read on that connection, including
-\code{wake}, \code{cancel}, malformed, and rejected frames. It is a safe integer and
-never decreases. The host releases frame and byte credit through that
-cumulative frame boundary.
-}
-
-\section{Column types}{
-
-
-The schema \code{type} of a column is one of the following values. This table and
-the rules below are the protocol contract; filter operators and operand forms
-are defined in the \link[=jdv_query_spec]{query specification}.\tabular{lll}{
-   \code{type} \tab Additional schema fields \tab Value filter operators \cr
-   \code{boolean} \tab  \tab \code{is_true}, \code{is_false} \cr
-   \code{integer}, \code{number} \tab  \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
-   \code{string} \tab  \tab \code{contains}, \code{starts_with}, \code{ends_with}, \code{text_equals} \cr
-   \code{categorical} \tab \code{levels}, \code{ordered} \tab The text operators, and \verb{in} \cr
-   \code{date} \tab  \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
-   \code{datetime} \tab \code{tz} \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
-   \code{int64} \tab  \tab \code{eq}, \code{between} \cr
-   \code{duration} \tab \code{units} \tab \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between} \cr
-   \code{list}, \code{other} \tab  \tab None \cr
-}
-
-
-Every column type also accepts \code{is_na} when a valid missingness mask is
-available. A client decides what it can do with a column from \code{type},
-\code{filterable}, \code{sortable}, and the grid \code{capabilities} alone. The schema's
-\code{native_type} field is a producer-defined array of display strings. A client
-may show those strings as a hint but must not infer semantics from them. How
-R vectors map to protocol types is described, as informative text, in the R
-column mapping section of \link[=jdv_query_spec]{query specification}, and
-can change without a protocol version change.
-
-A client that receives a \code{type} it does not know must treat the column as
-display-only, exactly like \code{other}: it follows the column's \code{sortable} for
-sorting, offers no value-based filter, and uses only \code{is_na}. It must not
-fail, hide the column, or guess from \code{native_type}. Because of this rule, a
-new \code{type} can be added without changing the protocol major version. For the
-same reason, a later release may add operators or operand forms to a known
-type; a client offers only the operators it knows for that type and must be
-prepared for the server to answer a request with an \code{unsupported} error,
-which is an ordinary failure of that request and not a protocol violation.
-}
-
-\section{Column payloads}{
-
-
-Column identity is its zero-based \code{position}; \code{name} is display metadata and
-may be empty, duplicated, or otherwise unusual. A schema entry includes
-\code{position}, \code{name}, \code{type}, \code{native_type}, \code{sortable}, and \code{filterable}.
-Categorical schemas also include \code{levels} and \code{ordered}; datetime schemas
-include \code{tz}; duration schemas include \code{units}. Unknown optional schema
-fields must be ignored by clients so future schema extensions remain
-compatible; the Column types section defines how to treat an unknown \code{type}
-value.
-
-A Snapshot column payload is columnar. Channel arrays are omitted when
-absent:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
-  "values": [1, null, null],
-  "display": ["1", "NaN", "NA"],
-  "special": [null, "nan", "na"],
-  "na": [false, true, true]
-\}
-}\if{html}{\out{</div>}}
-
-\code{values}, \code{display}, \code{sort_key}, \code{special}, and \code{na}, when present, have one
-entry for each row in the payload. \code{na} is sent whenever its extraction
-succeeds and is the authoritative missingness mask; clients must not infer
-missingness from display text. If a channel fails, that channel may be absent
-while other channels remain usable. Channel failures are recorded in \code{errors}
-and reflected in the schema's capability flags. For a Paged column, \code{errors}
-is an empty array when no channel failed and a named object of
-channel-specific messages when errors are present. Snapshot columns include
-\code{errors} only when a channel failed.
-
-Snapshot \code{data.columns} entries are bare channel objects. In a Paged
-response, each selected column is wrapped as \verb{\{ "schema": ..., "data": ..., "errors": ... \}}, preserving the page-time schema and channel diagnostics.
-The \code{data} object inside that wrapper uses the same channel format as a
-Snapshot column. Paged responses never include \code{sort_key}; sorting remains on
-the producer side.
-
-The following encoding rules apply:
-\itemize{
-\item \code{boolean}, \code{integer}, and finite \code{number} values use JSON booleans or numbers.
-\code{duration} values are numbers in the schema's \code{units} (\code{secs}, \code{mins},
-\code{hours}, \code{days}, or \code{weeks}), with the same missing and non-finite rules as
-\code{number}; \code{display} carries the formatted text.
-Missing values use JSON \code{null} and are identified by \code{na}.
-\item Non-finite doubles use JSON \code{null} in \code{values}; the parallel \code{special} entry
-distinguishes \code{na}, \code{nan}, \code{pos_inf}, and \code{neg_inf}. Numeric comparisons and
-Snapshot sorting restore infinities from \code{special}; \code{na} controls missingness
-and NA-last placement.
-\item \code{int64} values are canonical base-10 JSON strings, never JSON numbers, to
-preserve exact integer precision. \code{na} identifies missing entries. The
-\code{display} channel may be omitted only when its nonmissing labels equal
-\code{values} and every missing label is \code{"NA"}. The client reconstructs display
-from values, using \code{"NA"} for missing entries. A class-specific format method
-may produce different display text, including a different missing label, in
-which case the channel is retained.
-\item \code{string} and \code{categorical} values are strings. The \code{display} channel may be omitted
-under the same equality and missing-label rule. Categorical order and labels come
-from \code{levels} and \code{ordered} in the schema.
-\item \code{date} values are ISO \code{YYYY-MM-DD} strings. \code{datetime} values are ISO
-timestamp strings; the schema's \code{tz} records the source time-zone setting.
-\item Snapshot \code{sort_key} is present when a value's ordering cannot be recovered
-from its \code{values} and \code{special} entries. It carries the producer's ordering
-key; consumers compare keys rather than recomputing a producer's native
-ordering. A \code{null} sort key is ordered after every non-null key, regardless
-of the \code{na} mask. Paged rows never include sort keys.
-\item \code{source_row} always reports zero-based positions in original source order.
-Snapshot \code{row_labels} and Paged page \code{row_labels} contain one label per row
-when supplied; otherwise the field is \code{null}. A Paged \code{view/open} descriptor
-has \code{row_labels: null}; labels arrive with the page.
-}
-
-The cJSON writer first tries a 15-significant-digit representation for a
-finite double and accepts it only when its own double read-back equals the
-source; otherwise it falls back to 17 significant digits. The emitted text
-round-trips to the original finite double with correctly rounded parsers such
-as JavaScript \code{JSON.parse}, C \code{strtod}, and \code{jsonlite::fromJSON}. R's
-\code{\link[base:as.numeric]{base::as.numeric()}} and \code{\link[base:scan]{base::scan()}} do not guarantee rounding to the
-nearest representable value, so a 15-digit token can read back one ULP away
-across a wide exponent range. Negative zero is written as \code{0}, without its
-sign.
-
-Snapshot payloads contain all table rows in one \code{data} object. Paged payloads
-contain only the requested row slice. In the R producer, Paged display
-formatting is performed on the requested slice, so text labels may differ
-from a Snapshot formatted across the whole column. The protocol guarantees
-matching sort and filter semantics, not identical display strings. For data
-frames, the R producer slices each column using \code{x[[j]]} followed by that
-column's \code{[} method. It does not call table-level \code{[}. For matrices, it
-slices with \code{x[rows, j]}. Source classes are preserved through R slicing; jdv
-does not \code{\link[base:unclass]{base::unclass()}} or coerce a column before its subset method runs.
-Filtering and sorting use full column semantics before the requested rows are
-sliced. See \link[=jdv_query_spec]{query specification} for the detailed
-source and query contract.
-}
-
-\section{Filter and sort request shape}{
-
-
-The filter is the neutral AST defined by
-\link[=jdv_query_spec]{query specification}, not a UI library's filter model.
-Objects contain exactly the fields required by their operator. Sort is an
-array of objects with exactly \code{col} and \code{desc}; \code{desc} is a required scalar
-Boolean. Duplicate sort and page columns are invalid. Cross-consumer examples
-of filters, values, and expected original row indices are in the fixture
-described in the \link[=jdv_query_spec]{query specification}.
-
-Numeric filter special values use an explicit object, never a non-JSON
-number:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{ "op": "eq", "col": 0, "value": \{ "special": "pos_inf" \} \}
-}\if{html}{\out{</div>}}
-
-\code{integer64} filter values are canonical decimal strings. Query evaluation and
-R's handling of missing and special values follow
-\link[=jdv_query_spec]{query specification}.
-}
-
-\section{Errors and limits}{
-
-
-Error codes are stable machine-readable values. The \code{error} object contains
-\code{code} and \code{message}, with optional \code{details}. The current codes include:
-
-A consumer treats an unrecognized code as a general producer failure and may
-display the code without requiring code-specific recovery behavior.\tabular{ll}{
-   Code \tab Meaning \cr
-   \code{invalid_request} \tab Malformed JSON, missing required fields, strict filter/sort field errors, or invalid parameters. \cr
-   \code{unsupported} \tab A known operation or encoding is not supported for this table or protocol version. \cr
-   \code{limit_exceeded} \tab A configured request, page, or JSON byte limit was exceeded. \cr
-   \code{schema_changed} \tab A retained grid source (Paged or a drillable Snapshot) no longer matches its registered dimensions, names, or classes, or a required channel no longer matches. \cr
-   \code{producer_error} \tab A producer method or other request computation failed. \cr
-   \code{interrupted} \tab Request processing began and was interrupted. \cr
-   \code{cancelled} \tab The accepted request was cancelled before processing began. \cr
-   \code{expired} \tab The request deadline elapsed before processing began. \cr
-   \code{unavailable} \tab A well-formed object path no longer resolves or cannot be read safely. \cr
-   \code{stale_generation} \tab The request names a generation that is no longer active. \cr
-   \code{view_not_found} \tab The view id is missing or closed. \cr
-   \code{cache_changed} \tab A host-only sequential append cursor differs from the observed tail; refresh the host page catalog before advancing. \cr
-   \code{in_use} \tab A session id is already active, another browser owns the sequential lease, a next request is still pending, or a reentrant operation cannot proceed. \cr
-   \code{stream_failed} \tab A sequential producer encountered a terminal failure; close or register a new stream to continue. \cr
-   \code{method_not_found} \tab No implementation exists for the requested method. \cr
-}
-
-
-Per-column channel failures are represented in the page payload and do not
-necessarily fail the whole request. The request and response byte limits are
-\code{jdv.max_request_bytes} (default 1 MiB, minimum 128 bytes) and
-\code{jdv.max_message_bytes} (default 10 MiB, minimum 1,024 bytes). The JSON
-output limit applies to final JSON text, not peak allocation; Arrow IPC
-bodies use the separate binary-transfer limits above. For finite doubles, the
-cJSON writer first tries a 15-significant-digit representation and accepts it
-only when its own double read-back is exactly equal to the source value;
-otherwise it falls back to 17 significant digits. It releases each completed
-column tree while appending it to the output.
-
-If a Paged response exceeds the output limit, the already-computed result is
-retried as progressively shorter row prefixes; the R query and user methods
-are not run again. If even one row cannot fit, \code{limit_exceeded} is returned
-with a \code{warnings} array, which may be empty.
-
-Full sort and filter operations have no work or row limit by default because
-they are explicit user requests. An explicitly finite \code{jdv.max_work_bytes} or
-\code{jdv.max_query_rows} caps that work. Interrupt delivery in the event-loop
-path depends on the suspension state at callback entry: an interrupt caught
-during a started request returns \code{interrupted}, while R may defer delivery if
-the callback began with interrupts already suspended. The viewer UI should
-show that R is busy while a request runs.
-
-Snapshot construction, Paged registration probes, page extraction, and JSON
-encoding use separate finite budgets. Each derived budget is the smaller of
-\code{INT_MAX}, six times the applicable output allowance plus 4 MiB, and an
-explicitly configured \code{jdv.max_work_bytes}. For Snapshot, the output
-allowance is \code{min(jdv.snapshot_max_bytes, jdv.max_message_bytes)}; for page
-work it is \code{jdv.max_message_bytes}. This preserves a 64 MiB work allowance
-with the 10 MiB defaults while allowing Snapshot construction to scale with
-its configured threshold. When \code{jdv.max_work_bytes} is finite, query work,
-page extraction, and response encoding draw from the same per-operation
-allowance. The cache budget limits the combined estimated bytes across
-column, channel, and index caches; oversized entries are skipped and old
-entries are evicted. The cache allowance is held by the registered table and
-is separate from per-operation work. Unfiltered page requests do not
-materialize a complete row index and are limited by page size.
-
-These are conservative engine-work estimates, not process-memory or RSS
-limits: source storage, arbitrary user method allocations, R allocator and GC
-overhead, and transient R-internal string conversion or sorting scratch are
-outside the guarantee. Snapshot checks raw source strings before formatting
-and checks returned channel sizes before further encoding; Paged registration
-avoids scanning the full source and charges requested pages and queries.
-Oversized common metadata is rejected at registration, while explicit Paged
-row names are checked only for requested rows. If Auto selects Snapshot but
-full explicit row names exceed Snapshot's metadata budget, registration
-retries as Paged; forced Snapshot registration returns \code{limit_exceeded}.
-Packed matrix columns are summarized by shape for display when copying a wide
-row would exceed the cell preview bound, and missingness scans are budgeted
-before allocating masks. Minimal control and error responses have a separate
-fixed 64 KiB encoder-work allowance, so a depleted request budget can still
-report its failure.
-}
-
-\section{Local transport and execution gate}{
-
+ Local transport and execution gate:
 
 The following limits and dispatch rules describe the R producer transport;
 another producer may implement its execution gate differently. The R

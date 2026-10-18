@@ -2,22 +2,259 @@
 % Please edit documentation in R/query-spec.R
 \name{jdv_query_spec}
 \alias{jdv_query_spec}
-\title{Query semantics and internal R contract}
+\title{Query protocol and R implementation details}
 \description{
-This specification describes the internal Paged query engine and its Snapshot
-reference consumer. All functions below are private to the jdv namespace. The
-contract defines row selection, ordering, pagination, validation, and shared
-fixtures for later server and browser consumers.
+This specification is organized into four parts: common query protocol, R
+producer extension, reference host, and browser viewer. The common query
+contract defines filter and sort semantics, pagination results, and shared
+conformance data without requiring R. R-specific source access and private
+query engine details are identified separately. The reference host and
+browser viewer consume the same wire semantics.
 }
 \details{
-The engine operates on data frames and matrices. Columns are identified by
-their \strong{zero-based positions}, so duplicate or unusual column names are
-valid. On the wire, \code{source_row} values are \strong{zero-based positions in the
-original source order}. Private R query results retain one-based row indices
-until JSON encoding; see Internal entry points below.
+Columns are identified by their \strong{zero-based positions}, so duplicate or
+unusual column names are valid. On the wire, \code{source_row} values are
+\strong{zero-based positions in the original source order}.
 }
-\section{Source slicing contract}{
+\section{Common protocol}{
+ Filter AST:
 
+Filter objects use these exact fields:\tabular{lll}{
+   Operator \tab Required fields \tab Supported columns \cr
+   \code{and}, \code{or} \tab \code{op}, \code{args} (array of child objects) \tab Any valid children. \cr
+   \code{not} \tab \code{op}, \code{arg} (one child object) \tab Any valid child. \cr
+   \code{is_na} \tab \code{op}, \code{col} \tab Any column with a valid missingness channel. \cr
+   \code{contains}, \code{starts_with}, \code{ends_with}, \code{text_equals} \tab \code{op}, \code{col}, \code{value} \tab \code{string}, \code{categorical}. \cr
+   \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge} \tab \code{op}, \code{col}, \code{value} \tab \code{integer}, \code{number}, \code{duration}, \code{date}, \code{datetime}; \code{int64} supports only \code{eq}. \cr
+   \code{between} \tab \code{op}, \code{col}, \code{lower}, \code{upper} \tab \code{integer}, \code{number}, \code{duration}, \code{date}, \code{datetime}, \code{int64}. \cr
+   \code{is_true}, \code{is_false} \tab \code{op}, \code{col} \tab \code{boolean}. \cr
+   \verb{in} \tab \code{op}, \code{col}, \code{values} (array of labels) \tab \code{categorical}. \cr
+}
+
+
+Example:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
+  "op": "and",
+  "args": [
+    \{"op": "contains", "col": 2, "value": "ber"\},
+    \{"op": "between", "col": 0, "lower": 1, "upper": 3\},
+    \{"op": "not", "arg": \{"op": "is_na", "col": 4\}\}
+  ]
+\}
+}\if{html}{\out{</div>}}
+
+Logical operators combine Boolean results elementwise. Empty \code{and} is true
+for every row; empty \code{or} is false. \code{not} performs ordinary Boolean
+inversion. Missing source values never match a comparison, membership,
+Boolean, or text leaf. Consequently, negating such a false leaf includes
+missing rows: use an explicit \verb{not is_na} condition when that inclusion is
+unwanted.
+
+\code{is_na} uses the source column's missingness mask, including NaN. It is
+allowed even when \code{filterable} is false, provided extraction yields a valid
+mask. Missing meaning never comes from display labels such as the literal
+string \code{"NA"}.
+
+Being displayable and being filterable are separate. Value-based filters are
+limited to an explicit list of schema \code{type} values, those in the table
+above; the schema's \code{filterable} field is true exactly for them. A column of
+type \code{list} or \code{other} has \code{filterable} false. It is still displayed, sorted
+when \code{sortable} is true, and answers \code{is_na}, but every other operator fails
+with \code{unsupported} ("Column is not filterable."). Mapping source-language
+values to schema types is producer-specific; see the R column mapping section
+below for the current R producer.
+
+ Text:
+
+Text comparison folds \strong{ASCII A-Z only} to a-z. Non-ASCII characters retain
+their case: \code{Ä} and \code{ä} remain distinct. Matching uses fixed literal strings,
+not regular expressions. Brackets, dots, and asterisks have no pattern
+meaning. An empty needle matches every nonmissing text for
+contains/prefix/suffix operations; \code{text_equals} with an empty value matches
+only an empty source string.
+
+Text sources are:
+\itemize{
+\item String: the original, untruncated character value.
+\item Categorical: its label.
+}
+
+Number, integer, Boolean, duration, date, datetime, and \code{int64} columns do
+not support text operators, and neither do \code{other} columns. List and other
+composite columns may have previews but no text-filter capability. Page
+display truncation or formatting does not alter the filter source.
+Categorical \verb{in} is exact, case-sensitive label membership and does not use
+text folding; duplicate labels are harmless and an empty label array matches
+no rows.
+
+ Blank and non-blank filters:
+
+There is no dedicated blank operator; clients combine existing ones. A
+text-filterable column has a schema \code{type} of \code{string} or \code{categorical} and
+\code{filterable} true. For such a column, blank (missing or empty string) is
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"op": "or", "args": [
+  \{"op": "is_na", "col": 2\},
+  \{"op": "text_equals", "col": 2, "value": ""\}
+]\}
+}\if{html}{\out{</div>}}
+
+and non-blank is \verb{\{"op": "not", "arg": ...\}} wrapped around it. Any other
+column type has no text filter source, so \code{text_equals} fails with
+\code{unsupported} ("Column has no text filter source."). Such columns have no
+empty-string value: blank is \verb{\{"op": "is_na", "col": N\}} and non-blank is
+\code{not} applied to it. \code{is_na} itself is accepted for every column type.
+
+ Numeric values and infinity:
+
+Numeric leaves compare source values without display rounding or an equality
+tolerance. Extremely small distinct finite values remain distinct. \code{between}
+includes both endpoints and rejects reversed bounds.
+
+A numeric filter operand is a finite JSON number or one of these objects:
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"special": "pos_inf"\}
+}\if{html}{\out{</div>}}
+
+\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"special": "neg_inf"\}
+}\if{html}{\out{</div>}}
+
+These are the only nonfinite query tokens. Missing/null, NaN, \code{"nan"}, and
+\code{"na"} queries are rejected. Source negative infinity sorts and compares
+below every finite value, and source positive infinity above every finite
+value. Missing and NaN source rows remain false at comparison leaves.
+Materialized number channels recover infinities from \code{special}; null values
+alone do not distinguish all cases.
+
+ Duration:
+
+A column with schema \code{type} \code{duration} has a \code{units} field that is one of
+\code{secs}, \code{mins}, \code{hours}, \code{days}, or \code{weeks}. The supported operators are
+\code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between}, and \code{is_na}; text, \verb{in}, and
+Boolean operators fail with \code{unsupported}.
+
+A duration operand is either:
+\itemize{
+\item a finite JSON number (or an infinity token as described above) in the
+column's own units, so \code{5} on a column in \code{mins} means five minutes; or
+\item a string \verb{[-]H:MM:SS[.fff]}: an optional minus sign, one or more digits of
+hours, two digits each of minutes and seconds (00-59), and an optional
+decimal fraction of seconds. It is converted to seconds and then to the
+column's units. Anything else, such as \code{1:5:00}, \code{1:60:00}, \code{1:00}, an
+ISO date, or a string with a sign other than \code{-} or with whitespace, is
+\code{invalid_request}. No date or timezone is involved.
+}
+
+Units are converted by these factors: 1 for \code{secs}, 60 for \code{mins}, 3600 for
+\code{hours}, 86400 for \code{days}, and 604800 for \code{weeks} (a week is 7 days).
+Comparisons are between numeric values in the column's units, without any
+display rounding: the fractional seconds that the display text shows are not
+used, so a value displayed as \code{0:00:01} can be larger than a \code{0:00:01}
+operand. A clock-time operand that is not exactly representable in the
+column's units, such as one second in \code{mins}, is subject to ordinary
+floating-point rounding. As for numbers, \code{NA} and \code{NaN} never match a
+comparison, and infinities are restored from \code{special}.
+
+ Date and datetime:
+
+Date operands are strings of exactly \code{YYYY-MM-DD}. Datetime operands require
+\code{YYYY-MM-DDTHH:MM:SS}, optionally followed by decimal fractional seconds and
+either \code{Z} or an explicit \code{+HH:MM}/\code{-HH:MM} offset. With no offset they use
+the column's timezone, or the local system timezone when the column has no
+explicit one. Explicit offsets identify instants independently of that local
+wall time.
+
+Invalid calendar dates are rejected. Hours must be 00-23, minutes/seconds
+00-59; offset hours/minutes must be within 00-23/00-59. Whitespace, alternate
+layouts, and trailing content are invalid. Comparisons use canonical
+day/second values, independently of producer-defined display strings.
+
+ \code{int64}:
+
+\code{int64} operands must be canonical decimal strings matching \code{0} or
+\verb{-?[1-9][0-9]*}, in the finite range
+\verb{[-9223372036854775807, 9223372036854775807]}. Numeric operands, plus signs,
+leading zeros, \code{-0}, whitespace, exponent notation, missing values, overflow,
+and the reserved NA value \code{-9223372036854775808} are invalid.
+
+\code{eq} and inclusive \code{between} compare exact integer values, retaining
+distinctions beyond \code{2^53}. Other numeric operators are unsupported for
+\code{int64}. Reversed bounds are invalid, and missing rows compare false.
+
+ Stable multi-column sort:
+
+Terms are applied in array order, with independent ascending/descending
+flags. If a pair of keys is equal, including two missing keys, comparison
+continues to the next term. If every term ties, original row number breaks
+the tie in ascending order. Missing values, including NaN, are equivalent
+missing keys and come last in both directions. The source missingness mask
+overrides any finite key produced for a missing source value; missing keys
+themselves also sort last.\tabular{ll}{
+   Protocol column type \tab Comparison keys \cr
+   \code{boolean}, \code{integer}, \code{number}, \code{duration} \tab Numeric values, including restored infinities. \cr
+   \code{string}, collation \code{C} \tab UTF-8 byte order. \cr
+   \code{string}, collation \code{locale} \tab The producer's selected locale order. \cr
+   \code{categorical} \tab Level order as declared by the schema. \cr
+   \code{date}, \code{datetime} \tab Canonical days/seconds. \cr
+   \code{int64} \tab Exact integer order. \cr
+   Other sortable types \tab Producer-defined order. \cr
+}
+
+
+Missing keys sort last in both directions. A producer applies the requested
+terms in array order and uses original source-row position as the final
+ascending tie-breaker.
+
+ Page results and channel errors:
+
+The \code{grid/rows} protocol result has these fields. Private producer
+representations may use different field names.\tabular{ll}{
+   Field \tab Meaning \cr
+   \code{total} \tab Number of rows matching the filter. \cr
+   \code{total_unfiltered} \tab Original row count. \cr
+   \code{offset} \tab Validated requested offset. \cr
+   \code{limit} \tab Effective row limit after clamping. \cr
+   \code{data.source_row} \tab Zero-based original source positions for this page. \cr
+   \code{data.row_labels} \tab Selected explicit row-label strings, or \code{null} when absent. \cr
+   \code{data.columns} \tab Selected columns in requested order; each contains \code{schema}, \code{data}, and \code{errors}. \cr
+}
+
+
+Page column data requests display, missingness, and values only; it does not
+contain sort keys or full-column filter text. Display is always character
+text, with missing display results normalized to \code{"NA"}. Missingness and
+semantic values remain independent of display. For a number or duration
+column, \code{special} distinguishes missing, NaN, positive infinity, and negative
+infinity when present. Columns without a plain values representation can
+return display and missingness without values.
+
+An error object contains a stable \code{code}, a human-readable \code{message}, and
+optional \code{details}:\tabular{ll}{
+   Code \tab Typical cause \cr
+   \code{invalid_request} \tab Malformed objects, selectors, directions, operands, or reversed bounds. \cr
+   \code{unsupported} \tab A valid request uses a column capability/type/operator combination that is unavailable. \cr
+   \code{limit_exceeded} \tab Registration, page width, sort width, AST, or string budget is exceeded. \cr
+   \code{schema_changed} \tab The producer detects that the active schema or a required channel no longer matches the view descriptor. \cr
+   \code{producer_error} \tab The producer fails while accessing data or computing a requested operation. \cr
+   \code{view_not_found} \tab The view id is missing or closed. \cr
+}
+}
+
+\section{R producer extension}{
+ Query diagnostics and R conditions:
+
+The R producer can downgrade individual page channels and include channel
+errors in the response. A display failure can yield \verb{<class>} fallback text.
+Sort/filter requests that require an unavailable full-column channel raise a
+query error whose details can include the extraction's \code{schema}, \code{data}, and
+\code{errors}. Failed channel results are not cached, and extraction does not
+overwrite the registered holder schema. The R package exposes query failures
+as conditions inheriting from \code{jdv_query_error}, \verb{jdv_error_<code>},
+\code{jdv_error}, \code{error}, and \code{condition} (see \link{jdv_errors}); these classes are
+not wire fields.
+
+ Source slicing contract:
 
 For a data frame, jdv reads each column with \code{x[[j]]} and selects rows by
 applying that column's \code{[} method. It never calls table-level \code{[}, including
@@ -33,10 +270,8 @@ request checks a lightweight fingerprint of dimensions, column names, and
 column classes. It cannot detect value-only mutation through a shared
 reference; callers must register again after changing values. Re-registration
 builds a new holder and cache before replacing the current generation.
-}
 
-\section{Internal entry points}{
-\tabular{ll}{
+ Internal entry points:\tabular{ll}{
    Function \tab Result and purpose \cr
    \code{paged_table(x, collation = "C", limits = list())} \tab A \code{jdv_paged_table} environment holding the source, initial schema, probe diagnostics, and bounded caches. \cr
    \code{query_indices(holder, sort = list(), filter = NULL)} \tab Original one-based R row numbers after filtering and sorting. \cr
@@ -78,10 +313,8 @@ The holder's source, initial schema, and collation belong to one fixed table
 version. Rebuild the holder when source, schema, or the owning registry's
 generation changes. \code{query_clear()} alone does not change any of them. The
 holder itself does not assign table IDs or manage registry generations.
-}
 
-\section{Bounded registration and requested computation}{
-
+ Bounded registration and requested computation:
 
 Registration probes the first 32 rows by default. For a matrix, it slices and
 probes the first column once and reuses that homogeneous type/schema result
@@ -139,10 +372,8 @@ original schema.
 
 jdv's own query code does not change RNG or options. Arbitrary class methods
 can have side effects, and a query boundary is not a transaction around them.
-}
 
-\section{Validation and default limits}{
-
+ Validation and default limits:
 
 Object fields are strict: missing required fields, duplicate fields, unknown
 fields, malformed objects, or unknown operators are errors. \code{NULL} filter
@@ -189,194 +420,15 @@ returns no data columns while still returning row indices and totals.
 Selected columns follow selector order. Table width is otherwise bounded by
 descriptor and response message budgets rather than a fixed registration
 column count.
-}
 
-\section{Filter AST}{
+ R date and datetime parsing:
 
+A valid-looking datetime that the R producer cannot represent in the selected
+timezone is rejected. Daylight-saving gaps and ambiguities follow the R
+platform/timezone parser and have no portable normalization guarantee.
+Fractional seconds use R's representable timestamp precision.
 
-Filter objects use these exact fields:\tabular{lll}{
-   Operator \tab Required fields \tab Supported columns \cr
-   \code{and}, \code{or} \tab \code{op}, \code{args} (array of child objects) \tab Any valid children. \cr
-   \code{not} \tab \code{op}, \code{arg} (one child object) \tab Any valid child. \cr
-   \code{is_na} \tab \code{op}, \code{col} \tab Any column with a valid missingness channel. \cr
-   \code{contains}, \code{starts_with}, \code{ends_with}, \code{text_equals} \tab \code{op}, \code{col}, \code{value} \tab \code{string}, \code{categorical}. \cr
-   \code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge} \tab \code{op}, \code{col}, \code{value} \tab \code{integer}, \code{number}, \code{duration}, \code{date}, \code{datetime}; \code{int64} supports only \code{eq}. \cr
-   \code{between} \tab \code{op}, \code{col}, \code{lower}, \code{upper} \tab \code{integer}, \code{number}, \code{duration}, \code{date}, \code{datetime}, \code{int64}. \cr
-   \code{is_true}, \code{is_false} \tab \code{op}, \code{col} \tab \code{boolean}. \cr
-   \verb{in} \tab \code{op}, \code{col}, \code{values} (array of labels) \tab \code{categorical}. \cr
-}
-
-
-Example:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
-  "op": "and",
-  "args": [
-    \{"op": "contains", "col": 2, "value": "ber"\},
-    \{"op": "between", "col": 0, "lower": 1, "upper": 3\},
-    \{"op": "not", "arg": \{"op": "is_na", "col": 4\}\}
-  ]
-\}
-}\if{html}{\out{</div>}}
-
-Logical operators combine Boolean results elementwise. Empty \code{and} is true
-for every row; empty \code{or} is false. \code{not} performs ordinary Boolean
-inversion. Missing source values never match a comparison, membership,
-Boolean, or text leaf. Consequently, negating such a false leaf includes
-missing rows: use an explicit \verb{not is_na} condition when that inclusion is
-unwanted.
-
-\code{is_na} uses the source column's missingness mask, including NaN. It is
-allowed even when \code{filterable} is false, provided extraction yields a valid
-mask. Missing meaning never comes from display labels such as the literal
-string \code{"NA"}.
-
-Being displayable and being filterable are separate. Value-based filters are
-limited to an explicit list of schema \code{type} values, those in the table
-above; the schema's \code{filterable} field is true exactly for them. A column of
-type \code{list} or \code{other} has \code{filterable} false. It is still displayed, sorted
-when \code{sortable} is true, and answers \code{is_na}, but every other operator fails
-with \code{unsupported} ("Column is not filterable."). Which R vectors receive
-each \code{type} is not part of the protocol; see R column mapping (informative)
-below.
-}
-
-\section{Text}{
-
-
-Text comparison folds \strong{ASCII A-Z only} to a-z. Non-ASCII characters retain
-their case: \code{Ä} and \code{ä} remain distinct. Matching uses fixed literal strings,
-not regular expressions. Brackets, dots, and asterisks have no pattern
-meaning. An empty needle matches every nonmissing text for
-contains/prefix/suffix operations; \code{text_equals} with an empty value matches
-only an empty source string.
-
-Text sources are:
-\itemize{
-\item String: the original, untruncated character value.
-\item Categorical: its label.
-}
-
-Number, integer, Boolean, duration, date, datetime, and integer64 columns do
-not support text operators, and neither do \code{other} columns. List, matrix, and
-packed data-frame columns have previews but no text-filter capability. Page
-display truncation or formatting does not alter the filter source. Factor
-\verb{in} is exact, case-sensitive label membership and does not use text folding;
-duplicate labels are harmless and an empty label array matches no rows.
-}
-
-\section{Blank and non-blank filters}{
-
-
-There is no dedicated blank operator; clients combine existing ones. A
-text-filterable column has a schema \code{type} of \code{string} or \code{categorical} and
-\code{filterable} true. For such a column, blank (missing or empty string) is
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"op": "or", "args": [
-  \{"op": "is_na", "col": 2\},
-  \{"op": "text_equals", "col": 2, "value": ""\}
-]\}
-}\if{html}{\out{</div>}}
-
-and non-blank is \verb{\{"op": "not", "arg": ...\}} wrapped around it. Any other
-column type has no text filter source, so \code{text_equals} fails with
-\code{unsupported} ("Column has no text filter source."). Such columns have no
-empty-string value: blank is \verb{\{"op": "is_na", "col": N\}} and non-blank is
-\code{not} applied to it. \code{is_na} itself is accepted for every column type.
-}
-
-\section{Numeric values and infinity}{
-
-
-Numeric leaves compare source values without display rounding or an equality
-tolerance. Extremely small distinct finite values remain distinct. \code{between}
-includes both endpoints and rejects reversed bounds.
-
-Queries accept a finite scalar plain R integer/double or one of these
-objects:
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"special": "pos_inf"\}
-}\if{html}{\out{</div>}}
-
-\if{html}{\out{<div class="sourceCode json">}}\preformatted{\{"special": "neg_inf"\}
-}\if{html}{\out{</div>}}
-
-These are the only nonfinite query tokens. Missing/null, NaN, \code{"nan"}, and
-\code{"na"} queries are rejected. Direct nonfinite R numeric arguments are also
-rejected; use the explicit token. Source -Inf sorts and compares below every
-finite value, and source Inf above every finite value. NA and NaN source rows
-remain false at comparison leaves. Materialized number channels recover
-infinities from \code{special}; null values alone do not distinguish all cases.
-}
-
-\section{Duration}{
-
-
-A column with schema \code{type} \code{duration} has a \code{units} field that is one of
-\code{secs}, \code{mins}, \code{hours}, \code{days}, or \code{weeks}. The supported operators are
-\code{eq}, \code{ne}, \code{lt}, \code{le}, \code{gt}, \code{ge}, \code{between}, and \code{is_na}; text, \verb{in}, and
-Boolean operators fail with \code{unsupported}.
-
-A duration operand is either:
-\itemize{
-\item a finite JSON number (or an infinity token as described above) in the
-column's own units, so \code{5} on a column in \code{mins} means five minutes; or
-\item a string \verb{[-]H:MM:SS[.fff]}: an optional minus sign, one or more digits of
-hours, two digits each of minutes and seconds (00-59), and an optional
-decimal fraction of seconds. It is converted to seconds and then to the
-column's units. Anything else, such as \code{1:5:00}, \code{1:60:00}, \code{1:00}, an
-ISO date, or a string with a sign other than \code{-} or with whitespace, is
-\code{invalid_request}. No date or timezone is involved.
-}
-
-Units are converted by the factors of \code{\link[base:difftime]{base::difftime()}}: 1 for \code{secs}, 60
-for \code{mins}, 3600 for \code{hours}, 86400 for \code{days}, and 604800 for \code{weeks} (a
-week is 7 days). Comparisons are between doubles in the column's units,
-without any display rounding: the fractional seconds that the display text
-shows are not used, so a value displayed as \code{0:00:01} can be larger than a
-\code{0:00:01} operand. A clock-time operand that is not exactly representable in
-the column's units, such as one second in \code{mins}, is subject to ordinary
-floating-point rounding. As for numbers, \code{NA} and \code{NaN} never match a
-comparison, and infinities are restored from \code{special}.
-}
-
-\section{Date and datetime}{
-
-
-Date operands are strings of exactly \code{YYYY-MM-DD}. Datetime operands require
-\code{YYYY-MM-DDTHH:MM:SS}, optionally followed by decimal fractional seconds and
-either \code{Z} or an explicit \code{+HH:MM}/\code{-HH:MM} offset. With no offset they use
-the column's timezone, or the local system timezone when the column has no
-explicit one. Explicit offsets identify instants independently of that local
-wall time.
-
-Invalid calendar dates are rejected. Hours must be 00-23, minutes/seconds
-00-59; offset hours/minutes must be within 00-23/00-59. Whitespace, alternate
-layouts, and trailing content are invalid. A valid-looking datetime that R
-cannot represent in the timezone is rejected. Daylight-saving gaps and
-ambiguities otherwise follow R's platform/timezone parser; these inputs do
-not have a portable normalization guarantee. Fractional seconds use R's
-representable timestamp precision. Comparisons use canonical day/second
-values, independently of decorated class display methods.
-}
-
-\section{Integer64}{
-
-
-Integer64 operands must be canonical decimal strings matching \code{0} or
-\verb{-?[1-9][0-9]*}, in the finite range
-\verb{[-9223372036854775807, 9223372036854775807]}. Numeric operands, plus signs,
-leading zeros, \code{-0}, whitespace, exponent notation, missing values, overflow,
-and the reserved NA value \code{-9223372036854775808} are invalid.
-
-\code{eq} and inclusive \code{between} compare the original integer64 bits in C,
-retaining exact distinctions beyond \code{2^53}. Other numeric operators are
-unsupported for integer64. Reversed bounds are invalid, and missing rows
-compare false.
-}
-
-\section{R column mapping (informative)}{
-
+ R column mapping (informative):
 
 This section is informative. It describes how the current R implementation
 (the jdv package) assigns a schema \code{type} to a column, and it is not part of
@@ -419,95 +471,17 @@ columns, \code{POSIXlt}, other classed lists, S4 objects, and atomic columns.
 
 A custom \code{integer64} subclass may decorate display through its format method;
 values, ordering, and filters remain exact C operations.
+
+For \code{collation: "locale"}, the R producer uses \code{\link[base:xtfrm]{base::xtfrm()}} keys under the
+system locale. Its paged sort passes selected keys to one radix
+\code{\link[base:order]{base::order()}} call and uses the per-term \code{decreasing} flags with missing
+values last. It does not use an order permutation as a sort key because that
+would lose ties. Character C sorting uses the original strings rather than a
+full-column rank computation.
 }
 
-\section{Stable multi-column sort}{
-
-
-Terms are applied in array order, with independent ascending/descending
-flags. If a pair of keys is equal, including two missing keys, comparison
-continues to the next term. If every term ties, original row number breaks
-the tie in ascending order. NA and NaN are equivalent missing keys and come
-last in both directions. The source missingness mask overrides any finite key
-produced for a missing source value; missing keys themselves also sort last.\tabular{ll}{
-   Column kind \tab Comparison keys \cr
-   Plain Boolean/integer/number, duration \tab Numeric values, including restored infinities. \cr
-   Plain string, collation \code{C} \tab UTF-8 byte/radix order. Paged uses the original strings; Snapshot uses dense numeric ranks. \cr
-   String, collation \code{locale} \tab R \code{\link[base:xtfrm]{base::xtfrm()}} keys under the system locale. \cr
-   Factor/ordered factor \tab Factor level codes, regardless of alphabetical label order. \cr
-   Date/POSIXct/POSIXlt \tab Canonical days/seconds. \cr
-   Integer64 \tab C-generated dense ranks with equal keys for equal values. \cr
-   Other sortable class \tab Its \code{\link[base:xtfrm]{base::xtfrm()}} keys; nonmissing nonfinite keys or keys outside \verb{[-2^53, 2^53]} become dense ranks. \cr
-}
-
-
-Paged passes the selected keys to one radix \code{\link[base:order]{base::order()}} call with a
-per-term \code{decreasing} vector and missing values last. It does not use an
-order permutation as a sort key, because that would lose ties. Character C
-sorting avoids an unnecessary full-column rank computation in Paged mode.
-
-Snapshot consumers must compare supplied numeric keys rather than
-JavaScript's raw UTF-16 string order or an independent browser locale
-collation. In the \code{utf8-byte-order} fixture, U+E000 sorts before U+1F600 (the
-grinning-face emoji) under C order, whereas raw JavaScript string comparison
-can reverse them. Locale keys likewise preserve the originating R locale's
-comparison rather than requesting a new locale sort in the consumer.
-}
-
-\section{Page results and channel errors}{
-
-
-The \code{grid/rows} protocol result after JSON encoding has these fields. The
-private \code{query_page()} result keeps its R-internal names as described above.\tabular{ll}{
-   Field \tab Meaning \cr
-   \code{total} \tab Number of rows matching the filter. \cr
-   \code{total_unfiltered} \tab Original row count. \cr
-   \code{offset} \tab Validated requested offset. \cr
-   \code{limit} \tab Effective row limit after clamping. \cr
-   \code{data$source_row} \tab Zero-based original source positions for this page. \cr
-   \code{data$row_labels} \tab Selected explicit row-name strings, or \code{NULL} for automatic/absent row names. \cr
-   \code{data$columns} \tab Selected columns in requested order; each is an extraction result containing \code{schema}, \code{data}, and \code{errors}. \cr
-}
-
-
-Page column data requests display, missingness, and values only; it does not
-contain sort keys or full-column filter text. Display is always character
-text, with missing display results normalized to \code{"NA"}. A display failure
-can yield \verb{<class>} fallback text and column diagnostics. Missingness and
-semantic values remain independent of display. For a number or duration
-column, \code{special} distinguishes NA, NaN, Inf, and -Inf when present. Columns
-without a plain values representation can return display and missingness
-without values.
-
-Page extraction preserves per-channel downgrade diagnostics. Sort/filter
-requests that require an unavailable full-column channel instead raise a
-typed query error. Their condition's \code{details} can contain the extraction's
-\code{schema}, \code{data}, and \code{errors}; no failed channel result enters the cache.
-The initial holder schema is not overwritten by a later extraction result.
-
-Snapshot wire encoding may omit \code{display} for string, categorical, and
-integer64 columns only when every nonmissing display value equals its
-semantic value and every missing display value is the standard string \code{"NA"}.
-The missingness mask then reconstructs the omitted missing labels. A
-class-specific formatter that uses another missing label keeps its \code{display}
-channel, including when all rows are missing. Zero-row columns use the same
-equality checks, with empty comparisons treated as equal.
-
-Conditions inherit from \code{jdv_query_error}, \verb{jdv_error_<code>}, \code{jdv_error},
-\code{error}, and \code{condition} (see \link{jdv_errors}), and expose \code{code}, \code{message},
-and optional \code{details}:\tabular{ll}{
-   Code \tab Typical cause \cr
-   \code{invalid_request} \tab Malformed objects, selectors, directions, operands, or reversed bounds. \cr
-   \code{unsupported} \tab A valid request uses a column capability/type/operator combination that is unavailable. \cr
-   \code{limit_exceeded} \tab Registration, page width, sort width, AST, or string budget is exceeded. \cr
-   \code{schema_changed} \tab A column's full shape/class differs from its probe, subsetting changes class/size, or a required channel returns an invalid/missing result. \cr
-   \code{producer_error} \tab Source access, class methods, or another requested R operation fails. \cr
-   \code{view_not_found} \tab The holder has been disposed. \cr
-}
-}
-
-\section{Independent Snapshot reference and shared fixtures}{
-
+\section{Reference host}{
+ Snapshot reference and shared fixtures:
 
 \code{snapshot_table()} materializes the column channels, including full filter
 text. Its reference consumer evaluates filters one row at a time and
@@ -517,6 +491,15 @@ validation, operand parsing, and ASCII folding are shared so accepted
 requests have one meaning. Integer64 reference filtering compares canonical
 decimal strings by sign, digit count, and digits rather than converting them
 to double.
+
+Snapshot consumers compare supplied sort keys rather than recomputing the
+producer's native ordering. The \code{utf8-byte-order} fixture records that U+E000
+sorts before U+1F600 under C order. For string, categorical, and integer64
+columns, a Snapshot may omit \code{display} only when every nonmissing display
+value equals its semantic value and every missing display value is \code{"NA"}.
+The missingness mask reconstructs omitted missing labels. If a formatter uses
+another missing label, \code{display} remains present, including when all rows are
+missing. Empty comparisons for zero-row columns count as equal.
 
 For supported inputs with valid required channels, Paged and Snapshot must
 return identical original source-row positions for every sort/filter request.
@@ -547,6 +530,21 @@ Locate it with:
 
 \if{html}{\out{<div class="sourceCode r">}}\preformatted{system.file("spec", "query-fixtures.json", package = "jdv")
 }\if{html}{\out{</div>}}
+}
+
+\section{Browser viewer}{
+ Consuming query capabilities:
+
+A browser viewer builds filter controls from the schema \code{type} and the
+operators defined above. It respects \code{filterable} and \code{sortable}, and treats
+an unknown type as display-only while continuing to use the server for
+filtering and sorting. It preserves the zero-based \code{source_row} returned by
+the producer as row identity; a one-based row label shown to a person is
+presentation only. Producer-defined \code{native_type} strings are display hints
+and do not change query behavior. Snapshot viewers use the supplied sort keys
+instead of JavaScript's raw UTF-16 string order or an independent browser
+locale collation. In the \code{utf8-byte-order} fixture, raw JavaScript comparison
+could reverse the specified order.
 
 Copyright (c) 2026 jdv authors. Distributed under the repository's MIT
 license.
