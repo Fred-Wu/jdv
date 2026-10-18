@@ -80,7 +80,6 @@
 #'     "collation": "C",
 #'     "nrow": 100,
 #'     "ncol": 2,
-#'     "row_labels": null,
 #'     "columns": []
 #'   }
 #' }
@@ -101,14 +100,13 @@
 #' | `capabilities`                                                     | Optional; missing flags are false         |
 #' | `title`, `reason`                                                  | Optional                                  |
 #' | `nrow`, `ncol`, `columns`                                          | Required                                  |
-#' | `collation`, `row_labels`                                          | Required for Snapshot and Random access   |
+#' | `collation`                                                        | Required for Snapshot and Random access   |
 #' | `data`                                                             | Required for snapshot access; otherwise omitted |
 #'
 #' `view` is a non-empty string and `generation` is a positive safe integer that
 #' identifies the current build of that view. `collation` is exactly `"C"` or
 #' `"locale"` and selects the string order described under Stable multi-column
-#' sort in the \link[=jdv_query_spec]{query specification}. `row_labels` is
-#' `null` or an array of strings.
+#' sort in the \link[=jdv_query_spec]{query specification}.
 #'
 #' `reason` is a fixed token that tells the host why a `view/open` was sent.
 #' More values may be added; a host treats an unknown or missing value as
@@ -409,7 +407,9 @@
 #' | `cols`       | No       | Array of zero-based column positions; omitted or `null` selects all columns.              |
 #'
 #' The result contains `view`, `generation`, `total`, `total_unfiltered`,
-#' `offset`, `limit`, and `data`. `data` contains `source_row`, optional
+#' `offset`, `limit`, and `data`. The returned `offset` equals the requested
+#' offset, and the returned `limit` is a safe integer between the number of
+#' returned rows and the requested limit. `data` contains `source_row`, optional
 #' `row_labels`, and `columns`. The effective `limit` is clamped to the query
 #' engine's row limit and may be reduced further to fit the JSON output budget.
 #' For an empty page, `source_row` and explicit `row_labels` are empty arrays;
@@ -543,11 +543,12 @@
 #' Every column type also accepts `is_na` when a valid missingness mask is
 #' available. A client decides what it can do with a column from `type`,
 #' `filterable`, `sortable`, and the grid `capabilities` alone. The schema's
-#' `native_type` field is a producer-defined array of display strings. A client
-#' may show those strings as a hint but must not infer semantics from them. How
-#' R vectors map to protocol types is described, as informative text, in the R
-#' column mapping section of \link[=jdv_query_spec]{query specification}, and
-#' can change without a protocol version change.
+#' optional `native_type` field is a producer-defined array of display strings.
+#' A client may show those strings as a hint but must not infer semantics from
+#' them. How R vectors map to protocol types is described, as informative text,
+#' in the R column mapping section of
+#' \link[=jdv_query_spec]{query specification}, and can change without a
+#' protocol version change.
 #'
 #' A client that receives a `type` it does not know must treat the column as
 #' display-only, exactly like `other`: it follows the column's `sortable` for
@@ -565,7 +566,8 @@
 #'
 #' Column identity is its zero-based `position`; `name` is display metadata and
 #' may be empty, duplicated, or otherwise unusual. A schema entry includes
-#' `position`, `name`, `type`, `native_type`, `sortable`, and `filterable`.
+#' `position`, `name`, `type`, `sortable`, and `filterable`; `native_type` is
+#' optional and, when present, is a producer-defined array of display strings.
 #' Categorical schemas also include `levels` and `ordered`; datetime schemas
 #' include `tz`; duration schemas include `units`. Unknown optional schema
 #' fields must be ignored by clients so future schema extensions remain
@@ -624,9 +626,9 @@
 #'   ordering. A `null` sort key is ordered after every non-null key, regardless
 #'   of the `na` mask. random-access rows never include sort keys.
 #' - `source_row` always reports zero-based positions in original source order.
-#'   Snapshot-access `row_labels` and random-access page `row_labels` contain
-#'   one label per row when supplied; otherwise the field is `null`. A random-access `view/open` descriptor
-#'   has `row_labels: null`; labels arrive with the page.
+#'   Snapshot `data` and random-access page `data` may contain one `row_labels`
+#'   string per row; an absent or `null` field means there are no explicit row
+#'   labels. Grid descriptors do not contain `row_labels`.
 #'
 #' Snapshot-access payloads contain all table rows in one `data` object.
 #' Random-access payloads contain only the requested row slice. The protocol

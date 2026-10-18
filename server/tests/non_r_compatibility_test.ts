@@ -116,14 +116,8 @@ Deno.test("R-free producer interoperates with the host over WebSocket", async ()
       offset: 1,
       limit: 1,
     });
-    const snapshotResult = snapshotRows.result as Frame;
-    assertEquals(snapshotResult.total, 3);
-    assertEquals((snapshotResult.data as Frame).source_row, [1]);
-    assertEquals(
-      (((snapshotResult.data as Frame).columns as Frame[])[0].data as Frame)
-        .display,
-      ["20"],
-    );
+    assertEquals(snapshotRows.type, "response");
+    assertEquals((snapshotRows.error as Frame).code, "unsupported");
 
     const random = await harness.producer.openRandom();
     await nextFrame((frame) =>

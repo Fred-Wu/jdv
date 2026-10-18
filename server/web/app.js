@@ -488,16 +488,11 @@ function supportsGridView(descriptor, capabilities) {
     !Number.isSafeInteger(descriptor.ncol) || descriptor.ncol < 0 ||
     !Array.isArray(descriptor.columns) ||
     !Object.hasOwn(descriptor, "collation") ||
-    !["C", "locale"].includes(descriptor.collation) ||
-    !Object.hasOwn(descriptor, "row_labels") ||
-    !(descriptor.row_labels === null ||
-      (Array.isArray(descriptor.row_labels) &&
-        descriptor.row_labels.every((label) => typeof label === "string")))
+    !["C", "locale"].includes(descriptor.collation)
   ) return false;
   if (descriptor.access === "random") {
     return Number.isSafeInteger(descriptor.nrow) && descriptor.nrow >= 0 &&
-      descriptor.row_labels === null && capabilities.seek === true &&
-      capabilities.known_total === true;
+      capabilities.seek === true && capabilities.known_total === true;
   }
   return (descriptor.nrow === null ||
     (Number.isSafeInteger(descriptor.nrow) && descriptor.nrow >= 0)) &&

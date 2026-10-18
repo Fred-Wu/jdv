@@ -958,7 +958,9 @@ export class Hub {
     const params = message.params;
     if (
       !isObject(params) || typeof params.view !== "string" ||
-      !Number.isSafeInteger(params.generation)
+      params.view.length === 0 ||
+      typeof params.generation !== "number" ||
+      !Number.isSafeInteger(params.generation) || params.generation <= 0
     ) return;
     const viewId = params.view;
     const generation = Number(params.generation);

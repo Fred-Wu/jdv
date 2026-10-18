@@ -82,7 +82,6 @@ A view descriptor is sent as a notification:
     "collation": "C",
     "nrow": 100,
     "ncol": 2,
-    "row_labels": null,
     "columns": []
   \}
 \}
@@ -102,7 +101,7 @@ if at least one column has \code{drillable: true}. \code{refresh} tells the host
    \code{capabilities} \tab Optional; missing flags are false \cr
    \code{title}, \code{reason} \tab Optional \cr
    \code{nrow}, \code{ncol}, \code{columns} \tab Required \cr
-   \code{collation}, \code{row_labels} \tab Required for Snapshot and Random access \cr
+   \code{collation} \tab Required for Snapshot and Random access \cr
    \code{data} \tab Required for snapshot access; otherwise omitted \cr
 }
 
@@ -110,8 +109,7 @@ if at least one column has \code{drillable: true}. \code{refresh} tells the host
 \code{view} is a non-empty string and \code{generation} is a positive safe integer that
 identifies the current build of that view. \code{collation} is exactly \code{"C"} or
 \code{"locale"} and selects the string order described under Stable multi-column
-sort in the \link[=jdv_query_spec]{query specification}. \code{row_labels} is
-\code{null} or an array of strings.
+sort in the \link[=jdv_query_spec]{query specification}.
 
 \code{reason} is a fixed token that tells the host why a \code{view/open} was sent.
 More values may be added; a host treats an unknown or missing value as
@@ -395,7 +393,9 @@ Parameters are:\tabular{lll}{
 
 
 The result contains \code{view}, \code{generation}, \code{total}, \code{total_unfiltered},
-\code{offset}, \code{limit}, and \code{data}. \code{data} contains \code{source_row}, optional
+\code{offset}, \code{limit}, and \code{data}. The returned \code{offset} equals the requested
+offset, and the returned \code{limit} is a safe integer between the number of
+returned rows and the requested limit. \code{data} contains \code{source_row}, optional
 \code{row_labels}, and \code{columns}. The effective \code{limit} is clamped to the query
 engine's row limit and may be reduced further to fit the JSON output budget.
 For an empty page, \code{source_row} and explicit \code{row_labels} are empty arrays;
@@ -519,11 +519,12 @@ are defined in the \link[=jdv_query_spec]{query specification}.\tabular{lll}{
 Every column type also accepts \code{is_na} when a valid missingness mask is
 available. A client decides what it can do with a column from \code{type},
 \code{filterable}, \code{sortable}, and the grid \code{capabilities} alone. The schema's
-\code{native_type} field is a producer-defined array of display strings. A client
-may show those strings as a hint but must not infer semantics from them. How
-R vectors map to protocol types is described, as informative text, in the R
-column mapping section of \link[=jdv_query_spec]{query specification}, and
-can change without a protocol version change.
+optional \code{native_type} field is a producer-defined array of display strings.
+A client may show those strings as a hint but must not infer semantics from
+them. How R vectors map to protocol types is described, as informative text,
+in the R column mapping section of
+\link[=jdv_query_spec]{query specification}, and can change without a
+protocol version change.
 
 A client that receives a \code{type} it does not know must treat the column as
 display-only, exactly like \code{other}: it follows the column's \code{sortable} for
@@ -539,7 +540,8 @@ which is an ordinary failure of that request and not a protocol violation.
 
 Column identity is its zero-based \code{position}; \code{name} is display metadata and
 may be empty, duplicated, or otherwise unusual. A schema entry includes
-\code{position}, \code{name}, \code{type}, \code{native_type}, \code{sortable}, and \code{filterable}.
+\code{position}, \code{name}, \code{type}, \code{sortable}, and \code{filterable}; \code{native_type} is
+optional and, when present, is a producer-defined array of display strings.
 Categorical schemas also include \code{levels} and \code{ordered}; datetime schemas
 include \code{tz}; duration schemas include \code{units}. Unknown optional schema
 fields must be ignored by clients so future schema extensions remain
@@ -596,9 +598,9 @@ key; consumers compare keys rather than recomputing a producer's native
 ordering. A \code{null} sort key is ordered after every non-null key, regardless
 of the \code{na} mask. random-access rows never include sort keys.
 \item \code{source_row} always reports zero-based positions in original source order.
-Snapshot-access \code{row_labels} and random-access page \code{row_labels} contain
-one label per row when supplied; otherwise the field is \code{null}. A random-access \code{view/open} descriptor
-has \code{row_labels: null}; labels arrive with the page.
+Snapshot \code{data} and random-access page \code{data} may contain one \code{row_labels}
+string per row; an absent or \code{null} field means there are no explicit row
+labels. Grid descriptors do not contain \code{row_labels}.
 }
 
 Snapshot-access payloads contain all table rows in one \code{data} object.

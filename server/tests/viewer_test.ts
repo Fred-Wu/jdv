@@ -450,6 +450,7 @@ Deno.test("page fill returns filtered and unfiltered query totals", async () => 
       Promise.resolve({
         result: {
           offset: 0,
+          limit: 1,
           total: 1,
           total_unfiltered: 3,
           data: { source_row: [1], columns: [] },
@@ -471,6 +472,7 @@ Deno.test("page fill rejects an empty response before the requested total", asyn
         Promise.resolve({
           result: {
             offset: 0,
+            limit: 0,
             total: 2,
             total_unfiltered: 2,
             data: { source_row: [], columns: [] },
@@ -483,6 +485,38 @@ Deno.test("page fill rejects an empty response before the requested total", asyn
       error.message.includes("empty page before");
   }
   assert(rejected, "An empty response should not silently truncate a page.");
+});
+
+Deno.test("page fill validates producer offsets and returned limits", async () => {
+  const invalidResults = [
+    { offset: 1, limit: 1 },
+    { offset: 0, limit: Number.MAX_SAFE_INTEGER + 1 },
+    { offset: 0, limit: 0 },
+    { offset: 0, limit: 3 },
+  ];
+  for (const bounds of invalidResults) {
+    let rejected = false;
+    try {
+      await fillRemotePage({
+        offset: 0,
+        limit: 2,
+        fetchPage: () =>
+          Promise.resolve({
+            result: {
+              ...bounds,
+              total: 2,
+              total_unfiltered: 2,
+              data: { source_row: [0], columns: [] },
+            },
+          }),
+        decode: () => [{ source_row: 0 }],
+      });
+    } catch (error) {
+      rejected = error instanceof Error &&
+        error.message.includes("invalid page bounds");
+    }
+    assert(rejected, `Invalid bounds were accepted: ${JSON.stringify(bounds)}`);
+  }
 });
 
 Deno.test("column windows reach the last columns and preserve the requested position", () => {

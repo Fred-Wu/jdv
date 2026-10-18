@@ -668,11 +668,6 @@ jdv_json_object <- function(x = list()) {
     collation = content$collation,
     nrow = content$nrow,
     ncol = content$ncol,
-    row_labels = if (is.null(content$row_names)) {
-      NULL
-    } else {
-      .jdv_json_values(content$row_names)
-    },
     columns = .jdv_schema(content$schema)
   )
   if (!is.null(tracking)) {

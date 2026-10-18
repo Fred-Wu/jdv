@@ -99,7 +99,6 @@ test_that("registration returns snapshots and reuses titled generations", {
       "collation",
       "nrow",
       "ncol",
-      "row_labels",
       "columns",
       "data"
     )
@@ -128,6 +127,7 @@ test_that("registration returns snapshots and reuses titled generations", {
   expect_null(open$params$mode)
   expect_length(open$params$data$columns, 2)
   expect_identical(open$params$data$source_row, list(0L, 1L))
+  expect_false("row_labels" %in% names(open$params))
   expect_named(first, c("id", "generation", "open", "notifications"))
   expect_length(first$notifications, 0)
 

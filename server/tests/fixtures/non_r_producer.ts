@@ -297,7 +297,6 @@ export class FixtureProducer {
       collation: "C",
       nrow: values.length,
       ncol: 1,
-      row_labels: null,
       columns: [{
         position: 0,
         name: "value",
@@ -332,6 +331,13 @@ export class FixtureProducer {
     this.#notify("view/open", descriptor);
     this.#setView(view, async (method, params, id) => {
       if (method === "grid/rows") {
+        if (access === "snapshot") {
+          await this.#reply(id, undefined, {
+            code: "unsupported",
+            message: "Snapshot views do not support grid/rows.",
+          });
+          return;
+        }
         const offset = Number(params.offset ?? 0);
         const limit = Number(params.limit ?? values.length);
         const selected = values.slice(offset, offset + limit);

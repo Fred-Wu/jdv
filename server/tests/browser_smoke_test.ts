@@ -147,6 +147,7 @@ Deno.test({
         title: "Browser smoke",
         nrow: 249,
         ncol: columns.length,
+        collation: "C",
         columns,
         capabilities: gridCapabilities(),
       },
@@ -1532,6 +1533,7 @@ Deno.test({
             access: "snapshot",
             encoding: "jdv-json",
             title: "Duration smoke",
+            collation: "C",
             nrow: durationValues.length,
             ncol: 2,
             columns: [
@@ -1648,6 +1650,7 @@ Deno.test({
             access: "random",
             encoding: "jdv-json",
             title: "Generation 2",
+            collation: "C",
             nrow: 3,
             ncol: 2,
             columns: columns.slice(0, 2),
@@ -1736,7 +1739,7 @@ Deno.test({
           "Malformed capabilities",
         );
 
-        for (const field of ["ncol", "collation", "row_labels"] as const) {
+        for (const field of ["ncol", "collation"] as const) {
           const missingDescriptorField = snapshotDescriptor(
             columns.slice(0, 3),
           );
@@ -1746,7 +1749,7 @@ Deno.test({
           await writeFrame(rConnection, {
             method: "view/open",
             params: missingDescriptorField,
-          }, { applyGridDefaults: false });
+          });
           await button(
             page,
             "Unsupported view",
@@ -1800,22 +1803,6 @@ Deno.test({
           "#tables article",
           0,
           "Random with unknown rows",
-        );
-
-        const randomWithOpenLabels = snapshotDescriptor(columns.slice(0, 3));
-        randomWithOpenLabels.view = "random-with-open-labels";
-        randomWithOpenLabels.title = "Random with open labels";
-        randomWithOpenLabels.access = "random";
-        await writeFrame(rConnection, {
-          method: "view/open",
-          params: randomWithOpenLabels,
-        });
-        await button(
-          page,
-          "Unsupported view",
-          "#tables article",
-          0,
-          "Random with open labels",
         );
 
         const sequentialWithRefresh = snapshotDescriptor(columns.slice(0, 3));
@@ -1872,6 +1859,7 @@ Deno.test({
             access: "random",
             encoding: "jdv-json",
             title: "Binary response probe",
+            collation: "C",
             nrow: 1,
             ncol: 1,
             columns: [{
@@ -2199,23 +2187,7 @@ async function connectR(socketPath: string): Promise<Deno.Conn> {
 async function writeFrame(
   connection: Deno.Conn,
   value: Record<string, unknown>,
-  options: { applyGridDefaults?: boolean } = {},
 ): Promise<void> {
-  if (
-    options.applyGridDefaults !== false && value.method === "view/open" &&
-    value.params !== null && typeof value.params === "object" &&
-    !Array.isArray(value.params)
-  ) {
-    const params = value.params as Record<string, unknown>;
-    if (
-      params.kind === "grid" &&
-      (params.access === "snapshot" || params.access === "random") &&
-      params.encoding === "jdv-json"
-    ) {
-      params.collation ??= "C";
-      params.row_labels ??= null;
-    }
-  }
   const bytes = new TextEncoder().encode(`${JSON.stringify(value)}\n`);
   let offset = 0;
   while (offset < bytes.length) {
@@ -2354,6 +2326,7 @@ async function respondToR(
         kind: "grid",
         access: "snapshot",
         encoding: "jdv-json",
+        collation: "C",
         title: "Child table",
         parent: "tree-root",
         nrow: 1,
@@ -2507,7 +2480,6 @@ function snapshotDescriptor(
     ncol: columns.length,
     columns,
     capabilities: gridCapabilities(),
-    row_labels: values.map((value) => `row-${value}`),
     data: {
       source_row: values.map((value) => value - 1),
       row_labels: values.map((value) => `row-${value}`),
@@ -2594,6 +2566,7 @@ Deno.test({
         kind: "grid",
         access: "snapshot",
         encoding: "jdv-json",
+        collation: "C",
         title: "Cell parent",
         nrow: values.length,
         ncol: columns.length,
@@ -2932,11 +2905,11 @@ async function respondToRefresh(
             access: "snapshot",
             encoding: "jdv-json",
             title: "Tree became grid",
+            collation: "C",
             nrow: 1,
             ncol: 1,
             columns: [columns[0]],
             capabilities: refreshCapabilities(),
-            row_labels: null,
             data: {
               source_row: [0],
               row_labels: null,
@@ -2954,6 +2927,7 @@ async function respondToRefresh(
             access: "random",
             encoding: "jdv-json",
             title: `Refreshed ${generation}`,
+            collation: "C",
             nrow: 3,
             ncol: columns.length,
             columns,
@@ -2971,6 +2945,7 @@ async function respondToRefresh(
               access: "random",
               encoding: "jdv-json",
               title: "Refreshed 4",
+              collation: "C",
               nrow: 3,
               ncol: columns.length,
               columns,
@@ -3078,6 +3053,7 @@ Deno.test({
         access: "random",
         encoding: "jdv-json",
         title: "Refresh grid",
+        collation: "C",
         nrow: 3,
         ncol: 1,
         columns,
@@ -3334,6 +3310,7 @@ async function respondToTrack(
           access: "random",
           encoding: "jdv-json",
           title: `Tracked ${generation}`,
+          collation: "C",
           nrow: 3,
           ncol: columns.length,
           columns,
@@ -3405,6 +3382,7 @@ Deno.test({
         access: "random",
         encoding: "jdv-json",
         title: "Track grid",
+        collation: "C",
         nrow: 3,
         ncol: 1,
         columns,
@@ -3421,6 +3399,7 @@ Deno.test({
         access: "random",
         encoding: "jdv-json",
         title: "Plain grid",
+        collation: "C",
         nrow: 3,
         ncol: 1,
         columns,

@@ -81,7 +81,7 @@ test_that("auto falls back when only snapshot row names exceed the budget", {
   registered <- register_view(x, mode = "auto")
   descriptor <- mode_safety_rpc_json(registered$open)$params
   expect_null(descriptor$mode)
-  expect_null(descriptor$row_labels)
+  expect_false("row_labels" %in% names(descriptor))
 })
 
 test_that(

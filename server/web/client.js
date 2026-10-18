@@ -343,7 +343,11 @@ export async function fillRemotePage({
     }
     totalUnfiltered = result.total_unfiltered;
     const count = result.data.source_row.length;
-    if (!Number.isSafeInteger(result.offset) || result.offset < 0) {
+    if (
+      result.offset !== cursor ||
+      !Number.isSafeInteger(result.limit) || result.limit < count ||
+      result.limit > remaining
+    ) {
       throw new Error("The producer returned invalid page bounds.");
     }
     if (count === 0) {

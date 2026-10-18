@@ -96,10 +96,11 @@ test_that("omitted mode and collation use defaults without warnings", {
   expect_null(.jdv_json_parse(jdv_handle_descriptor(child))$mode)
 })
 
-test_that("single explicit row labels remain JSON arrays", {
+test_that("single explicit row labels remain in snapshot data", {
   source <- data.frame(value = 1L, row.names = "named-row")
   handle <- jdv_handle(source, mode = "snapshot")
   on.exit(jdv_handle_close(handle), add = TRUE)
   descriptor <- .jdv_json_parse(jdv_handle_descriptor(handle))
-  expect_identical(descriptor$row_labels, list("named-row"))
+  expect_false("row_labels" %in% names(descriptor))
+  expect_identical(descriptor$data$row_labels, list("named-row"))
 })

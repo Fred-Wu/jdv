@@ -266,6 +266,48 @@ Deno.test("hello requires every positive integer limit", async () => {
   hub.close();
 });
 
+Deno.test("view registration ignores empty ids and non-positive generations", async () => {
+  const hub = new Hub();
+  const connection = new MemoryConnection();
+  hub.acceptProducer(connection);
+  connection.inject({
+    id: "hello",
+    method: "hello",
+    params: {
+      protocol: 1,
+      session: "view-validation",
+      producer: { name: "test", version: "1" },
+      limits: { ...DEFAULT_LIMITS },
+    },
+  });
+  const browser = new MemoryBrowser();
+  hub.attach(browser);
+  for (
+    const [view, generation] of [
+      ["", 1],
+      ["valid-id", 0],
+      ["valid-id", -1],
+      ["valid-id", Number.MAX_SAFE_INTEGER + 1],
+    ] as const
+  ) {
+    connection.inject(notification("view/open", { view, generation }));
+  }
+  connection.inject(notification("view/open", {
+    view: "valid-id",
+    generation: 1,
+    kind: "tree",
+    access: "random",
+    encoding: "jdv-json",
+    capabilities: { seek: true, known_total: true, children: true },
+  }));
+  await browser.nextMessage((message) => message.type === "view/open");
+  assertEquals(
+    browser.messages.filter((message) => message.type === "view/open").length,
+    1,
+  );
+  hub.close();
+});
+
 Deno.test("hello rejects each omitted limit field", async () => {
   for (const field of Object.keys(DEFAULT_LIMITS)) {
     const hub = new Hub();
