@@ -75,7 +75,8 @@ A producer offers data in one of two ways:
 
 - **JSON grids** have a known row count. Either the grid is sent whole and the
   browser sorts and filters it, or the producer sorts and filters the data and
-  returns any requested page.
+  returns any requested page. In `jdv_view()` these are the Snapshot and Paged
+  modes, and the default auto mode picks one based on configured size limits.
 - **Arrow streams** are read forward, one page at a time, and the total row
   count does not need to be known. Use them for data that is expensive to
   count, such as query results.
