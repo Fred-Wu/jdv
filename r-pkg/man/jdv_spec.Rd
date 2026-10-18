@@ -107,7 +107,7 @@ if at least one column has \code{drillable: true}. \code{refresh} tells the host
 }
 
 
-\code{view} is a non-empty string and \code{generation} is a positive integer that
+\code{view} is a non-empty string and \code{generation} is a positive safe integer that
 identifies the current build of that view. \code{collation} is exactly \code{"C"} or
 \code{"locale"} and selects the string order described under Stable multi-column
 sort in the \link[=jdv_query_spec]{query specification}. \code{row_labels} is
