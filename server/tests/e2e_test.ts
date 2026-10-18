@@ -522,7 +522,7 @@ Deno.test({
             message.type === "response" && message.id === "e2e-busy-page",
           "automatic page response after the busy computation",
         );
-        assertEquals(responseRowIndex(busyResponse), [1, 2]);
+        assertEquals(responseRowIndex(busyResponse), [0, 1]);
 
         // A large Paged descriptor and one selected page stay bounded. The R
         // class methods count formatting and subsetting over the full source.
@@ -739,7 +739,7 @@ Deno.test({
         );
         assertEquals(
           responseRowIndex(compact),
-          [799_999_998, 799_999_999, 800_000_000],
+          [799_999_997, 799_999_998, 799_999_999],
         );
 
         // Snapshot's JavaScript consumer and the live Paged R engine agree on
@@ -822,7 +822,7 @@ Deno.test({
         const calendarQueries = [
           {
             filter: { op: "lt", col: 0, value: "1000-01-01" },
-            expected: [1, 2, 3, 4, 5],
+            expected: [0, 1, 2, 3, 4],
           },
           {
             filter: {
@@ -830,7 +830,7 @@ Deno.test({
               col: 1,
               value: "0001-01-01T12:34:56.125+02:30",
             },
-            expected: [2],
+            expected: [1],
           },
           {
             filter: {
@@ -838,9 +838,9 @@ Deno.test({
               col: 2,
               value: "0001-01-01T12:34:56.123456+02:30",
             },
-            expected: [2],
+            expected: [1],
           },
-          { filter: { op: "is_na", col: 0 }, expected: [7] },
+          { filter: { op: "is_na", col: 0 }, expected: [6] },
         ];
         for (let index = 0; index < calendarQueries.length; index++) {
           const query = calendarQueries[index];
@@ -933,7 +933,7 @@ Deno.test({
             cols: [0],
           },
         );
-        assertEquals(responseRowIndex(reconnectPaged), [1, 2]);
+        assertEquals(responseRowIndex(reconnectPaged), [0, 1]);
         server.dropR();
         await nextMessage(
           reconnect,
@@ -982,7 +982,7 @@ Deno.test({
           "grid/rows",
           { offset: 0, limit: 2, cols: [0] },
         );
-        assertEquals(responseRowIndex(reopenedPage), [1, 2]);
+        assertEquals(responseRowIndex(reopenedPage), [0, 1]);
         for (const extra of extraBrowsers) extra.close();
         console.log(
           "Real R/arf E2E passed: Snapshot offline queries, busy-loop wake/resume, bounded Paged wire output, shared Paged semantics, Snapshot/Paged agreement, and reconnect cleanup.",

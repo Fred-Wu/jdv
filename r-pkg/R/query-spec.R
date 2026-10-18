@@ -8,8 +8,9 @@
 #'
 #' The engine operates on data frames and matrices. Columns are identified by
 #' their **zero-based positions**, so duplicate or unusual column names are
-#' valid. Returned `source_row` values are **zero-based positions in the
-#' original source order**. Internal R subscripts remain one-based.
+#' valid. On the wire, `source_row` values are **zero-based positions in the
+#' original source order**. Private R query results retain one-based row indices
+#' until JSON encoding; see Internal entry points below.
 #'
 #'
 #' @section Source slicing contract:
@@ -37,12 +38,19 @@
 #' | Function | Result and purpose |
 #' | --- | --- |
 #' | `paged_table(x, collation = "C", limits = list())` | A `jdv_paged_table` environment holding the source, initial schema, probe diagnostics, and bounded caches. |
-#' | `query_indices(holder, sort = list(), filter = NULL)` | Original one-based row numbers after filtering and sorting. |
-#' | `query_page(holder, offset = 0L, limit = 200L, sort = list(), filter = NULL, cols = NULL)` | A page with totals, effective pagination, original row numbers, optional row names, and selected column extraction results. |
+#' | `query_indices(holder, sort = list(), filter = NULL)` | Original one-based R row numbers after filtering and sorting. |
+#' | `query_page(holder, offset = 0L, limit = 200L, sort = list(), filter = NULL, cols = NULL)` | A private R page with totals, effective pagination, one-based `data$row_index`, optional `data$row_names`, and selected column extraction results. |
 #' | `query_clear(holder)` | Clear all result caches while retaining the same source and initial schema. Returns the holder invisibly. |
 #' | `query_dispose(holder)` | Clear caches and release source/schema references. Subsequent queries fail with `view_not_found`. |
 #' | `snapshot_table(x, collation = "C", limits = list())` | Eagerly materialized channels for the independent Snapshot reference consumer. |
 #' | `snapshot_indices(snapshot, sort = list(), filter = NULL)` | Reference row selection and stable ordering from those materialized channels. |
+#'
+#' These are private R representations. `query_page()` retains one-based
+#' `data$row_index` and `data$row_names`; Snapshot channel data uses `sortKey`,
+#' and R schemas retain `class` plus R type `factor`. At JSON encoding, the
+#' producer converts these to the protocol forms `source_row` (zero-based),
+#' `row_labels`, `sort_key`, `native_type`, and type `categorical`. The wire
+#' conversion does not change the private query result contract.
 #'
 #' For example, this internal R request sorts column zero in descending order
 #' and returns the first twenty rows, displaying columns zero and two:
@@ -449,7 +457,8 @@
 #' @section Page results and channel errors:
 #'
 #'
-#' The page result has these fields:
+#' The `grid/rows` protocol result after JSON encoding has these fields. The
+#' private `query_page()` result keeps its R-internal names as described above.
 #'
 #' | Field | Meaning |
 #' | --- | --- |

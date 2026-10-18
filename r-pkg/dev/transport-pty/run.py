@@ -213,7 +213,7 @@ def response_error_code(host_result, index=0):
 
 def response_row_count(host_result, index=0):
     try:
-        return len(host_result["responses"][index]["result"]["data"]["row_index"])
+        return len(host_result["responses"][index]["result"]["data"]["source_row"])
     except (IndexError, KeyError, TypeError):
         return None
 

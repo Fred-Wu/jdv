@@ -80,8 +80,8 @@
       offset = 2^53,
       limit = 2^53,
       data = list(
-        row_index = .jdv_json_values(numeric()),
-        row_names = if (holder$explicit_row_names) {
+        source_row = .jdv_json_values(numeric()),
+        row_labels = if (holder$explicit_row_names) {
           .jdv_json_values(character())
         } else {
           NULL

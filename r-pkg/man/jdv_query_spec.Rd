@@ -12,8 +12,9 @@ fixtures for later server and browser consumers.
 \details{
 The engine operates on data frames and matrices. Columns are identified by
 their \strong{zero-based positions}, so duplicate or unusual column names are
-valid. Returned \code{source_row} values are \strong{zero-based positions in the
-original source order}. Internal R subscripts remain one-based.
+valid. On the wire, \code{source_row} values are \strong{zero-based positions in the
+original source order}. Private R query results retain one-based row indices
+until JSON encoding; see Internal entry points below.
 }
 \section{Source slicing contract}{
 
@@ -38,14 +39,21 @@ builds a new holder and cache before replacing the current generation.
 \tabular{ll}{
    Function \tab Result and purpose \cr
    \code{paged_table(x, collation = "C", limits = list())} \tab A \code{jdv_paged_table} environment holding the source, initial schema, probe diagnostics, and bounded caches. \cr
-   \code{query_indices(holder, sort = list(), filter = NULL)} \tab Original one-based row numbers after filtering and sorting. \cr
-   \code{query_page(holder, offset = 0L, limit = 200L, sort = list(), filter = NULL, cols = NULL)} \tab A page with totals, effective pagination, original row numbers, optional row names, and selected column extraction results. \cr
+   \code{query_indices(holder, sort = list(), filter = NULL)} \tab Original one-based R row numbers after filtering and sorting. \cr
+   \code{query_page(holder, offset = 0L, limit = 200L, sort = list(), filter = NULL, cols = NULL)} \tab A private R page with totals, effective pagination, one-based \code{data$row_index}, optional \code{data$row_names}, and selected column extraction results. \cr
    \code{query_clear(holder)} \tab Clear all result caches while retaining the same source and initial schema. Returns the holder invisibly. \cr
    \code{query_dispose(holder)} \tab Clear caches and release source/schema references. Subsequent queries fail with \code{view_not_found}. \cr
    \code{snapshot_table(x, collation = "C", limits = list())} \tab Eagerly materialized channels for the independent Snapshot reference consumer. \cr
    \code{snapshot_indices(snapshot, sort = list(), filter = NULL)} \tab Reference row selection and stable ordering from those materialized channels. \cr
 }
 
+
+These are private R representations. \code{query_page()} retains one-based
+\code{data$row_index} and \code{data$row_names}; Snapshot channel data uses \code{sortKey},
+and R schemas retain \code{class} plus R type \code{factor}. At JSON encoding, the
+producer converts these to the protocol forms \code{source_row} (zero-based),
+\code{row_labels}, \code{sort_key}, \code{native_type}, and type \code{categorical}. The wire
+conversion does not change the private query result contract.
 
 For example, this internal R request sorts column zero in descending order
 and returns the first twenty rows, displaying columns zero and two:
@@ -449,7 +457,8 @@ comparison rather than requesting a new locale sort in the consumer.
 \section{Page results and channel errors}{
 
 
-The page result has these fields:\tabular{ll}{
+The \code{grid/rows} protocol result after JSON encoding has these fields. The
+private \code{query_page()} result keeps its R-internal names as described above.\tabular{ll}{
    Field \tab Meaning \cr
    \code{total} \tab Number of rows matching the filter. \cr
    \code{total_unfiltered} \tab Original row count. \cr

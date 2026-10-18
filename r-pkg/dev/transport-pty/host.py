@@ -47,7 +47,7 @@ def rows_request(opened, request_id):
     params = opened["params"]
     return {
         "id": request_id,
-        "method": "table/rows",
+        "method": "grid/rows",
         "params": {
             "view": params["view"],
             "generation": params["generation"],
