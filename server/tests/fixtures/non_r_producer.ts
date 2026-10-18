@@ -184,6 +184,7 @@ export class FixtureProducer {
       encoding: "arrow-ipc",
       title: "Sequential fixture",
       reason: "register",
+      nrow: null,
       ncol: 1,
       max_page_rows: 2,
       columns: [{
@@ -293,6 +294,7 @@ export class FixtureProducer {
       encoding: "jdv-json",
       title,
       reason: "register",
+      collation: "C",
       nrow: values.length,
       ncol: 1,
       row_labels: null,

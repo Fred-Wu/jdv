@@ -100,7 +100,8 @@
 #' | `view`, `generation`, `kind`, `access`, `encoding`                | Required                                  |
 #' | `capabilities`                                                     | Optional; missing flags are false         |
 #' | `title`, `reason`                                                  | Optional                                  |
-#' | `collation`, `nrow`, `ncol`, `row_labels`, `columns`               | Required                                  |
+#' | `nrow`, `ncol`, `columns`                                          | Required                                  |
+#' | `collation`, `row_labels`                                          | Required for Snapshot and Random access   |
 #' | `data`                                                             | Required for snapshot access; otherwise omitted |
 #'
 #' `reason` is a fixed token that tells the host why a `view/open` was sent.
@@ -121,12 +122,15 @@
 #' column's `sortable` field constrains sorting, and `filterable` constrains
 #' value-based filter operators. `filterable` is false for columns of type
 #' `list` and `other`, and `is_na` remains valid when a valid missingness mask
-#' is available, even when `filterable` is false. Clients must accept
-#' `nrow: null` when a grid row count is unknown; the protocol does not define
-#' `total_rows`. The descriptor's `encoding` field does not change the
-#' envelope's `encoding: "json"` setting. Snapshot access's `params.data`
-#' contains the full data payload as described under the Column payloads section
-#' below.
+#' is available, even when `filterable` is false. Snapshot access may use
+#' `nrow: null` when its row count is unknown. Random access requires a
+#' non-negative integer `nrow`, `capabilities.seek: true`, and
+#' `capabilities.known_total: true`; this lets clients address any requested
+#' offset and report the complete row count. Sequential access uses `nrow: null`
+#' and is specified separately below. The protocol does not define `total_rows`.
+#' The descriptor's `encoding` field does not change the envelope's
+#' `encoding: "json"` setting. Snapshot access's `params.data` contains the full
+#' data payload as described under the Column payloads section below.
 #'
 #' Tree descriptors and navigation are an R producer extension described below.
 #'
@@ -257,10 +261,12 @@
 #'
 #'
 #' Sequential descriptors have `kind: "grid"`, `access: "sequential"`,
-#' `encoding: "arrow-ipc"`, `nrow: null`, and a known `ncol`. Only the `next`
-#' capability is true; `seek`, `sort`, `filter`, `known_total`, `children`,
-#' `refresh`, and `track` are false. The producer supplies the schema and owns
-#' the forward-only Arrow stream for the lifetime of the view generation.
+#' `encoding: "arrow-ipc"`, `nrow: null`, and a non-negative integer `ncol`. The
+#' common `view`, `generation`, and `columns` fields are also required. Only the
+#' `next` capability is true; `seek`, `sort`, `filter`, `known_total`,
+#' `children`, `refresh`, and `track` are false. The producer supplies the
+#' schema and owns the forward-only Arrow stream for the lifetime of the view
+#' generation.
 #'
 #' Each Arrow IPC body carries its logical schema. The descriptor's `columns`
 #' array remains in original source order and retains each column's `index`,

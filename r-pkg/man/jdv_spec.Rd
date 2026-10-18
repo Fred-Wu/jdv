@@ -101,7 +101,8 @@ if at least one column has \code{drillable: true}. \code{refresh} tells the host
    \code{view}, \code{generation}, \code{kind}, \code{access}, \code{encoding} \tab Required \cr
    \code{capabilities} \tab Optional; missing flags are false \cr
    \code{title}, \code{reason} \tab Optional \cr
-   \code{collation}, \code{nrow}, \code{ncol}, \code{row_labels}, \code{columns} \tab Required \cr
+   \code{nrow}, \code{ncol}, \code{columns} \tab Required \cr
+   \code{collation}, \code{row_labels} \tab Required for Snapshot and Random access \cr
    \code{data} \tab Required for snapshot access; otherwise omitted \cr
 }
 
@@ -124,12 +125,15 @@ Grid-level flags declare the operations available in protocol v1; each
 column's \code{sortable} field constrains sorting, and \code{filterable} constrains
 value-based filter operators. \code{filterable} is false for columns of type
 \code{list} and \code{other}, and \code{is_na} remains valid when a valid missingness mask
-is available, even when \code{filterable} is false. Clients must accept
-\code{nrow: null} when a grid row count is unknown; the protocol does not define
-\code{total_rows}. The descriptor's \code{encoding} field does not change the
-envelope's \code{encoding: "json"} setting. Snapshot access's \code{params.data}
-contains the full data payload as described under the Column payloads section
-below.
+is available, even when \code{filterable} is false. Snapshot access may use
+\code{nrow: null} when its row count is unknown. Random access requires a
+non-negative integer \code{nrow}, \code{capabilities.seek: true}, and
+\code{capabilities.known_total: true}; this lets clients address any requested
+offset and report the complete row count. Sequential access uses \code{nrow: null}
+and is specified separately below. The protocol does not define \code{total_rows}.
+The descriptor's \code{encoding} field does not change the envelope's
+\code{encoding: "json"} setting. Snapshot access's \code{params.data} contains the full
+data payload as described under the Column payloads section below.
 
 Tree descriptors and navigation are an R producer extension described below.
 
@@ -253,10 +257,12 @@ one \code{invalid_request} or \code{stale_generation} terminal error.
  Sequential Arrow views:
 
 Sequential descriptors have \code{kind: "grid"}, \code{access: "sequential"},
-\code{encoding: "arrow-ipc"}, \code{nrow: null}, and a known \code{ncol}. Only the \code{next}
-capability is true; \code{seek}, \code{sort}, \code{filter}, \code{known_total}, \code{children},
-\code{refresh}, and \code{track} are false. The producer supplies the schema and owns
-the forward-only Arrow stream for the lifetime of the view generation.
+\code{encoding: "arrow-ipc"}, \code{nrow: null}, and a non-negative integer \code{ncol}. The
+common \code{view}, \code{generation}, and \code{columns} fields are also required. Only the
+\code{next} capability is true; \code{seek}, \code{sort}, \code{filter}, \code{known_total},
+\code{children}, \code{refresh}, and \code{track} are false. The producer supplies the
+schema and owns the forward-only Arrow stream for the lifetime of the view
+generation.
 
 Each Arrow IPC body carries its logical schema. The descriptor's \code{columns}
 array remains in original source order and retains each column's \code{index},

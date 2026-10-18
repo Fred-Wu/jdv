@@ -464,10 +464,13 @@ function supportsSequentialView(descriptor, capabilities) {
     return false;
   }
   return descriptor.encoding === "arrow-ipc" &&
+    descriptor.nrow === null && Number.isSafeInteger(descriptor.ncol) &&
+    descriptor.ncol >= 0 &&
     Array.isArray(descriptor.columns) &&
     capabilities.next === true && capabilities.seek === false &&
     capabilities.sort === false && capabilities.filter === false &&
-    capabilities.known_total === false && capabilities.children === false;
+    capabilities.known_total === false && capabilities.children === false &&
+    capabilities.refresh === false && capabilities.track === false;
 }
 
 function supportsTreeView(descriptor, capabilities) {
@@ -478,9 +481,36 @@ function supportsTreeView(descriptor, capabilities) {
     capabilities.next === false && capabilities.children === true;
 }
 
-function supportsGridView(descriptor) {
-  return (descriptor.access === "snapshot" || descriptor.access === "random") &&
-    descriptor.encoding === "jdv-json" && Array.isArray(descriptor.columns);
+function supportsGridView(descriptor, capabilities) {
+  if (
+    (descriptor.access !== "snapshot" && descriptor.access !== "random") ||
+    descriptor.encoding !== "jdv-json" ||
+    !Number.isSafeInteger(descriptor.ncol) || descriptor.ncol < 0 ||
+    !Array.isArray(descriptor.columns) ||
+    !Object.hasOwn(descriptor, "collation") ||
+    !["C", "locale"].includes(descriptor.collation) ||
+    !Object.hasOwn(descriptor, "row_labels") ||
+    !(descriptor.row_labels === null ||
+      (Array.isArray(descriptor.row_labels) &&
+        descriptor.row_labels.every((label) => typeof label === "string")))
+  ) return false;
+  if (descriptor.access === "random") {
+    return Number.isSafeInteger(descriptor.nrow) && descriptor.nrow >= 0 &&
+      descriptor.row_labels === null && capabilities.seek === true &&
+      capabilities.known_total === true;
+  }
+  return (descriptor.nrow === null ||
+    (Number.isSafeInteger(descriptor.nrow) && descriptor.nrow >= 0)) &&
+    descriptor.data !== null && typeof descriptor.data === "object" &&
+    !Array.isArray(descriptor.data);
+}
+
+function hasRequiredGridFields(descriptor) {
+  return typeof descriptor.view === "string" && descriptor.view.length > 0 &&
+    Number.isSafeInteger(descriptor.generation) && descriptor.generation > 0 &&
+    Object.hasOwn(descriptor, "nrow") &&
+    Object.hasOwn(descriptor, "ncol") &&
+    Array.isArray(descriptor.columns);
 }
 
 function viewSupport(descriptor) {
@@ -490,13 +520,18 @@ function viewSupport(descriptor) {
     typeof descriptor.access !== "string" ||
     typeof descriptor.encoding !== "string"
   ) return false;
+  if (descriptor.kind === "grid" && !hasRequiredGridFields(descriptor)) {
+    return false;
+  }
   if (descriptor.kind === "grid" && descriptor.access === "sequential") {
     return supportsSequentialView(descriptor, capabilities);
   }
   if (descriptor.kind === "tree") {
     return supportsTreeView(descriptor, capabilities);
   }
-  if (descriptor.kind === "grid") return supportsGridView(descriptor);
+  if (descriptor.kind === "grid") {
+    return supportsGridView(descriptor, capabilities);
+  }
   return false;
 }
 

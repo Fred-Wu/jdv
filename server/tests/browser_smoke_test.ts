@@ -1736,6 +1736,113 @@ Deno.test({
           "Malformed capabilities",
         );
 
+        const missingDescriptorField = snapshotDescriptor(columns.slice(0, 3));
+        missingDescriptorField.view = "missing-descriptor-field";
+        missingDescriptorField.title = "Missing descriptor field";
+        delete missingDescriptorField.ncol;
+        await writeFrame(rConnection, {
+          method: "view/open",
+          params: missingDescriptorField,
+        }, { applyGridDefaults: false });
+        await button(
+          page,
+          "Unsupported view",
+          "#tables article",
+          0,
+          "Missing descriptor field",
+        );
+
+        for (
+          const [name, capability] of [
+            ["seek", "seek"],
+            ["known_total", "known_total"],
+          ] as const
+        ) {
+          const missingRandomCapability = snapshotDescriptor(
+            columns.slice(0, 3),
+          );
+          missingRandomCapability.view = `random-without-${name}`;
+          missingRandomCapability.title = `Random without ${name}`;
+          missingRandomCapability.access = "random";
+          delete (missingRandomCapability.capabilities as Record<
+            string,
+            unknown
+          >)[capability];
+          await writeFrame(rConnection, {
+            method: "view/open",
+            params: missingRandomCapability,
+          });
+          await button(
+            page,
+            "Unsupported view",
+            "#tables article",
+            0,
+            `Random without ${name}`,
+          );
+        }
+
+        const randomWithUnknownRows = snapshotDescriptor(columns.slice(0, 3));
+        randomWithUnknownRows.view = "random-with-unknown-rows";
+        randomWithUnknownRows.title = "Random with unknown rows";
+        randomWithUnknownRows.access = "random";
+        randomWithUnknownRows.nrow = null;
+        await writeFrame(rConnection, {
+          method: "view/open",
+          params: randomWithUnknownRows,
+        });
+        await button(
+          page,
+          "Unsupported view",
+          "#tables article",
+          0,
+          "Random with unknown rows",
+        );
+
+        const randomWithOpenLabels = snapshotDescriptor(columns.slice(0, 3));
+        randomWithOpenLabels.view = "random-with-open-labels";
+        randomWithOpenLabels.title = "Random with open labels";
+        randomWithOpenLabels.access = "random";
+        await writeFrame(rConnection, {
+          method: "view/open",
+          params: randomWithOpenLabels,
+        });
+        await button(
+          page,
+          "Unsupported view",
+          "#tables article",
+          0,
+          "Random with open labels",
+        );
+
+        const sequentialWithRefresh = snapshotDescriptor(columns.slice(0, 3));
+        sequentialWithRefresh.view = "sequential-with-refresh";
+        sequentialWithRefresh.title = "Sequential with refresh";
+        sequentialWithRefresh.access = "sequential";
+        sequentialWithRefresh.encoding = "arrow-ipc";
+        sequentialWithRefresh.nrow = null;
+        sequentialWithRefresh.max_page_rows = 100;
+        sequentialWithRefresh.capabilities = {
+          seek: false,
+          sort: false,
+          filter: false,
+          known_total: false,
+          next: true,
+          children: false,
+          refresh: true,
+          track: false,
+        };
+        await writeFrame(rConnection, {
+          method: "view/open",
+          params: sequentialWithRefresh,
+        });
+        await button(
+          page,
+          "Unsupported view",
+          "#tables article",
+          0,
+          "Sequential with refresh",
+        );
+
         const unsupported = snapshotDescriptor(columns.slice(0, 3));
         unsupported.view = "unsupported-list";
         unsupported.title = "Unsupported list";
@@ -2088,7 +2195,23 @@ async function connectR(socketPath: string): Promise<Deno.Conn> {
 async function writeFrame(
   connection: Deno.Conn,
   value: Record<string, unknown>,
+  options: { applyGridDefaults?: boolean } = {},
 ): Promise<void> {
+  if (
+    options.applyGridDefaults !== false && value.method === "view/open" &&
+    value.params !== null && typeof value.params === "object" &&
+    !Array.isArray(value.params)
+  ) {
+    const params = value.params as Record<string, unknown>;
+    if (
+      params.kind === "grid" &&
+      (params.access === "snapshot" || params.access === "random") &&
+      params.encoding === "jdv-json"
+    ) {
+      params.collation ??= "C";
+      params.row_labels ??= null;
+    }
+  }
   const bytes = new TextEncoder().encode(`${JSON.stringify(value)}\n`);
   let offset = 0;
   while (offset < bytes.length) {
@@ -2374,6 +2497,7 @@ function snapshotDescriptor(
     kind: "grid",
     access: "snapshot",
     encoding: "jdv-json",
+    collation: "C",
     title: "Snapshot smoke",
     nrow: values.length,
     ncol: columns.length,
