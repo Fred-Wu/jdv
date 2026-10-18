@@ -54,11 +54,12 @@ export function trimSequentialCaches(records, maxBytes) {
 }
 
 export function sequentialPageRows(descriptor, preferredRows = 200) {
-  const cap = descriptor.max_page_rows === undefined
-    ? 200
-    : descriptor.max_page_rows;
-  if (!Number.isSafeInteger(cap) || cap < 1 || cap > 2000) {
+  const cap = descriptor?.max_page_rows;
+  if (!Number.isSafeInteger(cap) || cap < 1) {
     throw new Error("Invalid sequential max_page_rows descriptor.");
+  }
+  if (!Number.isSafeInteger(preferredRows) || preferredRows < 1) {
+    throw new Error("Invalid preferred sequential page row count.");
   }
   return Math.min(preferredRows, cap);
 }

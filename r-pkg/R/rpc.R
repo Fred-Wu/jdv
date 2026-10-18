@@ -715,8 +715,6 @@ jdv_json_object <- function(x = list()) {
     entry$stream <- content$stream
     entry$stream_busy <- FALSE
     entry$stream_failure <- NULL
-    entry$arrow_schema <- content$arrow_schema
-    entry$mapping <- content$mapping
     entry$page_rows <- content$page_rows
   }
   entry$inflight <- 0L
@@ -1720,10 +1718,6 @@ jdv_register <- function(
         ncol = entry$ncol,
         columns = .jdv_schema(entry$schema)
       )
-      if (identical(entry$mode, "sequential")) {
-        result$schema <- entry$arrow_schema
-        result$mapping <- .jdv_json_values(entry$mapping)
-      }
       return(result)
     }
     return(.jdv_request_table_rows(entry, params))

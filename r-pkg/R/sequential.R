@@ -11,6 +11,23 @@
 }
 
 .jdv_sequential_open <- function(token) .jdv_stream_open(token)
+.jdv_sequential_page_row_limit <- function() {
+  name <- "jdv.max_page_rows"
+  value <- getOption(name, 2000)
+  if (
+    !is.numeric(value) ||
+      length(value) != 1L ||
+      is.object(value) ||
+      is.na(value) ||
+      !is.finite(value) ||
+      value != floor(value) ||
+      value < 1 ||
+      value >= 2^53
+  ) {
+    query_error("invalid_request", paste0("Invalid option: ", name, "."))
+  }
+  as.double(value)
+}
 .jdv_sequential_page <- function(token, max_rows, max_bytes) {
   .jdv_stream_page(token, max_rows, max_bytes)
 }
@@ -78,9 +95,7 @@
       nrow = NULL,
       max_page_rows = content$page_rows,
       ncol = length(content$schema),
-      columns = content$schema,
-      schema = content$arrow_schema,
-      mapping = .jdv_json_values(content$mapping)
+      columns = content$schema
     )
   )
 }
@@ -123,9 +138,7 @@
     schema = columns,
     collation = NULL,
     stream = token,
-    arrow_schema = info$schema,
-    mapping = info$mapping,
-    page_rows = min(2000, .jdv_option_limit("jdv.max_page_rows", 2000))
+    page_rows = .jdv_sequential_page_row_limit()
   )
   title_key <- if (is.null(title)) NULL else .jdv_title_key(title)
   title_record <- function() {

@@ -163,10 +163,7 @@ Deno.test({
         class: ["list"],
         capabilities: {
           seek: true,
-          sort: false,
-          filter: false,
           known_total: true,
-          next: false,
           children: true,
         },
       },
@@ -1451,6 +1448,29 @@ Deno.test({
               "249 of 249 rows · 3 columns · ",
             ) === true;
         });
+        await writeFrame(rConnection, {
+          method: "view/open",
+          params: {
+            view: "minimal-sequential",
+            generation: 1,
+            kind: "grid",
+            access: "sequential",
+            encoding: "arrow-ipc",
+            title: "Minimal sequential",
+            nrow: null,
+            ncol: 0,
+            max_page_rows: 5000,
+            columns: [],
+            capabilities: { next: true },
+          },
+        });
+        await button(
+          page,
+          "Open view",
+          "#tables article",
+          0,
+          "Minimal sequential",
+        );
         await selectOption(page, "#filter-column", "2");
         assertEquals(
           await texts(page, "#filter-op option"),
@@ -1670,11 +1690,7 @@ Deno.test({
         limitedView.view = "limited-grid";
         limitedView.title = "Limited capabilities";
         limitedView.nrow = null;
-        limitedView.capabilities = {
-          ...gridCapabilities(),
-          sort: false,
-          filter: false,
-        };
+        delete limitedView.capabilities;
         await writeFrame(rConnection, {
           method: "view/open",
           params: limitedView,
@@ -1702,6 +1718,22 @@ Deno.test({
               elements.every((element) => element.hidden),
           ),
           true,
+        );
+
+        const malformedCapabilities = snapshotDescriptor(columns.slice(0, 3));
+        malformedCapabilities.view = "malformed-capabilities";
+        malformedCapabilities.title = "Malformed capabilities";
+        malformedCapabilities.capabilities = { sort: null };
+        await writeFrame(rConnection, {
+          method: "view/open",
+          params: malformedCapabilities,
+        });
+        await button(
+          page,
+          "Unsupported view",
+          "#tables article",
+          0,
+          "Malformed capabilities",
         );
 
         const unsupported = snapshotDescriptor(columns.slice(0, 3));

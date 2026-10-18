@@ -17,15 +17,6 @@ sequential_fixture <- function(.env = parent.frame()) {
     },
     .jdv_sequential_open = function(token) {
       list(
-        schema = list(
-          format = "+s",
-          name = "",
-          flags = 0,
-          metadata = "",
-          metadata_encoding = "hex",
-          children = list(),
-          dictionary = NULL
-        ),
         columns = list(
           list(
             index = 0,
@@ -41,8 +32,7 @@ sequential_fixture <- function(.env = parent.frame()) {
             unsupported = "union",
             ipc_index = NULL
           )
-        ),
-        mapping = c(0L, NA_integer_)
+        )
       )
     },
     .jdv_sequential_page = function(token, max_rows, max_bytes) {
@@ -122,7 +112,22 @@ test_that(
     expect_false(descriptor$capabilities$refresh)
     expect_null(descriptor$nrow)
     expect_identical(descriptor$ncol, 2)
-    expect_identical(unlist(descriptor$mapping), 0)
+    expect_null(descriptor$mapping)
+    expect_null(descriptor$schema)
+    expect_identical(
+      vapply(
+        descriptor$columns,
+        function(column) {
+          if (is.null(column$ipc_index)) {
+            NA_integer_
+          } else {
+            as.integer(column$ipc_index)
+          }
+        },
+        integer(1L)
+      ),
+      c(0L, NA_integer_)
+    )
     expect_identical(descriptor$columns[[2L]]$unsupported, "union")
     entry <- get(view$id, .jdv_state$entries)
     expect_null(entry$source)
@@ -194,7 +199,9 @@ test_that("sequential validation and recoverable errors preserve the stream", {
     view,
     method = "view/schema"
   ))$result
-  expect_identical(schema$schema$format, "+s")
+  expect_null(schema$schema)
+  expect_null(schema$mapping)
+  expect_identical(schema$columns[[1L]]$ipc_index, 0)
 })
 
 test_that("terminal stream errors release once and retain the failure reason", {
@@ -412,25 +419,30 @@ test_that(
   {
     state <- sequential_fixture()
     on.exit(.jdv_close_internal(notify = FALSE), add = TRUE)
-    previous <- options(jdv.max_page_rows = 1L)
+    previous <- options(jdv.max_page_rows = 2501)
     on.exit(options(previous), add = TRUE)
     view <- .jdv_sequential_register(NULL)
     descriptor <- .jdv_json_parse(view$open)$params
-    expect_identical(descriptor$max_page_rows, 1)
+    expect_identical(descriptor$max_page_rows, 2501)
     options(jdv.max_page_rows = 2000L)
-    expect_identical(get(view$id, .jdv_state$entries)$page_rows, 1)
+    expect_identical(get(view$id, .jdv_state$entries)$page_rows, 2501)
     expect_identical(
-      sequential_error(sequential_request(view, list(max_rows = 2))),
+      sequential_error(sequential_request(view, list(max_rows = 2502))),
       "invalid_request"
     )
-    expect_identical(state$calls, 0L)
+    accepted <- sequential_request(view, list(max_rows = 2001))
+    expect_s3_class(accepted, "jdv_binary_packet")
+    expect_identical(.jdv_json_parse(accepted$header)$result$rows_fetched, 5)
+    expect_identical(state$calls, 1L)
     page <- sequential_request(view)
     expect_s3_class(page, "jdv_binary_packet")
-    expect_identical(.jdv_json_parse(page$header)$result$rows_fetched, 1)
-    expect_identical(.jdv_json_parse(view$open)$params$max_page_rows, 1)
+    expect_identical(.jdv_json_parse(page$header)$result$rows_fetched, 0)
+    expect_identical(.jdv_json_parse(view$open)$params$max_page_rows, 2501)
     options(jdv.max_page_rows = 10000L)
     wide <- .jdv_sequential_register(NULL)
-    expect_identical(.jdv_json_parse(wide$open)$params$max_page_rows, 2000)
+    expect_identical(.jdv_json_parse(wide$open)$params$max_page_rows, 10000)
+    options(jdv.max_page_rows = 2^53)
+    expect_error(.jdv_sequential_page_row_limit(), "Invalid option")
   }
 )
 
@@ -439,4 +451,35 @@ test_that("a sequential view announces the register reason", {
   on.exit(.jdv_close_internal(notify = FALSE), add = TRUE)
   registered <- .jdv_sequential_register(NULL)
   expect_identical(.jdv_json_parse(registered$open)$params$reason, "register")
+})
+
+test_that("sequential RPC can return pages larger than 2000 rows", {
+  skip_if_not_installed("nanoarrow")
+  previous <- options(jdv.max_page_rows = 2101)
+  on.exit(options(previous), add = TRUE)
+  stream <- nanoarrow::as_nanoarrow_array_stream(data.frame(
+    value = seq_len(2101L)
+  ))
+  view <- register_view(stream)
+  on.exit(.jdv_close_internal(view$id), add = TRUE)
+  descriptor <- .jdv_json_parse(view$open)$params
+  expect_identical(descriptor$max_page_rows, 2101)
+  response <- .jdv_rpc_internal(
+    .jdv_json_encode(list(
+      id = "large-page",
+      method = "stream/next",
+      params = list(
+        view = view$id,
+        generation = view$generation,
+        max_rows = 2001
+      )
+    )),
+    allow_binary = TRUE
+  )
+  expect_s3_class(response, "jdv_binary_packet")
+  expect_identical(.jdv_json_parse(response$header)$result$rows_fetched, 2001)
+  expect_identical(
+    sequential_error(sequential_request(view, list(max_rows = 2102))),
+    "invalid_request"
+  )
 })

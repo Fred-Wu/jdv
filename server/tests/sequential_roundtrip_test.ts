@@ -116,19 +116,9 @@ async function roundtrip(polarsOnly = false) {
         "v1",
       );
       assertEquals(table.schema.metadata.get("origin"), "sequential-roundtrip");
-      assertEquals(descriptor.mapping, [0, 1, 2, 3, 4]);
       assertEquals(
-        descriptor.schema.children.map((field: { name: string }) => field.name),
+        descriptor.columns.map((column: { name: string }) => column.name),
         ["code", "large", "record", "entries", "payload"],
-      );
-      assertEquals(descriptor.schema.children[1].format, "+L");
-      assertEquals(descriptor.schema.children[2].format, "+s");
-      assertEquals(descriptor.schema.children[3].format, "+m");
-      assertEquals(descriptor.schema.children[4].metadata_encoding, "hex");
-      assert(
-        descriptor.schema.children[4].metadata.includes(
-          "6f72672e6578616d706c652e6a64762e74657374",
-        ),
       );
       const decoded = decodeArrowPage(bytes, descriptor, page, Arrow).rows;
       assertEquals(decoded[0].c0, "red");
@@ -136,12 +126,9 @@ async function roundtrip(polarsOnly = false) {
       assertEquals(decoded[0].c2, "<struct: 2 fields>");
       assertEquals(decoded[0].c3, "<map>");
     } else {
-      const polarsDescriptor =
-        JSON.parse(await Deno.readTextFile(`${work}/polars.json`)).params;
       const polars = Arrow.tableFromIPC(
         await Deno.readFile(`${work}/polars.arrows`),
       );
-      assertEquals(polarsDescriptor.schema.children[0].format, "vu");
       assertEquals(polars.schema.fields[0].type.typeId, 20);
       assertEquals([
         polars.getChild("label")!.get(0),

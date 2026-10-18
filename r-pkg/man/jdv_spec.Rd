@@ -218,25 +218,28 @@ The example omits schema entries for brevity. \code{view/open} has no request id
 and is not passed to \code{\link[=jdv_rpc]{jdv_rpc()}}; \code{\link[=jdv_register]{jdv_register()}} queues it for the host to
 deliver (see the Notification delivery section). \code{kind} is \code{grid}; \code{access}
 is \code{snapshot} or \code{random} for Snapshot or Paged mode, respectively; and
-\code{encoding} is \code{jdv-json}. Every descriptor includes all eight \code{capabilities}
-fields shown for a grid: \code{seek}, \code{sort}, \code{filter}, \code{known_total}, and
-\code{refresh} are \code{true}; \code{next} is \code{false}; \code{track} is \code{true} only for a view
-that has a \code{tracking} field whose state is not \code{"lost"} (see Binding
-tracking). Grid \code{children} is \code{true} if and only if at least one column has
-\code{drillable: true}. \code{refresh} tells the host that \code{view/refresh} is accepted.
-Tree descriptors use \code{kind: "tree"}, \code{access: "random"},
-\code{encoding: "jdv-json"}, and capabilities \code{seek: true}, \code{sort: false},
-\code{filter: false}, \code{known_total: true}, \code{next: false}, \code{children: true},
-\code{refresh: true}, and \code{track} as for a grid. Tree descriptors omit grid-only
-fields (\code{nrow}, \code{ncol}, \code{row_labels}, \code{columns}, and \code{data}). A tree
-descriptor includes an empty \code{path} at its root. A child descriptor may
-include \code{parent}, the parent view id. \code{title} is optional. \code{reason} says why
-the descriptor was sent (see below). A tree descriptor also has \code{class}, a
-string array that follows \code{\link[base:class]{base::class()}} semantics for the root object, and
-\code{type}, the string \code{\link[base:typeof]{base::typeof()}} returns for it (for example \code{"list"},
-\code{"double"}, \code{"environment"}, or \code{"S4"}). A grid descriptor omits both.\tabular{lll}{
+\code{encoding} is \code{jdv-json}. The \code{capabilities} object and any known capability
+fields may be omitted; an omitted object or field means \code{false}. R continues
+to send all eight known fields. Its grid descriptors set \code{seek}, \code{sort},
+\code{filter}, \code{known_total}, and \code{refresh} to \code{true}; \code{next} is \code{false}; \code{track}
+is \code{true} only for a view that has a \code{tracking} field whose state is not
+\code{"lost"} (see Binding tracking). Grid \code{children} is \code{true} if and only if at
+least one column has \code{drillable: true}. \code{refresh} tells the host that
+\code{view/refresh} is accepted. Tree descriptors use \code{kind: "tree"},
+\code{access: "random"}, \code{encoding: "jdv-json"}, and capabilities \code{seek: true},
+\code{sort: false}, \code{filter: false}, \code{known_total: true}, \code{next: false},
+\code{children: true}, \code{refresh: true}, and \code{track} as for a grid. Tree
+descriptors omit grid-only fields (\code{nrow}, \code{ncol}, \code{row_labels}, \code{columns},
+and \code{data}). A tree descriptor includes an empty \code{path} at its root. A child
+descriptor may include \code{parent}, the parent view id. \code{title} is optional.
+\code{reason} says why the descriptor was sent (see below). A tree descriptor also
+has \code{class}, a string array that follows \code{\link[base:class]{base::class()}} semantics for the
+root object, and \code{type}, the string \code{\link[base:typeof]{base::typeof()}} returns for it (for
+example \code{"list"}, \code{"double"}, \code{"environment"}, or \code{"S4"}). A grid descriptor
+omits both.\tabular{lll}{
    Descriptor field \tab Grid \tab Tree \cr
-   \code{view}, \code{generation}, \code{kind}, \code{access}, \code{encoding}, \code{capabilities} \tab Required \tab Required \cr
+   \code{view}, \code{generation}, \code{kind}, \code{access}, \code{encoding} \tab Required \tab Required \cr
+   \code{capabilities} \tab Optional; missing flags are false \tab Optional; missing flags are false \cr
    \code{title} \tab Optional \tab Optional \cr
    \code{reason} \tab Always sent by R; see below \tab Always sent by R; see below \cr
    \code{collation}, \code{nrow}, \code{ncol}, \code{row_labels}, \code{columns} \tab Required \tab Omitted \cr
@@ -472,35 +475,31 @@ once. A release callback may execute R code; registry identity and generation
 are rechecked before publishing its result. Releases requested inside an
 active producer callback are deferred until that callback has finished.
 
-\code{schema} contains the original logical Arrow schema recursively: \code{format},
-\code{name}, \code{flags}, \code{metadata}, \code{metadata_encoding}, \code{children}, and
-\code{dictionary}. Metadata is represented as hexadecimal bytes with
-\code{metadata_encoding: "hex"}. Each original top-level column has \code{index},
-\code{name}, \code{type}, \code{unsupported}, and \code{ipc_index}; the added viewer fields
-\code{position}, \code{sortable}, \code{filterable}, and \code{drillable} preserve the ordinary
-grid shape. Both index fields are zero-based. \code{unsupported} is null for
-supported columns and otherwise explains why that column was omitted from
-IPC. Its \code{ipc_index} is null. The parallel \code{mapping} array maps original
-positions to IPC positions or null. Names may repeat and must never be used
-to recover the mapping. Even a page with no supported columns reports its row
-count in metadata.
+Each Arrow IPC body carries its logical schema. The descriptor's \code{columns}
+array remains in original source order and retains each column's \code{index},
+\code{name}, \code{type}, \code{unsupported}, \code{ipc_index}, \code{position}, \code{sortable},
+\code{filterable}, and \code{drillable} fields. \code{index}, \code{position}, and non-null
+\code{ipc_index} values are zero-based. \code{unsupported} is null for supported
+columns and otherwise explains why a column was omitted from IPC; its
+\code{ipc_index} is null. Names may repeat and must not be used to identify IPC
+vectors; use \code{ipc_index}. Even a page with no supported columns reports its
+row count in page metadata.
 
 \code{stream/next} accepts only \code{view}, \code{generation}, \code{max_rows}, and \code{max_bytes}.
-\code{max_page_rows} is an optional descriptor field containing the positive safe
-integer row cap captured at registration, clamped to 2,000. Changing the R
-option later does not change an existing view's cap. \code{max_rows} defaults to
+\code{max_page_rows} is a required descriptor field containing the positive
+safe-integer row cap captured at registration. Changing the R option later
+does not change an existing view's cap. \code{max_rows} defaults to
 \verb{min(200, captured cap)} and must be a positive safe integer no larger than
 that cap. The viewer requests \code{min(200, descriptor.max_page_rows)} rows and
-validates returned row counts against that request. For older descriptors
-without this field it requests 200 rows; the host uses the legacy 2,000-row
-ceiling. When the field is valid, the host rejects requests above it before
-granting a lease. \code{max_bytes} uses the shared binary response budget above.
-Zero is a valid budget but returns \code{limit_exceeded} before fetching because
-it cannot hold an IPC stream. Offset, sorting, filtering, and count requests
-are rejected. The public synchronous \code{jdv_rpc(JSON)} entry rejects
-\code{stream/next} before consuming the producer; only the transport's private
-binary-capable entry can execute it. Random \code{grid/rows} and object navigation
-are unavailable for sequential views.
+validates returned row counts against that request. The host rejects an
+invalid or missing \code{max_page_rows}, and rejects \code{max_rows} above the captured
+cap before granting a lease. \code{max_bytes} uses the shared binary response
+budget above. Zero is a valid budget but returns \code{limit_exceeded} before
+fetching because it cannot hold an IPC stream. Offset, sorting, filtering,
+and count requests are rejected. The public synchronous \code{jdv_rpc(JSON)} entry
+rejects \code{stream/next} before consuming the producer; only the transport's
+private binary-capable entry can execute it. Random \code{grid/rows} and object
+navigation are unavailable for sequential views.
 
 A successful binary response carries \code{view}, \code{generation}, \code{first_row},
 \code{rows_fetched}, \code{rows_seen}, \code{done}, and the reserved \code{transfer} object.
@@ -601,7 +600,7 @@ decisions, so a reply arriving after cancellation, timeout, or owner
 detachment can still be read later. Old-generation, over-budget, malformed,
 or regressing replies are not cached. Page metadata must have non-negative
 safe-integer row counts, \code{rows_seen = first_row + rows_fetched}, a Boolean
-\code{done}, and no more rows than requested. After EOF, another legacy next may
+\code{done}, and no more rows than requested. After EOF, a later next request may
 return a zero-row EOF at the same cursor; it may not introduce data or
 reverse EOF.
 
@@ -615,7 +614,8 @@ reverse EOF.
 \}
 }\if{html}{\out{</div>}}
 
-A false or absent capability selects the legacy forward-only behavior. The
+A false or absent capability means the host cache is unavailable; sequential
+viewing continues in forward-only mode without cache-cursor validation. The
 reference host defaults to 256 MiB across sessions and views, and 64 MiB per
 view, clamped to the total limit. Startup options \code{--stream-cache-bytes} and
 \code{--stream-cache-view-bytes} accept non-negative safe-integer byte counts;
@@ -680,17 +680,18 @@ cached \code{stream/next} response gets the same object, even if that page was
 immediately evicted. Cache reads use an empty warnings array rather than
 replaying old R warnings.
 
-New browsers send the latest observed \code{after_page} on \code{stream/next}. Here -1
-is valid and means the initial tail. When caching is enabled, the host
-compares a supplied safe-integer cursor against \code{last_page} before granting a
-lease or sending an R frame. A mismatch returns \code{type: "error"},
-\code{code: "cache_changed"}, and \verb{details: \{last_page, rows_seen, done\}}; the
+When caching is enabled, \code{stream/next} requires \code{after_page}, a safe integer
+greater than or equal to -1. The host compares it with \code{last_page} before
+granting a lease or sending an R frame. A missing value returns
+\code{invalid_request}; a mismatch returns \code{type: "error"},
+\code{code: "cache_changed"}, and \verb{details: \{last_page, rows_seen, done\}}. The
 browser refreshes info/get before advancing. The host removes \code{after_page}
-before forwarding to R, so the R protocol is unchanged. A legacy browser that
-omits the field retains its explicit-next behavior at the current R cursor.
-Reading an older cached page does not rewind the append cursor. Cache reads
-do not claim a lease, and append requests retain the existing owner and
-single-pending-request rules.
+before forwarding to R, so it is a host-only cursor. When caching is
+disabled, sequential viewing remains forward-only and the host does not
+compare a cache cursor. Omitting \code{after_page} from \code{stream/cache/info} still
+starts the catalog at its first retained page. Reading an older cached page
+does not rewind the append cursor. Cache reads do not claim a lease, and
+append requests retain the existing owner and single-pending-request rules.
 
 View close, ancestor cascade, generation replacement, and R session
 disconnect invalidate the corresponding bytes and metadata; late replies

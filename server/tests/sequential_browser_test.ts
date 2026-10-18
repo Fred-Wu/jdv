@@ -1100,7 +1100,7 @@ Deno.test({
 });
 Deno.test({
   name:
-    "sequential view keeps legacy forward-only behavior when host cache is disabled",
+    "sequential view keeps forward-only behavior when host cache is disabled",
   ignore: !rLibrary || !capabilities.arrow ||
     !capabilities.nanoarrow,
   sanitizeOps: false,

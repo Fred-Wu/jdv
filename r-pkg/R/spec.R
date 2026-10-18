@@ -215,27 +215,30 @@
 #' and is not passed to [jdv_rpc()]; [jdv_register()] queues it for the host to
 #' deliver (see the Notification delivery section). `kind` is `grid`; `access`
 #' is `snapshot` or `random` for Snapshot or Paged mode, respectively; and
-#' `encoding` is `jdv-json`. Every descriptor includes all eight `capabilities`
-#' fields shown for a grid: `seek`, `sort`, `filter`, `known_total`, and
-#' `refresh` are `true`; `next` is `false`; `track` is `true` only for a view
-#' that has a `tracking` field whose state is not `"lost"` (see Binding
-#' tracking). Grid `children` is `true` if and only if at least one column has
-#' `drillable: true`. `refresh` tells the host that `view/refresh` is accepted.
-#' Tree descriptors use `kind: "tree"`, `access: "random"`,
-#' `encoding: "jdv-json"`, and capabilities `seek: true`, `sort: false`,
-#' `filter: false`, `known_total: true`, `next: false`, `children: true`,
-#' `refresh: true`, and `track` as for a grid. Tree descriptors omit grid-only
-#' fields (`nrow`, `ncol`, `row_labels`, `columns`, and `data`). A tree
-#' descriptor includes an empty `path` at its root. A child descriptor may
-#' include `parent`, the parent view id. `title` is optional. `reason` says why
-#' the descriptor was sent (see below). A tree descriptor also has `class`, a
-#' string array that follows [base::class()] semantics for the root object, and
-#' `type`, the string [base::typeof()] returns for it (for example `"list"`,
-#' `"double"`, `"environment"`, or `"S4"`). A grid descriptor omits both.
+#' `encoding` is `jdv-json`. The `capabilities` object and any known capability
+#' fields may be omitted; an omitted object or field means `false`. R continues
+#' to send all eight known fields. Its grid descriptors set `seek`, `sort`,
+#' `filter`, `known_total`, and `refresh` to `true`; `next` is `false`; `track`
+#' is `true` only for a view that has a `tracking` field whose state is not
+#' `"lost"` (see Binding tracking). Grid `children` is `true` if and only if at
+#' least one column has `drillable: true`. `refresh` tells the host that
+#' `view/refresh` is accepted. Tree descriptors use `kind: "tree"`,
+#' `access: "random"`, `encoding: "jdv-json"`, and capabilities `seek: true`,
+#' `sort: false`, `filter: false`, `known_total: true`, `next: false`,
+#' `children: true`, `refresh: true`, and `track` as for a grid. Tree
+#' descriptors omit grid-only fields (`nrow`, `ncol`, `row_labels`, `columns`,
+#' and `data`). A tree descriptor includes an empty `path` at its root. A child
+#' descriptor may include `parent`, the parent view id. `title` is optional.
+#' `reason` says why the descriptor was sent (see below). A tree descriptor also
+#' has `class`, a string array that follows [base::class()] semantics for the
+#' root object, and `type`, the string [base::typeof()] returns for it (for
+#' example `"list"`, `"double"`, `"environment"`, or `"S4"`). A grid descriptor
+#' omits both.
 #'
 #' | Descriptor field                                                   | Grid                                     | Tree                         |
 #' | ------------------------------------------------------------------ | ---------------------------------------- | ---------------------------- |
-#' | `view`, `generation`, `kind`, `access`, `encoding`, `capabilities` | Required                                 | Required                     |
+#' | `view`, `generation`, `kind`, `access`, `encoding`                | Required                                 | Required                     |
+#' | `capabilities`                                                     | Optional; missing flags are false        | Optional; missing flags are false |
 #' | `title`                                                            | Optional                                 | Optional                     |
 #' | `reason`                                                           | Always sent by R; see below              | Always sent by R; see below  |
 #' | `collation`, `nrow`, `ncol`, `row_labels`, `columns`               | Required                                 | Omitted                      |
@@ -474,35 +477,31 @@
 #' are rechecked before publishing its result. Releases requested inside an
 #' active producer callback are deferred until that callback has finished.
 #'
-#' `schema` contains the original logical Arrow schema recursively: `format`,
-#' `name`, `flags`, `metadata`, `metadata_encoding`, `children`, and
-#' `dictionary`. Metadata is represented as hexadecimal bytes with
-#' `metadata_encoding: "hex"`. Each original top-level column has `index`,
-#' `name`, `type`, `unsupported`, and `ipc_index`; the added viewer fields
-#' `position`, `sortable`, `filterable`, and `drillable` preserve the ordinary
-#' grid shape. Both index fields are zero-based. `unsupported` is null for
-#' supported columns and otherwise explains why that column was omitted from
-#' IPC. Its `ipc_index` is null. The parallel `mapping` array maps original
-#' positions to IPC positions or null. Names may repeat and must never be used
-#' to recover the mapping. Even a page with no supported columns reports its row
-#' count in metadata.
+#' Each Arrow IPC body carries its logical schema. The descriptor's `columns`
+#' array remains in original source order and retains each column's `index`,
+#' `name`, `type`, `unsupported`, `ipc_index`, `position`, `sortable`,
+#' `filterable`, and `drillable` fields. `index`, `position`, and non-null
+#' `ipc_index` values are zero-based. `unsupported` is null for supported
+#' columns and otherwise explains why a column was omitted from IPC; its
+#' `ipc_index` is null. Names may repeat and must not be used to identify IPC
+#' vectors; use `ipc_index`. Even a page with no supported columns reports its
+#' row count in page metadata.
 #'
 #' `stream/next` accepts only `view`, `generation`, `max_rows`, and `max_bytes`.
-#' `max_page_rows` is an optional descriptor field containing the positive safe
-#' integer row cap captured at registration, clamped to 2,000. Changing the R
-#' option later does not change an existing view's cap. `max_rows` defaults to
+#' `max_page_rows` is a required descriptor field containing the positive
+#' safe-integer row cap captured at registration. Changing the R option later
+#' does not change an existing view's cap. `max_rows` defaults to
 #' `min(200, captured cap)` and must be a positive safe integer no larger than
 #' that cap. The viewer requests `min(200, descriptor.max_page_rows)` rows and
-#' validates returned row counts against that request. For older descriptors
-#' without this field it requests 200 rows; the host uses the legacy 2,000-row
-#' ceiling. When the field is valid, the host rejects requests above it before
-#' granting a lease. `max_bytes` uses the shared binary response budget above.
-#' Zero is a valid budget but returns `limit_exceeded` before fetching because
-#' it cannot hold an IPC stream. Offset, sorting, filtering, and count requests
-#' are rejected. The public synchronous `jdv_rpc(JSON)` entry rejects
-#' `stream/next` before consuming the producer; only the transport's private
-#' binary-capable entry can execute it. Random `grid/rows` and object navigation
-#' are unavailable for sequential views.
+#' validates returned row counts against that request. The host rejects an
+#' invalid or missing `max_page_rows`, and rejects `max_rows` above the captured
+#' cap before granting a lease. `max_bytes` uses the shared binary response
+#' budget above. Zero is a valid budget but returns `limit_exceeded` before
+#' fetching because it cannot hold an IPC stream. Offset, sorting, filtering,
+#' and count requests are rejected. The public synchronous `jdv_rpc(JSON)` entry
+#' rejects `stream/next` before consuming the producer; only the transport's
+#' private binary-capable entry can execute it. Random `grid/rows` and object
+#' navigation are unavailable for sequential views.
 #'
 #' A successful binary response carries `view`, `generation`, `first_row`,
 #' `rows_fetched`, `rows_seen`, `done`, and the reserved `transfer` object.
@@ -603,7 +602,7 @@
 #' detachment can still be read later. Old-generation, over-budget, malformed,
 #' or regressing replies are not cached. Page metadata must have non-negative
 #' safe-integer row counts, `rows_seen = first_row + rows_fetched`, a Boolean
-#' `done`, and no more rows than requested. After EOF, another legacy next may
+#' `done`, and no more rows than requested. After EOF, a later next request may
 #' return a zero-row EOF at the same cursor; it may not introduce data or
 #' reverse EOF.
 #'
@@ -618,7 +617,8 @@
 #' }
 #' ```
 #'
-#' A false or absent capability selects the legacy forward-only behavior. The
+#' A false or absent capability means the host cache is unavailable; sequential
+#' viewing continues in forward-only mode without cache-cursor validation. The
 #' reference host defaults to 256 MiB across sessions and views, and 64 MiB per
 #' view, clamped to the total limit. Startup options `--stream-cache-bytes` and
 #' `--stream-cache-view-bytes` accept non-negative safe-integer byte counts;
@@ -683,17 +683,18 @@
 #' immediately evicted. Cache reads use an empty warnings array rather than
 #' replaying old R warnings.
 #'
-#' New browsers send the latest observed `after_page` on `stream/next`. Here -1
-#' is valid and means the initial tail. When caching is enabled, the host
-#' compares a supplied safe-integer cursor against `last_page` before granting a
-#' lease or sending an R frame. A mismatch returns `type: "error"`,
-#' `code: "cache_changed"`, and `details: {last_page, rows_seen, done}`; the
+#' When caching is enabled, `stream/next` requires `after_page`, a safe integer
+#' greater than or equal to -1. The host compares it with `last_page` before
+#' granting a lease or sending an R frame. A missing value returns
+#' `invalid_request`; a mismatch returns `type: "error"`,
+#' `code: "cache_changed"`, and `details: {last_page, rows_seen, done}`. The
 #' browser refreshes info/get before advancing. The host removes `after_page`
-#' before forwarding to R, so the R protocol is unchanged. A legacy browser that
-#' omits the field retains its explicit-next behavior at the current R cursor.
-#' Reading an older cached page does not rewind the append cursor. Cache reads
-#' do not claim a lease, and append requests retain the existing owner and
-#' single-pending-request rules.
+#' before forwarding to R, so it is a host-only cursor. When caching is
+#' disabled, sequential viewing remains forward-only and the host does not
+#' compare a cache cursor. Omitting `after_page` from `stream/cache/info` still
+#' starts the catalog at its first retained page. Reading an older cached page
+#' does not rewind the append cursor. Cache reads do not claim a lease, and
+#' append requests retain the existing owner and single-pending-request rules.
 #'
 #' View close, ancestor cascade, generation replacement, and R session
 #' disconnect invalidate the corresponding bytes and metadata; late replies

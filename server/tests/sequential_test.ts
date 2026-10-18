@@ -308,11 +308,19 @@ Deno.test("dictionary decimals and timestamps recurse through physical values wi
   }
 });
 
-Deno.test("sequential page requests honor captured caps and legacy descriptors", () => {
+Deno.test("sequential page requests honor required captured caps", () => {
   assertEquals(sequentialPageRows({ max_page_rows: 1 }), 1);
-  assertEquals(sequentialPageRows({ max_page_rows: 2000 }), 200);
-  assertEquals(sequentialPageRows({ max_page_rows: 2000 }, 2000), 2000);
-  assertEquals(sequentialPageRows({}), 200);
+  assertEquals(sequentialPageRows({ max_page_rows: 3000 }), 200);
+  assertEquals(sequentialPageRows({ max_page_rows: 3000 }, 3000), 3000);
+  for (const descriptor of [{}, { max_page_rows: 0 }]) {
+    let threw = false;
+    try {
+      sequentialPageRows(descriptor);
+    } catch {
+      threw = true;
+    }
+    assert(threw, "An invalid sequential cap must be rejected.");
+  }
 });
 
 Deno.test("decimal display bounds expansion before allocating fixed-point text", () => {

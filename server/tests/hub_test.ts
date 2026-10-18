@@ -1029,25 +1029,27 @@ Deno.test("R request ids are remapped and table close updates the Snapshot cache
 
   hub.handleBrowser(browser, {
     type: "request",
-    id: "legacy-method",
+    id: "obsolete-method",
     session: "r-1-1",
     method: "table/schema",
     params: { table: "table-1", generation: 1 },
   });
   assertEquals(
-    (await browser.nextMessage((message) => message.id === "legacy-method"))
+    (await browser.nextMessage((message) => message.id === "obsolete-method"))
       .code,
     "method_not_found",
   );
   hub.handleBrowser(browser, {
     type: "request",
-    id: "legacy-id-key",
+    id: "obsolete-table-key",
     session: "r-1-1",
     method: "view/schema",
     params: { table: "table-1", generation: 1 },
   });
   assertEquals(
-    (await browser.nextMessage((message) => message.id === "legacy-id-key"))
+    (await browser.nextMessage((message) =>
+      message.id === "obsolete-table-key"
+    ))
       .code,
     "invalid_request",
   );
@@ -2758,7 +2760,7 @@ Deno.test("grid cell opens validate original row selectors and tree suffixes", a
 });
 
 async function sequentialHubFixture(
-  maxPageRows?: number,
+  maxPageRows: number | null = 200,
   options: ConstructorParameters<typeof Hub>[0] = {},
 ) {
   const hub = new Hub(options);
@@ -2777,14 +2779,16 @@ async function sequentialHubFixture(
   const other = new MemoryBrowser();
   hub.attach(owner);
   hub.attach(other);
-  const open = (generation = 1, parent?: string) =>
+  let lastPage = -1;
+  const open = (generation = 1, parent?: string) => {
+    if (generation !== 1) lastPage = -1;
     connection.inject(notification("view/open", {
       view: "stream-1",
       generation,
       kind: "grid",
       access: "sequential",
       encoding: "arrow-ipc",
-      ...(maxPageRows === undefined ? {} : { max_page_rows: maxPageRows }),
+      ...(maxPageRows === null ? {} : { max_page_rows: maxPageRows }),
       capabilities: {
         seek: false,
         sort: false,
@@ -2796,10 +2800,9 @@ async function sequentialHubFixture(
       nrow: null,
       ncol: 0,
       columns: [],
-      schema: { format: "+s", children: [] },
-      mapping: [],
       ...(parent === undefined ? {} : { parent }),
     }));
+  };
   open();
   await owner.nextMessage((m) => m.type === "view/open");
   const request = (
@@ -2807,6 +2810,7 @@ async function sequentialHubFixture(
     id: string,
     params: JsonRecord = {},
     timeoutMs?: number,
+    includeCursor = true,
   ) =>
     hub.handleBrowser(browser, {
       type: "request",
@@ -2814,13 +2818,19 @@ async function sequentialHubFixture(
       session: "r-9010-1",
       method: "stream/next",
       timeoutMs,
-      params: { view: "stream-1", generation: 1, ...params },
+      params: {
+        view: "stream-1",
+        generation: 1,
+        ...(includeCursor ? { after_page: lastPage } : {}),
+        ...params,
+      },
     });
   const sent = () =>
     connection.writes.map((line) => JSON.parse(line) as JsonRecord).filter((
       m,
     ) => m.method === "stream/next");
   const finish = (id: unknown, firstRow: number, generation = 1) => {
+    lastPage++;
     const body = new Uint8Array([0, 10, 255]);
     const header = new TextEncoder().encode(
       JSON.stringify({
@@ -2839,7 +2849,18 @@ async function sequentialHubFixture(
     );
     connection.injectRaw(concatBytes(header, body));
   };
-  return { hub, connection, owner, other, request, sent, finish, open };
+  const advancePage = () => lastPage++;
+  return {
+    hub,
+    connection,
+    owner,
+    other,
+    request,
+    sent,
+    finish,
+    open,
+    advancePage,
+  };
 }
 
 Deno.test("sequential lease survives replies and releases on detach after late completion", async () => {
@@ -3005,6 +3026,28 @@ Deno.test("sequential captured row caps are checked before acquiring a lease", a
   } finally {
     f.hub.close();
   }
+  const large = await sequentialHubFixture(3000);
+  try {
+    large.request(large.owner, "large-cap", { max_rows: 2500 });
+    await waitFor(() => large.sent().length === 1);
+    assertEquals(
+      (large.sent()[0].params as JsonRecord).max_rows,
+      2500,
+    );
+  } finally {
+    large.hub.close();
+  }
+  const missing = await sequentialHubFixture(null);
+  try {
+    missing.request(missing.owner, "missing-cap");
+    assertEquals(
+      missing.owner.messages.find((m) => m.id === "missing-cap")?.code,
+      "invalid_request",
+    );
+    assertEquals(missing.sent().length, 0);
+  } finally {
+    missing.hub.close();
+  }
 });
 
 function cacheRequest(
@@ -3032,6 +3075,7 @@ function injectStreamResult(
   overrides: JsonRecord = {},
   bytes = new Uint8Array([0, 10, 255]),
 ) {
+  f.advancePage();
   const header = new TextEncoder().encode(
     JSON.stringify({
       id,
@@ -3064,6 +3108,12 @@ async function streamBarrier(
 Deno.test("host cache serves any browser without R traffic or a lease and guards stale append cursors", async () => {
   const f = await sequentialHubFixture();
   try {
+    f.request(f.other, "missing-cursor", {}, undefined, false);
+    assertEquals(
+      f.other.messages.find((m) => m.id === "missing-cursor")?.code,
+      "invalid_request",
+    );
+    assertEquals(f.sent().length, 0);
     const capability = (f.owner.messages[0].capabilities as JsonRecord)
       .stream_cache as JsonRecord;
     assertEquals(capability.version, 1);
@@ -3230,7 +3280,7 @@ Deno.test("invalid late sequential bodies never populate cache or resurrect repl
   }
 });
 
-Deno.test("host cache validates catalog and get budgets and keeps disabled legacy behavior", async () => {
+Deno.test("host cache validates catalog and get budgets and supports disabled-cache streaming", async () => {
   const f = await sequentialHubFixture();
   try {
     for (
@@ -3294,7 +3344,7 @@ Deno.test("host cache validates catalog and get budgets and keeps disabled legac
   } finally {
     f.hub.close();
   }
-  const disabled = await sequentialHubFixture(undefined, {
+  const disabled = await sequentialHubFixture(200, {
     streamCacheBytes: 0,
   });
   try {
@@ -3306,7 +3356,7 @@ Deno.test("host cache validates catalog and get budgets and keeps disabled legac
       cacheRequest(disabled, disabled.other, "info")?.code,
       "unsupported",
     );
-    disabled.request(disabled.owner, "legacy");
+    disabled.request(disabled.owner, "forward-only", {}, undefined, false);
     await waitFor(() => disabled.sent().length === 1);
     injectStreamResult(disabled, disabled.sent()[0].id);
     await waitFor(() => disabled.owner.binaryMessages.length === 1);
@@ -3415,8 +3465,8 @@ Deno.test("stream cache invalidates on generation close cascade and session disc
   }
 });
 
-Deno.test("host cache keeps progress after immediate eviction and accepts legacy repeated EOF", async () => {
-  const f = await sequentialHubFixture(undefined, {
+Deno.test("host cache keeps progress after immediate eviction and accepts repeated zero-row EOF", async () => {
+  const f = await sequentialHubFixture(200, {
     streamCacheBytes: 1024,
     streamCacheViewBytes: 1024,
   });

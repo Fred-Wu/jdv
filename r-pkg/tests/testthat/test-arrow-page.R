@@ -46,7 +46,12 @@ test_that("sequential pages preserve row order and only report observed EOF", {
     )),
     max_rows = 2L
   )
-  expect_identical(unlist(result$descriptor$mapping), c(0L, 1L))
+  expect_identical(
+    vapply(result$descriptor$columns, `[[`, integer(1L), "ipc_index"),
+    c(0L, 1L)
+  )
+  expect_null(result$descriptor$schema)
+  expect_null(result$descriptor$mapping)
   expect_length(result$pages, 3L)
   expect_identical(
     lapply(
@@ -66,6 +71,24 @@ test_that("sequential pages preserve row order and only report observed EOF", {
   )
   expect_identical(observed$id, c(11L, 12L, 13L))
   expect_identical(observed$label, c("a", "b", "c"))
+})
+
+test_that("native page limits accept more than 2000 rows", {
+  skip_if_not_installed("nanoarrow")
+  skip_if_not_installed("arrow")
+  token <- .jdv_stream_move(nanoarrow::as_nanoarrow_array_stream(data.frame(
+    value = seq_len(2101L)
+  )))
+  on.exit(.jdv_stream_close(token), add = TRUE)
+  descriptor <- .jdv_stream_open(token)
+  expect_identical(names(descriptor), "columns")
+  expect_error(.jdv_stream_page(token, 2^53, 1000000L), "positive safe integer")
+  page <- .jdv_stream_page(token, 2101L, 1000000L)
+  expect_identical(page$rows_fetched, 2101)
+  expect_identical(
+    as.data.frame(decode_page(page$payload))$value,
+    seq_len(2101L)
+  )
 })
 
 test_that("page slicing adds the parent struct offset to unoffset children", {
@@ -167,7 +190,9 @@ test_that("unsupported top-level fields are mapped out without losing rows", {
     "list_view columns are not supported"
   )
   expect_null(descriptor$columns[[1]]$ipc_index)
-  expect_null(descriptor$mapping[[1]])
+  expect_null(descriptor$columns[[1]]$ipc_index)
+  expect_null(descriptor$schema)
+  expect_null(descriptor$mapping)
   page <- .jdv_stream_page(token, 10L, 512L)
   expect_false(page$done)
   expect_gt(length(page$payload), 0L)
@@ -206,8 +231,10 @@ test_that("unsupported top-level fields are mapped out without losing rows", {
         "large_string"
       )
       expect_identical(
-        descriptor$schema$children[[1]]$children[[1]]$format,
-        "vu"
+        decoded$schema$GetFieldByName("group")$type$fields()[[
+          1
+        ]]$type$ToString(),
+        "large_string"
       )
     }
     expect_true(.jdv_stream_close(token))
@@ -345,7 +372,10 @@ test_that(
       ),
       list(as.raw(c(0, 1, 255)), as.raw(c(65, 0, 66)))
     )
-    expect_match(result$descriptor$schema$children[[5]]$format, "UTC")
+    expect_match(
+      observed$schema$GetFieldByName("timestamp_ns_utc")$type$ToString(),
+      "UTC"
+    )
 
     map_array <- arrow::Array$create(
       list(
@@ -556,8 +586,12 @@ test_that("Polars string_view is normalized to large_string in page IPC", {
   stream <- nanoarrow::as_nanoarrow_array_stream(source)
   expect_identical(stream$get_schema()$children[[1]]$format, "vu")
   result <- page_roundtrip(stream, max_rows = 2L)
-  expect_identical(result$descriptor$schema$children[[1]]$format, "vu")
-  observed <- as.data.frame(decode_page(result$pages[[1]]$payload))
+  observed_table <- decode_page(result$pages[[1]]$payload)
+  expect_identical(
+    observed_table$schema$GetFieldByName("label")$type$ToString(),
+    "large_string"
+  )
+  observed <- as.data.frame(observed_table)
   expect_identical(observed$label, c("alpha", "beta"))
   nested <- polars::pl$DataFrame(
     items = polars::pl$Series("items", list(c("a", "b"), character()))

@@ -352,23 +352,13 @@ test_that("sequential views cannot be refreshed", {
     },
     .jdv_sequential_open = function(token) {
       list(
-        schema = list(
-          format = "+s",
-          name = "",
-          flags = 0,
-          metadata = "",
-          metadata_encoding = "hex",
-          children = list(),
-          dictionary = NULL
-        ),
         columns = list(list(
           index = 0,
           name = "x",
           type = "int64",
           unsupported = NULL,
           ipc_index = 0
-        )),
-        mapping = 0L
+        ))
       )
     },
     .jdv_sequential_can_release = function() TRUE,

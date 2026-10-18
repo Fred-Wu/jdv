@@ -357,11 +357,20 @@ export class Hub {
         return;
       }
       const advertisedCap = descriptor.max_page_rows;
-      const rowCap =
-        Number.isSafeInteger(advertisedCap) && Number(advertisedCap) >= 1 &&
-          Number(advertisedCap) <= 2000
-          ? Number(advertisedCap)
-          : 2000;
+      if (
+        typeof advertisedCap !== "number" ||
+        !Number.isSafeInteger(advertisedCap) || advertisedCap < 1
+      ) {
+        client.send({
+          type: "error",
+          id: browserId,
+          session: session.id,
+          code: "invalid_request",
+          message: "The sequential view has an invalid max_page_rows limit.",
+        });
+        return;
+      }
+      const rowCap = advertisedCap;
       const rows = params.max_rows === undefined
         ? Math.min(200, rowCap)
         : params.max_rows;
@@ -385,6 +394,17 @@ export class Hub {
         return;
       }
       streamMaxRows = Number(rows);
+      if (this.#streamCache.enabled && !Object.hasOwn(params, "after_page")) {
+        client.send({
+          type: "error",
+          id: browserId,
+          session: session.id,
+          code: "invalid_request",
+          message:
+            "after_page is required when the sequential cache is enabled.",
+        });
+        return;
+      }
       if (Object.hasOwn(params, "after_page")) {
         if (
           !Number.isSafeInteger(params.after_page) ||

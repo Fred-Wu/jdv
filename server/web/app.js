@@ -422,8 +422,7 @@ function retainArrowPage(record, payload, metadata) {
   );
 }
 
-function viewSupport(descriptor) {
-  const capabilities = descriptor?.capabilities;
+function normalizedCapabilities(descriptor) {
   const capabilityNames = [
     "seek",
     "sort",
@@ -431,33 +430,74 @@ function viewSupport(descriptor) {
     "known_total",
     "next",
     "children",
+    "refresh",
+    "track",
   ];
   if (
-    capabilities === null || typeof capabilities !== "object" ||
-    !capabilityNames.every((name) => typeof capabilities[name] === "boolean")
+    !descriptor || typeof descriptor !== "object" ||
+    (descriptor.capabilities !== undefined &&
+      (descriptor.capabilities === null ||
+        typeof descriptor.capabilities !== "object" ||
+        Array.isArray(descriptor.capabilities)))
+  ) return null;
+  const supplied = descriptor.capabilities ?? {};
+  if (
+    capabilityNames.some((name) =>
+      Object.hasOwn(supplied, name) && typeof supplied[name] !== "boolean"
+    )
+  ) return null;
+  const capabilities = {
+    ...supplied,
+    ...Object.fromEntries(capabilityNames.map((name) => [
+      name,
+      Object.hasOwn(supplied, name) ? supplied[name] : false,
+    ])),
+  };
+  descriptor.capabilities = capabilities;
+  return capabilities;
+}
+
+function supportsSequentialView(descriptor, capabilities) {
+  try {
+    sequentialPageRows(descriptor);
+  } catch {
+    return false;
+  }
+  return descriptor.encoding === "arrow-ipc" &&
+    Array.isArray(descriptor.columns) &&
+    capabilities.next === true && capabilities.seek === false &&
+    capabilities.sort === false && capabilities.filter === false &&
+    capabilities.known_total === false && capabilities.children === false;
+}
+
+function supportsTreeView(descriptor, capabilities) {
+  return descriptor.access === "random" &&
+    descriptor.encoding === "jdv-json" &&
+    capabilities.seek === true && capabilities.sort === false &&
+    capabilities.filter === false && capabilities.known_total === true &&
+    capabilities.next === false && capabilities.children === true;
+}
+
+function supportsGridView(descriptor) {
+  return (descriptor.access === "snapshot" || descriptor.access === "random") &&
+    descriptor.encoding === "jdv-json" && Array.isArray(descriptor.columns);
+}
+
+function viewSupport(descriptor) {
+  const capabilities = normalizedCapabilities(descriptor);
+  if (
+    !capabilities || typeof descriptor.kind !== "string" ||
+    typeof descriptor.access !== "string" ||
+    typeof descriptor.encoding !== "string"
   ) return false;
   if (descriptor.kind === "grid" && descriptor.access === "sequential") {
-    try {
-      sequentialPageRows(descriptor);
-    } catch {
-      return false;
-    }
-    return descriptor.encoding === "arrow-ipc" &&
-      Array.isArray(descriptor.columns) &&
-      capabilities.next === true && capabilities.seek === false &&
-      capabilities.sort === false && capabilities.filter === false &&
-      capabilities.known_total === false && capabilities.children === false;
+    return supportsSequentialView(descriptor, capabilities);
   }
-  if (descriptor.encoding !== "jdv-json") return false;
   if (descriptor.kind === "tree") {
-    return descriptor.access === "random" &&
-      capabilities.seek === true && capabilities.sort === false &&
-      capabilities.filter === false && capabilities.known_total === true &&
-      capabilities.next === false && capabilities.children === true;
+    return supportsTreeView(descriptor, capabilities);
   }
-  return descriptor.kind === "grid" &&
-    (descriptor.access === "snapshot" || descriptor.access === "random") &&
-    Array.isArray(descriptor.columns);
+  if (descriptor.kind === "grid") return supportsGridView(descriptor);
+  return false;
 }
 
 function countLabel(value, noun) {

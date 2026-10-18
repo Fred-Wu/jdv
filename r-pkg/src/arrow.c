@@ -434,68 +434,6 @@ static SEXP named_list(int n, const char **labels)
     return out;
 }
 
-static char *schema_metadata_hex(const char *metadata)
-{
-    static const char digits[] = "0123456789abcdef";
-    int32_t n, key_size, value_size;
-    int64_t i, size;
-    const unsigned char *p = (const unsigned char *)metadata;
-    char *out;
-    if (!metadata) return NULL;
-    memcpy(&n, p, sizeof(n));
-    if (n < 0 || n > 100000) return NULL;
-    size = 4;
-    p += 4;
-    for (i = 0; i < n; i++) {
-        memcpy(&key_size, p, 4); p += 4; size += 4 + key_size;
-        if (key_size < 0 || size > INT32_MAX) return NULL;
-        p += key_size;
-        memcpy(&value_size, p, 4); p += 4; size += 4 + value_size;
-        if (value_size < 0 || size > INT32_MAX) return NULL;
-        p += value_size;
-    }
-    out = (char *)malloc((size_t)size * 2 + 1);
-    if (!out) return NULL;
-    p = (const unsigned char *)metadata;
-    for (i = 0; i < size; i++) {
-        out[i * 2] = digits[p[i] >> 4];
-        out[i * 2 + 1] = digits[p[i] & 15];
-    }
-    out[size * 2] = '\0';
-    return out;
-}
-
-static SEXP schema_descriptor(const struct ArrowSchema *schema)
-{
-    static const char *labels[] = {"format", "name", "flags", "metadata",
-                                   "metadata_encoding", "children", "dictionary"};
-    SEXP out = PROTECT(named_list(7, labels));
-    SEXP children = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)schema->n_children));
-    char *metadata = schema_metadata_hex(schema->metadata);
-    int64_t i;
-    if (schema->format) SET_VECTOR_ELT(out, 0, Rf_mkString(schema->format));
-    if (schema->name) SET_VECTOR_ELT(out, 1, Rf_mkString(schema->name));
-    SET_VECTOR_ELT(out, 2, Rf_ScalarInteger(schema->flags));
-    if (metadata) {
-        SET_VECTOR_ELT(out, 3, Rf_mkString(metadata));
-        SET_VECTOR_ELT(out, 4, Rf_mkString("hex"));
-        free(metadata);
-    }
-    for (i = 0; i < schema->n_children; i++) {
-        SEXP child = PROTECT(schema_descriptor(schema->children[i]));
-        SET_VECTOR_ELT(children, i, child);
-        UNPROTECT(1);
-    }
-    SET_VECTOR_ELT(out, 5, children);
-    if (schema->dictionary) {
-        SEXP dict = PROTECT(schema_descriptor(schema->dictionary));
-        SET_VECTOR_ELT(out, 6, dict);
-        UNPROTECT(1);
-    }
-    UNPROTECT(2);
-    return out;
-}
-
 static const char *unsupported_schema_reason(const struct ArrowSchema *schema)
 {
     struct ArrowSchemaView view;
@@ -552,7 +490,7 @@ static SEXP page_open_body(void *data)
     jdv_arrow_record *record = require_record(call->argument, JDV_ARROW_STREAM);
     static const char *column_labels[] = {"index", "name", "type", "unsupported", "ipc_index"};
     jdv_arrow_page_state *page = record->page;
-    SEXP out, columns, mapping;
+    SEXP out, columns;
     int64_t i, ipc_index = 0;
     char error_copy[1024];
     int code;
@@ -600,14 +538,12 @@ static SEXP page_open_body(void *data)
         }
         page->opened = 1;
     }
-    out = PROTECT(named_list(4, (const char *[]){"ok", "schema", "columns", "mapping"}));
+    out = PROTECT(named_list(2, (const char *[]){"ok", "columns"}));
     columns = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)page->schema.n_children));
-    mapping = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)page->schema.n_children));
     for (i = 0; i < page->schema.n_children; i++) {
         const struct ArrowSchema *field = page->schema.children[i];
         const char *reason = unsupported_schema_reason(field);
         SEXP col = PROTECT(named_list(5, column_labels));
-        SET_VECTOR_ELT(mapping, i, reason ? R_NilValue : Rf_ScalarInteger((int)ipc_index));
         SET_VECTOR_ELT(col, 0, Rf_ScalarInteger((int)i));
         if (field->name) SET_VECTOR_ELT(col, 1, Rf_mkString(field->name));
         if (field->format) SET_VECTOR_ELT(col, 2, Rf_mkString(field->format));
@@ -621,10 +557,8 @@ static SEXP page_open_body(void *data)
         UNPROTECT(1);
     }
     SET_VECTOR_ELT(out, 0, Rf_ScalarLogical(TRUE));
-    SET_VECTOR_ELT(out, 1, schema_descriptor(&page->schema));
-    SET_VECTOR_ELT(out, 2, columns);
-    SET_VECTOR_ELT(out, 3, mapping);
-    UNPROTECT(3);
+    SET_VECTOR_ELT(out, 1, columns);
+    UNPROTECT(2);
     return out;
 }
 
@@ -871,8 +805,8 @@ static SEXP run_page_operation(SEXP token, SEXP max_rows, SEXP max_bytes)
     memset(&call, 0, sizeof(call));
     call.call.argument = token;
     call.call.entered = 1;
-    if (!page_budget(max_rows, 2000, &call.max_rows) || call.max_rows == 0)
-        Rf_error("max_rows must be a positive whole number no greater than 2000.");
+    if (!page_budget(max_rows, INT64_C(9007199254740991), &call.max_rows) || call.max_rows == 0)
+        Rf_error("max_rows must be a positive safe integer.");
     if (!page_budget(max_bytes, JDV_ARROW_PAGE_MAX_BYTES, &call.max_bytes))
         Rf_error("max_bytes must be a nonnegative whole number no greater than 10 MiB.");
     operation_depth++;
