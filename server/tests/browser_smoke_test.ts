@@ -1736,21 +1736,25 @@ Deno.test({
           "Malformed capabilities",
         );
 
-        const missingDescriptorField = snapshotDescriptor(columns.slice(0, 3));
-        missingDescriptorField.view = "missing-descriptor-field";
-        missingDescriptorField.title = "Missing descriptor field";
-        delete missingDescriptorField.ncol;
-        await writeFrame(rConnection, {
-          method: "view/open",
-          params: missingDescriptorField,
-        }, { applyGridDefaults: false });
-        await button(
-          page,
-          "Unsupported view",
-          "#tables article",
-          0,
-          "Missing descriptor field",
-        );
+        for (const field of ["ncol", "collation", "row_labels"] as const) {
+          const missingDescriptorField = snapshotDescriptor(
+            columns.slice(0, 3),
+          );
+          missingDescriptorField.view = `missing-descriptor-${field}`;
+          missingDescriptorField.title = `Missing descriptor ${field}`;
+          delete missingDescriptorField[field];
+          await writeFrame(rConnection, {
+            method: "view/open",
+            params: missingDescriptorField,
+          }, { applyGridDefaults: false });
+          await button(
+            page,
+            "Unsupported view",
+            "#tables article",
+            0,
+            `Missing descriptor ${field}`,
+          );
+        }
 
         for (
           const [name, capability] of [
