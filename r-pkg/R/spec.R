@@ -104,6 +104,12 @@
 #' | `collation`, `row_labels`                                          | Required for Snapshot and Random access   |
 #' | `data`                                                             | Required for snapshot access; otherwise omitted |
 #'
+#' `view` is a non-empty string and `generation` is a positive integer that
+#' identifies the current build of that view. `collation` is exactly `"C"` or
+#' `"locale"` and selects the string order described under Stable multi-column
+#' sort in the \link[=jdv_query_spec]{query specification}. `row_labels` is
+#' `null` or an array of strings.
+#'
 #' `reason` is a fixed token that tells the host why a `view/open` was sent.
 #' More values may be added; a host treats an unknown or missing value as
 #' `"register"`.

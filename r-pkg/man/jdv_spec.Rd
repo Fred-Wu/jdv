@@ -107,6 +107,12 @@ if at least one column has \code{drillable: true}. \code{refresh} tells the host
 }
 
 
+\code{view} is a non-empty string and \code{generation} is a positive integer that
+identifies the current build of that view. \code{collation} is exactly \code{"C"} or
+\code{"locale"} and selects the string order described under Stable multi-column
+sort in the \link[=jdv_query_spec]{query specification}. \code{row_labels} is
+\code{null} or an array of strings.
+
 \code{reason} is a fixed token that tells the host why a \code{view/open} was sent.
 More values may be added; a host treats an unknown or missing value as
 \code{"register"}.\tabular{ll}{
