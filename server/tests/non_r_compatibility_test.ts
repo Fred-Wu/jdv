@@ -362,7 +362,8 @@ function isRecord(value: unknown): value is Frame {
 }
 
 class RawWebSocket {
-  onmessage?: (event: { data: Frame | ArrayBuffer }) => void;
+  #onmessage?: (event: { data: Frame | ArrayBuffer }) => void;
+  #pending: Array<Frame | ArrayBuffer> = [];
   #connection: Deno.Conn;
   #buffer: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
   #writeTail = Promise.resolve();
@@ -393,6 +394,18 @@ class RawWebSocket {
     }
     void socket.#readLoop();
     return socket;
+  }
+
+  // Frames that arrive before a handler is attached are buffered so the
+  // welcome frame cannot be lost between the upgrade and the assignment.
+  set onmessage(handler: (event: { data: Frame | ArrayBuffer }) => void) {
+    this.#onmessage = handler;
+    for (const data of this.#pending.splice(0)) handler({ data });
+  }
+
+  #deliver(data: Frame | ArrayBuffer): void {
+    if (this.#onmessage) this.#onmessage({ data });
+    else this.#pending.push(data);
   }
 
   send(value: string): void {
@@ -437,16 +450,16 @@ class RawWebSocket {
           continue;
         }
         if (opcode === 1) {
-          this.onmessage?.({
-            data: JSON.parse(new TextDecoder().decode(payload)) as Frame,
-          });
+          this.#deliver(
+            JSON.parse(new TextDecoder().decode(payload)) as Frame,
+          );
         } else if (opcode === 2) {
-          this.onmessage?.({
-            data: payload.buffer.slice(
+          this.#deliver(
+            payload.buffer.slice(
               payload.byteOffset,
               payload.byteOffset + payload.byteLength,
             ) as ArrayBuffer,
-          });
+          );
         }
       }
     } catch {
