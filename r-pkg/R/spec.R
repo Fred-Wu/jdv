@@ -1158,6 +1158,54 @@
 #' Replacing or evicting a parent has the same descendant-close effect.
 #'
 #'
+#' @section Registry-free R handles:
+#'
+#' [jdv_handle()] captures a data frame, matrix, or list for an embedding host
+#' without registering a viewer slot. Handles do not consume `jdv.max_tables`,
+#' advance viewer identifiers, evict views, or produce notifications. They work
+#' without a session and alongside either an embedded session or a viewer
+#' connection. Closing registered views or disconnecting does not close handles.
+#' Sequential sources, including Arrow and Polars sources, are unsupported.
+#'
+#' [jdv_handle_descriptor()] returns a JSON string with the shape of `view/open`
+#' params (or the `object/open` result for a child). [jdv_handle_request()]
+#' accepts only `table/rows` and `object/children`, with the same parameter
+#' validation and result shapes as their viewer requests. It returns the result
+#' itself as JSON, without a response envelope. Omit `view` and `generation`
+#' from its R-list params: the handle supplies them, and specifying either is an
+#' `invalid_request` error. Result identifiers are opaque handle identifiers,
+#' separate from viewer identifiers, with generation `1`. They cannot be used
+#' with [jdv_rpc()] or [jdv_close()].
+#'
+#' [jdv_handle_open()] takes a typed path and returns a child R handle; call
+#' [jdv_handle_descriptor()] on that child to obtain its descriptor JSON. Other
+#' methods passed to [jdv_handle_request()], including `object/open`, fail with
+#' `method_not_found`. These functions add no wire methods or fields; there is
+#' no `view/describe` method.
+#'
+#' Use `mode = "paged"` for an initial preview bounded by rows, selected `cols`,
+#' and output bytes. The `limit` and `cols` params select the page; `max_bytes`
+#' bounds the UTF-8 JSON result. Oversized row or child pages shrink by halving
+#' their returned item count. A single item that cannot fit fails with
+#' `limit_exceeded`. Descriptors are never truncated. Auto mode retains the
+#' usual Snapshot selection, and Snapshot descriptors contain the complete
+#' captured data and do not support `table/rows`.
+#'
+#' Handles do not follow variable bindings or support refresh or tracking; their
+#' descriptor capabilities report both as false. Table handles retain the
+#' captured source, including in Snapshot mode, and check its dimensions, column
+#' names, and column classes against the initial fingerprint. This does not
+#' detect every value-only mutation through a shared reference or changes to
+#' methods. Close and recreate a handle when those change.
+#'
+#' [jdv_handle_close()] closes the handle and all its descendants, is
+#' idempotent, and emits no notifications. Subsequent use fails with
+#' `view_not_found`. A live child retains its parent so that garbage collection
+#' of a parent variable does not invalidate the child. Explicit parent close
+#' still invalidates descendants. Unreachable handles release their resources
+#' through finalizers. Handles belong to the current R session and are not
+#' transferable between processes. See [jdv_handle()] for examples and limits.
+#'
 #' @section Notification delivery:
 #'
 #'

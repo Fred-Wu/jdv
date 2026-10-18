@@ -724,7 +724,14 @@
   list(method = "view/open", params = jdv_json_object(params))
 }
 
-.jdv_tree_new_entry <- function(x, id, generation, title, parent = NULL) {
+.jdv_tree_new_entry <- function(
+  x,
+  id,
+  generation,
+  title,
+  parent = NULL,
+  sequence = NULL
+) {
   entry <- new.env(parent = emptyenv())
   entry$id <- id
   entry$title <- title
@@ -746,8 +753,11 @@
   entry$inflight <- 0L
   entry$close_pending <- FALSE
   entry$closed <- FALSE
-  .jdv_state$sequence <- .jdv_state$sequence + 1
-  entry$sequence <- .jdv_state$sequence
+  if (is.null(sequence)) {
+    .jdv_state$sequence <- .jdv_state$sequence + 1
+    sequence <- .jdv_state$sequence
+  }
+  entry$sequence <- sequence
   entry
 }
 

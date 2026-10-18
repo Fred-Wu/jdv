@@ -64,6 +64,17 @@
 #' | `limit_exceeded` | A configured limit is exceeded, including a notification queue overflow. |
 #' | `schema_changed`, `r_error`, `view_not_found` | Errors of the query layer; see [jdv_query_spec]. |
 #'
+#' The registry-free handle functions (see [jdv_handle()]) use the same
+#' conditions. A malformed handle, mode, collation, or `max_bytes` argument
+#' signals `invalid_argument`; malformed request params or typed paths signal
+#' `invalid_request`. A closed handle, including a child closed by its parent,
+#' signals `view_not_found`. Table fingerprint changes signal `schema_changed`.
+#' Sequential sources and unsupported operations on a handle's mode signal
+#' `unsupported`. Methods other than `table/rows` and `object/children` passed
+#' to [jdv_handle_request()] signal `method_not_found`; use [jdv_handle_open()]
+#' to open a child. A descriptor or single page item that cannot fit its byte
+#' limit signals `limit_exceeded`.
+#'
 #' @examples
 #' library(jdv)
 #' result <- tryCatch(
@@ -661,7 +672,8 @@ jdv_json_object <- function(x = list()) {
   id,
   generation,
   captured = NULL,
-  intent = NULL
+  intent = NULL,
+  sequence = NULL
 ) {
   entry <- new.env(parent = emptyenv())
   entry$id <- id
@@ -692,8 +704,11 @@ jdv_json_object <- function(x = list()) {
   entry$inflight <- 0L
   entry$close_pending <- FALSE
   entry$closed <- FALSE
-  .jdv_state$sequence <- .jdv_state$sequence + 1
-  entry$sequence <- .jdv_state$sequence
+  if (is.null(sequence)) {
+    .jdv_state$sequence <- .jdv_state$sequence + 1
+    sequence <- .jdv_state$sequence
+  }
+  entry$sequence <- sequence
   entry
 }
 
@@ -1317,6 +1332,142 @@ jdv_register <- function(
   invisible(NULL)
 }
 
+# Resolve a tree path or a grid cell path for object/children and object/open.
+# The caller owns entry lifetime and chooses how an opened child is installed.
+.jdv_resolve_object_path <- function(entry, raw_path) {
+  if (identical(entry$mode, "tree")) {
+    path <- .jdv_tree_path(raw_path)
+    ancestry <- .jdv_tree_ancestry(entry)
+    resolved <- .jdv_tree_resolve(entry$tree_value, path, ancestry)
+  } else {
+    if (identical(entry$mode, "sequential")) {
+      query_error(
+        "unsupported",
+        "Sequential views do not support object paths."
+      )
+    }
+    path <- .jdv_cell_path(raw_path)
+    ancestry <- .jdv_tree_ancestry(entry)
+    value <- .jdv_cell_value(entry, path[[1L]])
+    resolved <- .jdv_tree_resolve(value, path[-1L], ancestry)
+  }
+  if (!identical(resolved$status, "value")) {
+    query_error(
+      "unavailable",
+      paste0("Tree path is no longer available: ", resolved$status, ".")
+    )
+  }
+  list(path = path, resolved = resolved)
+}
+
+# Shared object/children engine. The entry is already acquired by the caller.
+.jdv_request_object_children <- function(entry, params) {
+  .jdv_fields(
+    params,
+    c("view", "generation", "path", "offset", "limit", "attributes"),
+    c("view", "generation", "path")
+  )
+  if (any(names(params) %in% c("mode", "collation"))) {
+    query_error(
+      "invalid_request",
+      "object/children does not accept grid registration options."
+    )
+  }
+  show_attributes <- TRUE
+  if ("attributes" %in% names(params)) {
+    show_attributes <- params$attributes
+    if (
+      !is.logical(show_attributes) ||
+        is.object(show_attributes) ||
+        length(show_attributes) != 1L ||
+        is.na(show_attributes)
+    ) {
+      query_error("invalid_request", "attributes must be a boolean.")
+    }
+  }
+  if (!identical(entry$mode, "tree")) {
+    if (identical(entry$mode, "sequential")) {
+      query_error(
+        "unsupported",
+        "Sequential views do not support object paths."
+      )
+    }
+    query_error("unsupported", "Object children requires a tree view.")
+  }
+  selected <- .jdv_resolve_object_path(entry, params$path)
+  path <- selected$path
+  if (length(path) >= .jdv_tree_path_limit) {
+    query_error("limit_exceeded", "Tree path reached the maximum depth.")
+  }
+  offset <- if (is.null(params$offset)) {
+    0
+  } else {
+    query_integer(params$offset, "offset")
+  }
+  limit <- if (is.null(params$limit)) {
+    200
+  } else {
+    query_integer(params$limit, "limit", 1)
+  }
+  if (limit > .jdv_tree_page_limit) {
+    query_error("invalid_request", "limit exceeds the tree page cap.")
+  }
+  listing <- .jdv_tree_list_children(
+    selected$resolved$value,
+    path,
+    offset,
+    limit,
+    c(.jdv_tree_ancestry(entry), selected$resolved$seen),
+    show_attributes
+  )
+  list(
+    view = entry$id,
+    generation = entry$generation,
+    path = jdv_json_array(lapply(path, jdv_json_object)),
+    offset = as.double(offset),
+    children = listing$children,
+    total_children = as.double(listing$total_children)
+  )
+}
+
+# Shared table/rows engine. The entry is already acquired by the caller.
+.jdv_request_table_rows <- function(entry, params) {
+  .jdv_fields(
+    params,
+    c("view", "generation", "offset", "limit", "sort", "filter", "cols"),
+    c("view", "generation")
+  )
+  .jdv_check_fingerprint(entry)
+  if (entry$mode != "paged" || is.null(entry$holder)) {
+    query_error(
+      "unsupported",
+      "This view does not support random row requests."
+    )
+  }
+  sort <- if (is.null(params$sort)) list() else params$sort
+  filter <- params$filter
+  cols <- params$cols
+  offset <- if (is.null(params$offset)) 0 else params$offset
+  limit <- if (is.null(params$limit)) 200 else params$limit
+  budget <- .jdv_budget(entry$holder$limits$page_work_bytes)
+  result <- query_page(entry$holder, offset, limit, sort, filter, cols, budget)
+  result$data$columns <- lapply(result$data$columns, .jdv_page_column)
+  output <- list(
+    view = entry$id,
+    generation = entry$generation,
+    total = result$total,
+    total_unfiltered = result$total_unfiltered,
+    offset = result$offset,
+    limit = result$limit,
+    data = within(result$data, {
+      row_index <- .jdv_json_values(row_index)
+      if (!is.null(row_names)) row_names <- .jdv_json_values(row_names)
+    })
+  )
+  attr(output, "jdv_work_budget") <- budget
+  output
+}
+
 .jdv_process_request <- function(request, request_id) {
   .jdv_fields(
     request,
@@ -1438,65 +1589,12 @@ jdv_register <- function(
     }
     entry <- .jdv_rpc_entry(params$view, params$generation)
     on.exit(.jdv_release_entry(entry), add = TRUE)
-    if (identical(entry$mode, "tree")) {
-      path <- .jdv_tree_path(params$path)
-      ancestry <- .jdv_tree_ancestry(entry)
-      resolved <- .jdv_tree_resolve(entry$tree_value, path, ancestry)
-    } else {
-      if (identical(entry$mode, "sequential")) {
-        query_error(
-          "unsupported",
-          "Sequential views do not support object paths."
-        )
-      }
-      if (method == "object/children") {
-        query_error("unsupported", "Object children requires a tree view.")
-      }
-      path <- .jdv_cell_path(params$path)
-      ancestry <- .jdv_tree_ancestry(entry)
-      value <- .jdv_cell_value(entry, path[[1L]])
-      resolved <- .jdv_tree_resolve(value, path[-1L], ancestry)
-    }
-    if (!identical(resolved$status, "value")) {
-      query_error(
-        "unavailable",
-        paste0("Tree path is no longer available: ", resolved$status, ".")
-      )
-    }
     if (method == "object/children") {
-      if (length(path) >= .jdv_tree_path_limit) {
-        query_error("limit_exceeded", "Tree path reached the maximum depth.")
-      }
-      offset <- if (is.null(params$offset)) {
-        0
-      } else {
-        query_integer(params$offset, "offset")
-      }
-      limit <- if (is.null(params$limit)) {
-        200
-      } else {
-        query_integer(params$limit, "limit", 1)
-      }
-      if (limit > .jdv_tree_page_limit) {
-        query_error("invalid_request", "limit exceeds the tree page cap.")
-      }
-      listing <- .jdv_tree_list_children(
-        resolved$value,
-        path,
-        offset,
-        limit,
-        c(ancestry, resolved$seen),
-        show_attributes
-      )
-      return(list(
-        view = entry$id,
-        generation = entry$generation,
-        path = jdv_json_array(lapply(path, jdv_json_object)),
-        offset = as.double(offset),
-        children = listing$children,
-        total_children = as.double(listing$total_children)
-      ))
+      return(.jdv_request_object_children(entry, params))
     }
+    selected <- .jdv_resolve_object_path(entry, params$path)
+    path <- selected$path
+    resolved <- selected$resolved
     if (!length(path)) {
       query_error("invalid_request", "object/open requires a non-empty path.")
     }
@@ -1590,8 +1688,8 @@ jdv_register <- function(
         closed = TRUE
       ))
     }
-    .jdv_check_fingerprint(entry)
     if (method == "view/schema") {
+      .jdv_check_fingerprint(entry)
       result <- list(
         view = entry$id,
         generation = entry$generation,
@@ -1605,43 +1703,7 @@ jdv_register <- function(
       }
       return(result)
     }
-    if (entry$mode != "paged" || is.null(entry$holder)) {
-      query_error(
-        "unsupported",
-        "This view does not support random row requests."
-      )
-    }
-    sort <- if (is.null(params$sort)) list() else params$sort
-    filter <- params$filter
-    cols <- params$cols
-    offset <- if (is.null(params$offset)) 0 else params$offset
-    limit <- if (is.null(params$limit)) 200 else params$limit
-    budget <- .jdv_budget(entry$holder$limits$page_work_bytes)
-    result <- query_page(
-      entry$holder,
-      offset,
-      limit,
-      sort,
-      filter,
-      cols,
-      budget
-    )
-    work_used <- budget$used
-    result$data$columns <- lapply(result$data$columns, .jdv_page_column)
-    output <- list(
-      view = entry$id,
-      generation = entry$generation,
-      total = result$total,
-      total_unfiltered = result$total_unfiltered,
-      offset = result$offset,
-      limit = result$limit,
-      data = within(result$data, {
-        row_index <- .jdv_json_values(row_index)
-        if (!is.null(row_names)) row_names <- .jdv_json_values(row_names)
-      })
-    )
-    attr(output, "jdv_work_budget") <- budget
-    return(output)
+    return(.jdv_request_table_rows(entry, params))
   }
   query_error("method_not_found", "Unknown RPC method.")
 }
