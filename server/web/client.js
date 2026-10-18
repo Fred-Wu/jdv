@@ -78,7 +78,7 @@ export function createBrowserTransport(socket, handlers = {}) {
       }
       if (message.error) {
         const error = new Error(
-          message.error.message ?? "The R request failed.",
+          message.error.message ?? "The producer request failed.",
         );
         error.code = message.error.code ?? "r_error";
         error.details = message.error.details;
@@ -200,7 +200,10 @@ export function createBrowserTransport(socket, handlers = {}) {
     }
   }
 
-  function cancelSession(session, reason = "The R session disconnected.") {
+  function cancelSession(
+    session,
+    reason = "The producer session disconnected.",
+  ) {
     for (const item of [...pending.values()]) {
       if (item.session === session) cancel(item.id, reason);
     }
@@ -315,7 +318,7 @@ export async function fillRemotePage({
     if (!isCurrent()) throw abortError("The query was replaced.");
     const result = response?.result;
     if (!result || !result.data || !Array.isArray(result.data.row_index)) {
-      throw new Error("R returned an invalid table page.");
+      throw new Error("The producer returned an invalid table page.");
     }
     total = result.total;
     if (
@@ -323,32 +326,36 @@ export async function fillRemotePage({
       !Number.isSafeInteger(result.total_unfiltered) ||
       result.total_unfiltered < 0 || total > result.total_unfiltered
     ) {
-      throw new Error("R returned invalid query totals.");
+      throw new Error("The producer returned invalid query totals.");
     }
     if (queryTotal !== null && queryTotal !== total) {
-      throw new Error("R changed the filtered row count between pages.");
+      throw new Error(
+        "The producer changed the filtered row count between pages.",
+      );
     }
     queryTotal = total;
     if (
       totalUnfiltered !== null && totalUnfiltered !== result.total_unfiltered
     ) {
-      throw new Error("R changed the unfiltered row count between pages.");
+      throw new Error(
+        "The producer changed the unfiltered row count between pages.",
+      );
     }
     totalUnfiltered = result.total_unfiltered;
     const count = result.data.row_index.length;
     if (!Number.isSafeInteger(result.offset) || result.offset < 0) {
-      throw new Error("R returned invalid page bounds.");
+      throw new Error("The producer returned invalid page bounds.");
     }
     if (count === 0) {
       if (cursor >= total) break;
       throw new Error(
-        "R returned an empty page before the requested rows were complete.",
+        "The producer returned an empty page before the requested rows were complete.",
       );
     }
     const part = decode(result);
     if (!Array.isArray(part) || part.length !== count) {
       throw new Error(
-        "The decoded page row count does not match R's response.",
+        "The decoded page row count does not match the producer's response.",
       );
     }
     rows.push(...part);

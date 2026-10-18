@@ -196,7 +196,7 @@ export class NodePipeListener implements ByteListener {
   }
 }
 
-export async function listenR(options: {
+export async function listenProducer(options: {
   mode: "default" | "tcp";
   cacheDir: string;
 }): Promise<{ listener: ByteListener; socketPath: string }> {

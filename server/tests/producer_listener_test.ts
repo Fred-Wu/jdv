@@ -2,9 +2,9 @@ import { assertEquals } from "./assert.ts";
 import { assertStringIncludes } from "./assert.ts";
 import {
   type JsonObject,
-  MAX_R_BINARY_FRAME_BYTES,
-  startRPeer,
-} from "../r_listener.ts";
+  MAX_PRODUCER_BINARY_FRAME_BYTES,
+  startProtocolPeer,
+} from "../producer_listener.ts";
 import type { ByteConnection } from "../platform.ts";
 
 class ReadConnection implements ByteConnection {
@@ -38,11 +38,11 @@ class ReadConnection implements ByteConnection {
   }
 }
 
-Deno.test("R peer parses JSON Lines (JSONL) frames split across chunks and serializes writes", async () => {
+Deno.test("protocol peer parses JSON Lines (JSONL) frames split across chunks and serializes writes", async () => {
   const connection = new ReadConnection();
   const messages: JsonObject[] = [];
   let closes = 0;
-  const peer = startRPeer(
+  const peer = startProtocolPeer(
     connection,
     (message) => messages.push(message),
     () => closes++,
@@ -61,10 +61,10 @@ Deno.test("R peer parses JSON Lines (JSONL) frames split across chunks and seria
   assertEquals(closes, 1);
 });
 
-Deno.test("R peer rejects malformed JSON and closes exactly once", async () => {
+Deno.test("protocol peer rejects malformed JSON and closes exactly once", async () => {
   const connection = new ReadConnection();
   let closes = 0;
-  startRPeer(connection, () => {}, () => closes++);
+  startProtocolPeer(connection, () => {}, () => closes++);
   connection.push(new TextEncoder().encode("{bad}\n"));
   for (let i = 0; i < 100 && !connection.closed; i++) {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -77,7 +77,7 @@ Deno.test("a read resolved before peer close does not deliver after close", asyn
   const connection = new ReadConnection();
   const messages: JsonObject[] = [];
   let closes = 0;
-  const peer = startRPeer(
+  const peer = startProtocolPeer(
     connection,
     (message) => messages.push(message),
     () => closes++,
@@ -90,10 +90,10 @@ Deno.test("a read resolved before peer close does not deliver after close", asyn
   assertEquals(closes, 1);
 });
 
-Deno.test("R peer delivers opaque binary bodies before parsing the next JSONL frame", async () => {
+Deno.test("protocol peer delivers opaque binary bodies before parsing the next JSONL frame", async () => {
   const connection = new ReadConnection();
   const messages: Array<{ message: JsonObject; body?: Uint8Array }> = [];
-  const peer = startRPeer(
+  const peer = startProtocolPeer(
     connection,
     (message, body) => messages.push({ message, body }),
     () => {},
@@ -139,7 +139,7 @@ Deno.test("R peer delivers opaque binary bodies before parsing the next JSONL fr
   peer.close();
 });
 
-Deno.test("R peer rejects invalid and oversized binary transfer descriptors", async () => {
+Deno.test("protocol peer rejects invalid and oversized binary transfer descriptors", async () => {
   const validTransfer = { encoding: "arrow-ipc", byte_length: 1 };
   const malformed = [
     {
@@ -185,7 +185,7 @@ Deno.test("R peer rejects invalid and oversized binary transfer descriptors", as
   for (const message of malformed) {
     const connection = new ReadConnection();
     let closes = 0;
-    startRPeer(connection, () => {}, () => closes++);
+    startProtocolPeer(connection, () => {}, () => closes++);
     connection.push(new TextEncoder().encode(`${JSON.stringify(message)}\n`));
     for (let i = 0; i < 100 && !connection.closed; i++) {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -193,14 +193,14 @@ Deno.test("R peer rejects invalid and oversized binary transfer descriptors", as
     assertEquals(connection.closed, true);
     assertEquals(closes, 1);
   }
-  assertEquals(MAX_R_BINARY_FRAME_BYTES, 10 * 1024 * 1024);
+  assertEquals(MAX_PRODUCER_BINARY_FRAME_BYTES, 10 * 1024 * 1024);
 });
 
-Deno.test("R peer closes on a partial binary body or its absolute timeout", async () => {
+Deno.test("protocol peer closes on a partial binary body or its absolute timeout", async () => {
   for (const options of [{ binaryBodyTimeoutMs: 10 }, {}]) {
     const connection = new ReadConnection();
     let closeReason: unknown;
-    startRPeer(
+    startProtocolPeer(
       connection,
       () => {},
       (reason) => closeReason = reason,

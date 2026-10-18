@@ -83,7 +83,7 @@ Sequential views do not support random paging, sorting, or filtering.
 
 ### Page cache
 
-The host retains opaque Arrow IPC pages per R session, view, and generation, so
+The host retains opaque Arrow IPC pages per producer session, view, and generation, so
 switching views, reloading, or opening another tab can restore received rows
 without another R request. Valid late replies after cancellation, timeout, or
 browser detachment are also retained. Reading cached pages does not take the
@@ -95,7 +95,7 @@ pages. Oldest pages are evicted first. This is accounting for retained pages,
 not a JavaScript process-heap guarantee. An oversized page can be evicted
 immediately; its page index, row watermark, and EOF state remain available so
 the viewer can identify rows no longer retained. Closing a view, replacing its
-generation, cascading a parent close, or disconnecting R clears its cache.
+generation, cascading a parent close, or disconnecting a producer clears its cache.
 
 Set byte counts with `--stream-cache-bytes` and `--stream-cache-view-bytes`; a
 zero value disables the feature. For example, append
@@ -124,7 +124,7 @@ forward-only R source cannot fetch it again.
 
 ## Viewer
 
-The viewer lists active R sessions, grid views, and object trees. Tree child
+The viewer lists active producer sessions, grid views, and object trees. Tree child
 values and drillable grid cells can be opened as independent grid or tree views;
 closing a child releases it while keeping its parent available. Grid Open
 buttons are shown only for columns marked `drillable`: unclassed, `AsIs`, or
@@ -176,7 +176,7 @@ and DNS-rebound host names are rejected. This checks browser origin; it is not
 authentication against other local processes.
 
 On connect, a client receives a `welcome` object containing protocol version 1
-and the current R sessions and cached view descriptors. Later server events use
+and the current producer sessions and cached view descriptors. Later server events use
 `session/open`, `session/closed`, `view/open`, `view/closed`, and `notification`
 message types. A `view/open` message preserves the original R protocol message,
 including the complete `data` payload for Snapshot views.
@@ -253,7 +253,7 @@ notification only while `generation` is the one it holds. The bundled viewer
 shows the state next to the Refresh button and offers a pause and resume toggle
 while following is not lost.
 
-Browser WebSocket input frames are limited to 64 KiB. Incoming R JSONL frames
+Browser WebSocket input frames are limited to 64 KiB. Incoming producer JSONL frames
 are limited to 10 MiB.
 
 Each R hello must include positive integer limits for received frames and bytes,

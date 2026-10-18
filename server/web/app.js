@@ -99,7 +99,7 @@ const transport = createBrowserTransport(socket, {
       (reason === "wire_credit" && session === selected?.session &&
         selected.activeRequestIds.size > 0)
     ) {
-      setStatus("R is busy. The request is still waiting.", "busy");
+      setStatus("The producer is busy. The request is still waiting.", "busy");
     }
   },
 });
@@ -218,7 +218,7 @@ socket.addEventListener("message", (event) => {
       }
     } else if (method === "view/tracking") {
       applyTracking(message.session, message.message.params);
-    } else if (method) setStatus(`R notification: ${method}`, "info");
+    } else if (method) setStatus(`Producer notification: ${method}`, "info");
   }
 });
 
@@ -347,7 +347,7 @@ function addTable(session, message) {
   if (replaceSelected) openView(session, descriptor, keptReturn);
 }
 
-// A child view is registered from R's view/open notification, which precedes
+// A child view is registered from the producer's view/open notification, which precedes
 // the object/open response. Return its record, waiting briefly if the
 // notification has not been processed yet.
 async function announcedTable(session, view, generation, timeoutMs = 2000) {
@@ -488,7 +488,7 @@ function refreshAvailable(descriptor) {
   return descriptor?.capabilities?.refresh === true;
 }
 
-// Ask R to rebuild a view. The reply only acknowledges the operation: the new
+// Ask the producer to rebuild a view. The reply only acknowledges the operation: the new
 // generation arrives as view/open and replaces the display, which starts from
 // a clean query state. The reply never changes what is shown, so a late
 // acknowledgement cannot move the display back.
@@ -545,7 +545,7 @@ function trackAvailable(descriptor) {
     trackingOf(descriptor).state !== "lost";
 }
 
-// Ask R to stop or resume following the variable of a view. The state change
+// Ask the producer to stop or resume following the variable of a view. The state change
 // arrives as view/tracking, or as a new view/open when resuming rebuilds the
 // view; the reply only acknowledges it.
 function trackView(session, descriptor, control) {
@@ -572,7 +572,7 @@ function trackView(session, descriptor, control) {
   return promise;
 }
 
-// R announced a tracking change without a new view/open. Only the generation
+// The producer announced a tracking change without a new view/open. Only the generation
 // still shown is updated; the descriptor is changed in place so the open view
 // and the list agree.
 function applyTracking(session, params) {
@@ -628,7 +628,7 @@ function renderLists() {
   for (const [id, info] of knownSessions) {
     const item = document.createElement("article");
     const heading = document.createElement("h3");
-    heading.textContent = `R session ${id}`;
+    heading.textContent = `Session ${id}`;
     const detail = document.createElement("p");
     detail.className = "muted";
     detail.textContent = `R ${info.r_version ?? "unknown"} · jdv ${
@@ -922,7 +922,7 @@ function loadTreeChildren(state, offset) {
       result.offset !== state.offset || !Array.isArray(result.children) ||
       !Number.isSafeInteger(result.total_children) ||
       result.total_children < 0 || result.children.length > TREE_PAGE_SIZE
-    ) throw new Error("R returned an invalid object children page.");
+    ) throw new Error("The producer returned an invalid object children page.");
     state.totalChildren = result.total_children;
     state.children = result.children;
     renderTreePage(state);
@@ -1195,7 +1195,8 @@ async function openChild(state, path) {
   state.childOpening = true;
   childOpenStatus.hidden = false;
   childOpenStatus.dataset.state = "waiting";
-  childOpenStatus.textContent = "Opening the captured value. Waiting for R…";
+  childOpenStatus.textContent =
+    "Opening the captured value. Waiting for the producer…";
   const promise = transport.request(
     state.session,
     "object/open",
@@ -1216,7 +1217,7 @@ async function openChild(state, path) {
       typeof reply?.view !== "string" ||
       !Number.isSafeInteger(reply.generation)
     ) {
-      throw new Error("R returned an invalid child view reply.");
+      throw new Error("The producer returned an invalid child view reply.");
     }
     // The response only identifies the child; its view/open notification
     // registered it, and a child closed meanwhile is never reopened here.
@@ -1231,7 +1232,9 @@ async function openChild(state, path) {
       throw new Error("The child view is no longer open.");
     }
     if (!viewSupport(descriptor)) {
-      throw new Error("R returned an invalid child view descriptor.");
+      throw new Error(
+        "The producer returned an invalid child view descriptor.",
+      );
     }
     if (descriptor.kind === "tree") {
       openTree(state.session, descriptor, state);
@@ -1943,7 +1946,9 @@ function showWarnings(warnings) {
     item.textContent = String(warning);
     warningsElement.append(item);
   }
-  if (messages.length) setStatus(`${messages.length} R warning(s).`, "warning");
+  if (messages.length) {
+    setStatus(`${messages.length} Producer warning(s).`, "warning");
+  }
 }
 
 function showTableError(error) {
@@ -2369,7 +2374,7 @@ async function loadSequentialPage(state) {
           await restoreHostPages(state, [metadata]);
           return;
         }
-        // A retained-page race is retried from a fresh catalog, never by consuming R.
+        // A retained-page race is retried from a fresh catalog, never by consuming another producer page.
         record.cachePages.delete(nextPage);
         await refreshHostCache(state, true);
         if (!isCurrent(state, epoch)) return;
@@ -2417,7 +2422,7 @@ async function loadSequentialPage(state) {
       !Number.isSafeInteger(metadata.rows_fetched) ||
       metadata.rows_fetched < 0 || metadata.rows_fetched > maxRows ||
       !response.binary
-    ) throw new Error("R returned an invalid sequential page.");
+    ) throw new Error("The producer returned an invalid sequential page.");
     const progress = sequentialRecord(state).progress;
     const nextProgress = { ...progress };
     recordSequentialProgress(nextProgress, metadata);

@@ -4,11 +4,15 @@ import {
   StreamPageCache,
   type StreamProgress,
 } from "./stream_cache.ts";
-import { type JsonObject, type RPeer, startRPeer } from "./r_listener.ts";
 import {
-  MAX_R_BINARY_FRAME_BYTES,
-  MAX_R_BINARY_HEADER_BYTES,
-} from "./r_listener.ts";
+  type JsonObject,
+  type ProtocolPeer,
+  startProtocolPeer,
+} from "./producer_listener.ts";
+import {
+  MAX_PRODUCER_BINARY_FRAME_BYTES,
+  MAX_PRODUCER_BINARY_HEADER_BYTES,
+} from "./producer_listener.ts";
 import type { ByteConnection } from "./platform.ts";
 
 export const MAX_LIVE_REQUESTS = 32;
@@ -29,7 +33,7 @@ const MAX_RETAINED_REQUEST_BYTES = 16 * 1024 * 1024;
 const BINARY_PREFIX_BYTES = 4;
 const encoder = new TextEncoder();
 
-interface RLimits {
+interface ProducerLimits {
   receiveFrames: number;
   receiveBytes: number;
   queueMessages: number;
@@ -86,11 +90,11 @@ interface WireCredit {
   pendingId?: string;
 }
 
-interface RSession {
+interface ProducerSession {
   id: string;
   hello: JsonObject;
-  limits: RLimits;
-  peer: RPeer;
+  limits: ProducerLimits;
+  peer: ProtocolPeer;
   views: Map<string, ViewRecord>;
   pending: Map<string, PendingRequest>;
   outbound: OutboundFrame[];
@@ -117,18 +121,18 @@ interface RSession {
 
 export class Hub {
   readonly #clients = new Set<BrowserClient>();
-  readonly #sessions = new Map<string, RSession>();
-  readonly #peers = new Set<RPeer>();
+  readonly #sessions = new Map<string, ProducerSession>();
+  readonly #peers = new Set<ProtocolPeer>();
   readonly #streamCache: StreamPageCache;
 
   constructor(options: StreamCacheOptions = {}) {
     this.#streamCache = new StreamPageCache(options);
   }
 
-  acceptR(connection: ByteConnection): void {
-    let session: RSession | null = null;
+  acceptProducer(connection: ByteConnection): void {
+    let session: ProducerSession | null = null;
     let rejectedHandshake = false;
-    const peer = startRPeer(
+    const peer = startProtocolPeer(
       connection,
       (message, body) => {
         if (!session) {
@@ -137,7 +141,7 @@ export class Hub {
           if (!session) rejectedHandshake = true;
           return;
         }
-        this.#handleRMessage(session, message, body);
+        this.#handleProducerMessage(session, message, body);
       },
       (reason) => {
         this.#peers.delete(peer);
@@ -222,7 +226,7 @@ export class Hub {
         type: "error",
         id: browserId,
         code: "session_not_found",
-        message: "R session is no longer connected.",
+        message: "Producer session is no longer connected.",
       });
       return;
     }
@@ -533,7 +537,7 @@ export class Hub {
         id: browserId,
         session: session.id,
         code: "limit_exceeded",
-        message: "The negotiated R request queue is full.",
+        message: "The negotiated producer request queue is full.",
       });
       return;
     }
@@ -558,7 +562,7 @@ export class Hub {
   #readStreamCache(
     client: BrowserClient,
     id: string,
-    session: RSession,
+    session: ProducerSession,
     view: ViewRecord,
     method: string,
     params: JsonObject,
@@ -617,7 +621,7 @@ export class Hub {
       };
       if (
         encoder.encode(JSON.stringify(response)).byteLength >
-          MAX_R_BINARY_HEADER_BYTES
+          MAX_PRODUCER_BINARY_HEADER_BYTES
       ) {
         fail(
           "limit_exceeded",
@@ -690,7 +694,10 @@ export class Hub {
     this.#clients.clear();
   }
 
-  #acceptHello(peer: RPeer, message: JsonObject): RSession | null {
+  #acceptHello(
+    peer: ProtocolPeer,
+    message: JsonObject,
+  ): ProducerSession | null {
     const params = message.params;
     const limits = isObject(params) && isObject(params.limits)
       ? parseLimits(params.limits)
@@ -714,7 +721,7 @@ export class Hub {
     const id = params.session;
     const previous = this.#sessions.get(id);
     if (previous) this.#dropSession(previous, "session_replaced");
-    const session: RSession = {
+    const session: ProducerSession = {
       id,
       hello: message,
       limits,
@@ -747,8 +754,8 @@ export class Hub {
     return session;
   }
 
-  #handleRMessage(
-    session: RSession,
+  #handleProducerMessage(
+    session: ProducerSession,
     message: JsonObject,
     body?: Uint8Array,
   ): void {
@@ -771,7 +778,7 @@ export class Hub {
     this.#releaseRequestSlot(session, pending);
     const view = session.views.get(pending.view);
     const currentGeneration = view?.generation === pending.generation;
-    // A sent view/refresh is a generation-moving command: R queues the new
+    // A sent view/refresh is a generation-moving command: the producer queues the new
     // view/open before the response, so the response is expected to arrive
     // after its own generation was superseded. Cancel, timeout, close, and
     // disconnect still end it (localEnded); it never touches display state.
@@ -793,7 +800,8 @@ export class Hub {
           id: pending.browserId,
           session: session.id,
           code: "invalid_request",
-          message: "R returned a response that does not match the request.",
+          message:
+            "The producer returned a response that does not match the request.",
         });
       }
       this.#finishPending(session, pending);
@@ -814,7 +822,7 @@ export class Hub {
             ? "invalid_request"
             : "stale_generation",
           message:
-            "R returned a binary response for a different view generation.",
+            "The producer returned a binary response for a different view generation.",
         });
       }
       this.#finishPending(session, pending);
@@ -846,7 +854,7 @@ export class Hub {
               ? "limit_exceeded"
               : "invalid_request",
             message:
-              "R returned invalid sequential page metadata, cursor, or byte length.",
+              "The producer returned invalid sequential page metadata, cursor, or byte length.",
           });
         }
         this.#finishPending(session, pending);
@@ -854,7 +862,7 @@ export class Hub {
         return;
       }
     }
-    // A child view is registered from R's view/open notification, which is
+    // A child view is registered from the producer's view/open notification, which is
     // sent before this response; the response never creates or revives a view.
     const closedCurrentView = pending.method === "view/close" &&
       currentGeneration &&
@@ -878,7 +886,8 @@ export class Hub {
             id: pending.browserId,
             session: session.id,
             code: "limit_exceeded",
-            message: "R's binary response exceeds the requested max_bytes.",
+            message:
+              "The producer's binary response exceeds the requested max_bytes.",
           });
         } else {
           const binaryFrame = encodeBrowserBinary(response, body);
@@ -905,7 +914,7 @@ export class Hub {
   }
 
   #registerView(
-    session: RSession,
+    session: ProducerSession,
     message: JsonObject,
     parentView?: string,
   ): void {
@@ -940,7 +949,7 @@ export class Hub {
   }
 
   #closeCachedView(
-    session: RSession,
+    session: ProducerSession,
     viewId: string,
     generation: number,
     message?: JsonObject,
@@ -961,12 +970,12 @@ export class Hub {
     });
   }
 
-  #closeDescendants(session: RSession, parentView: string): void {
+  #closeDescendants(session: ProducerSession, parentView: string): void {
     this.#closeDescendantsVisited(session, parentView, new Set([parentView]));
   }
 
   #closeDescendantsVisited(
-    session: RSession,
+    session: ProducerSession,
     parentView: string,
     visited: Set<string>,
   ): void {
@@ -996,7 +1005,7 @@ export class Hub {
   }
 
   #hasValidParent(
-    session: RSession,
+    session: ProducerSession,
     viewId: string,
     parentView: string,
   ): boolean {
@@ -1012,7 +1021,7 @@ export class Hub {
     return true;
   }
 
-  #handleNotification(session: RSession, message: JsonObject): void {
+  #handleNotification(session: ProducerSession, message: JsonObject): void {
     const params = message.params;
     if (
       message.method === "view/open" && isObject(params) &&
@@ -1036,7 +1045,7 @@ export class Hub {
       return;
     }
     if (message.method === "view/update_failed") {
-      // R keeps the previous view when a tracked update fails. Only a report
+      // The producer keeps the previous view when a tracked update fails. Only a report
       // for the generation the hub still holds reaches the browsers.
       if (
         !isObject(params) || typeof params.view !== "string" ||
@@ -1067,10 +1076,10 @@ export class Hub {
     this.#broadcast({ type: "notification", session: session.id, message });
   }
 
-  // R announces a tracking state change that comes without a new view/open.
+  // The producer announces a tracking state change that comes without a new view/open.
   // The cached descriptor follows it so a browser that connects later sees the
   // current state; only a report for the held generation is passed on.
-  #trackingChanged(session: RSession, params: unknown): void {
+  #trackingChanged(session: ProducerSession, params: unknown): void {
     if (
       !isObject(params) || typeof params.view !== "string" ||
       !Number.isSafeInteger(params.generation)
@@ -1117,7 +1126,7 @@ export class Hub {
   }
 
   #cancelViewGeneration(
-    session: RSession,
+    session: ProducerSession,
     view: string,
     generation: number,
     keepSentRefresh = false,
@@ -1145,7 +1154,7 @@ export class Hub {
   }
 
   #cancelPending(
-    session: RSession,
+    session: ProducerSession,
     pending: PendingRequest,
     reason: string,
   ): void {
@@ -1177,7 +1186,7 @@ export class Hub {
     this.#scheduleDrain(session);
   }
 
-  #sendCancel(session: RSession, pending: PendingRequest): void {
+  #sendCancel(session: ProducerSession, pending: PendingRequest): void {
     if (pending.cancelSent || session.closed) return;
     const queued = this.#enqueue(session, {
       kind: "control",
@@ -1187,7 +1196,7 @@ export class Hub {
     pending.cancelSent = queued;
   }
 
-  #expire(session: RSession, pending: PendingRequest): void {
+  #expire(session: ProducerSession, pending: PendingRequest): void {
     if (pending.state === "cancelled") {
       pending.state = "expired";
       clearTimeout(pending.timeoutTimer);
@@ -1202,7 +1211,8 @@ export class Hub {
         id: pending.browserId,
         session: session.id,
         code: "timeout",
-        message: "R did not complete this request before its deadline.",
+        message:
+          "The producer did not complete this request before its deadline.",
       });
     }
     if (wasSent) {
@@ -1224,7 +1234,7 @@ export class Hub {
     this.#scheduleDrain(session);
   }
 
-  #finishPending(session: RSession, pending: PendingRequest): void {
+  #finishPending(session: ProducerSession, pending: PendingRequest): void {
     if (!session.pending.has(pending.id)) return;
     clearTimeout(pending.timeoutTimer);
     clearTimeout(pending.busyTimer);
@@ -1238,7 +1248,10 @@ export class Hub {
     ) this.#stopWake(session);
   }
 
-  #releaseRequestBudget(session: RSession, pending: PendingRequest): void {
+  #releaseRequestBudget(
+    session: ProducerSession,
+    pending: PendingRequest,
+  ): void {
     if (pending.queuedBytesAccounted) {
       session.queuedRequestBytes = Math.max(
         0,
@@ -1260,7 +1273,10 @@ export class Hub {
     }
   }
 
-  #coalesceQueuedQuery(session: RSession, pending: PendingRequest): void {
+  #coalesceQueuedQuery(
+    session: ProducerSession,
+    pending: PendingRequest,
+  ): void {
     if (!isCoalescibleMethod(pending.method)) return;
     for (const old of [...session.pending.values()]) {
       if (
@@ -1296,7 +1312,7 @@ export class Hub {
       JSON.stringify(leftParams.path) === JSON.stringify(rightParams.path);
   }
 
-  #enqueue(session: RSession, frame: OutboundFrame): boolean {
+  #enqueue(session: ProducerSession, frame: OutboundFrame): boolean {
     if (session.outbound.length >= MAX_OUTBOUND_FRAMES) return false;
     const cancel = frame.value.method === "cancel";
     const queued = session.outbound.reduce(
@@ -1314,7 +1330,7 @@ export class Hub {
     return true;
   }
 
-  #scheduleDrain(session: RSession): void {
+  #scheduleDrain(session: ProducerSession): void {
     if (
       session.closed || session.draining || session.drainTimer !== undefined
     ) return;
@@ -1324,7 +1340,7 @@ export class Hub {
     }, 0);
   }
 
-  async #drain(session: RSession): Promise<void> {
+  async #drain(session: ProducerSession): Promise<void> {
     if (session.closed || session.draining) return;
     session.draining = true;
     let sent = 0;
@@ -1418,7 +1434,7 @@ export class Hub {
     }
   }
 
-  #startWake(session: RSession): void {
+  #startWake(session: ProducerSession): void {
     if (session.wakeTimer !== undefined) return;
     session.wakeTimer = setInterval(() => {
       if (
@@ -1446,7 +1462,7 @@ export class Hub {
     }, WAKE_INTERVAL_MS);
   }
 
-  #stopWake(session: RSession): void {
+  #stopWake(session: ProducerSession): void {
     if (session.wakeTimer !== undefined) clearInterval(session.wakeTimer);
     session.wakeTimer = undefined;
     session.wakeQueued = false;
@@ -1455,7 +1471,7 @@ export class Hub {
     );
   }
 
-  #dropSession(session: RSession, reason: unknown): void {
+  #dropSession(session: ProducerSession, reason: unknown): void {
     if (session.closed) return;
     session.closed = true;
     session.peer.close();
@@ -1467,7 +1483,7 @@ export class Hub {
         id: pending.browserId,
         session: session.id,
         code: "disconnected",
-        message: "The R connection closed.",
+        message: "The producer connection closed.",
       });
       this.#finishPending(session, pending);
     }
@@ -1492,7 +1508,7 @@ export class Hub {
   }
 
   #hasWireCredit(
-    session: RSession,
+    session: ProducerSession,
     kind: "ordinary" | "cancel",
     bytes: number,
   ): boolean {
@@ -1518,7 +1534,7 @@ export class Hub {
   }
 
   #chargeWireCredit(
-    session: RSession,
+    session: ProducerSession,
     sequence: number,
     kind: "ordinary" | "cancel",
     bytes: number,
@@ -1534,7 +1550,7 @@ export class Hub {
     }
   }
 
-  #acknowledgeFrames(session: RSession, params: unknown): void {
+  #acknowledgeFrames(session: ProducerSession, params: unknown): void {
     if (!isObject(params) || !Number.isSafeInteger(params.frames)) return;
     const sequence = Number(params.frames);
     if (
@@ -1557,11 +1573,11 @@ export class Hub {
     this.#scheduleDrain(session);
   }
 
-  #releaseRequestSlot(session: RSession, pending: PendingRequest): void {
+  #releaseRequestSlot(session: ProducerSession, pending: PendingRequest): void {
     this.#releaseRequestBudget(session, pending);
   }
 
-  #frameEligible(session: RSession, frame: OutboundFrame): boolean {
+  #frameEligible(session: ProducerSession, frame: OutboundFrame): boolean {
     if (frame.pending && frame.pending.state !== "queued") return false;
     const pending = frame.pending;
     if (pending) {
@@ -1586,7 +1602,7 @@ export class Hub {
     return this.#hasWireCredit(session, kind, frame.bytes);
   }
 
-  #blockedOnCredit(session: RSession, frame: OutboundFrame): boolean {
+  #blockedOnCredit(session: ProducerSession, frame: OutboundFrame): boolean {
     if (frame.pending && frame.pending.state !== "queued") return false;
     const pending = frame.pending;
     if (
@@ -1611,7 +1627,7 @@ export class Hub {
     return !this.#hasWireCredit(session, kind, frame.bytes);
   }
 
-  #pauseForCredit(session: RSession): void {
+  #pauseForCredit(session: ProducerSession): void {
     if (session.creditPaused) return;
     session.creditPaused = true;
     this.#broadcast({
@@ -1621,7 +1637,7 @@ export class Hub {
     });
   }
 
-  #queueDeferredCancels(session: RSession): void {
+  #queueDeferredCancels(session: ProducerSession): void {
     for (const pending of session.pending.values()) {
       if (
         pending.localEnded && !pending.cancelSent &&
@@ -1632,27 +1648,27 @@ export class Hub {
     }
   }
 
-  #liveRequestLimit(session: RSession): number {
+  #liveRequestLimit(session: ProducerSession): number {
     return Math.min(MAX_LIVE_REQUESTS, session.limits.queueMessages);
   }
 
-  #ordinaryFrameLimit(session: RSession): number {
+  #ordinaryFrameLimit(session: ProducerSession): number {
     const total = Math.min(WIRE_MAX_FRAMES, session.limits.receiveFrames);
     return total - this.#cancelFrameReserve(session);
   }
 
-  #ordinaryByteLimit(session: RSession): number {
+  #ordinaryByteLimit(session: ProducerSession): number {
     const total = Math.min(WIRE_MAX_BYTES, session.limits.receiveBytes);
     return total - this.#cancelByteReserve(session);
   }
 
-  #cancelFrameReserve(session: RSession): number {
+  #cancelFrameReserve(session: ProducerSession): number {
     const total = Math.min(WIRE_MAX_FRAMES, session.limits.receiveFrames);
     const messages = this.#liveRequestLimit(session);
     return Math.min(CANCEL_RESERVE_FRAMES, messages, total - 1);
   }
 
-  #cancelByteReserve(session: RSession): number {
+  #cancelByteReserve(session: ProducerSession): number {
     const total = Math.min(WIRE_MAX_BYTES, session.limits.receiveBytes);
     return Math.min(CANCEL_RESERVE_BYTES, total - 1);
   }
@@ -1726,7 +1742,7 @@ function isTypedPath(value: unknown): boolean {
   });
 }
 
-function parseLimits(value: JsonObject): RLimits | null {
+function parseLimits(value: JsonObject): ProducerLimits | null {
   const fields = [
     "max_receive_frames",
     "max_receive_bytes",
@@ -1751,16 +1767,16 @@ function parseLimits(value: JsonObject): RLimits | null {
     queueBytes: Number(value.queue_bytes),
     maxRequestBytes: Number(value.max_request_bytes),
     maxMessageBytes: value.max_message_bytes === undefined
-      ? MAX_R_BINARY_FRAME_BYTES
+      ? MAX_PRODUCER_BINARY_FRAME_BYTES
       : Number(value.max_message_bytes),
   };
 }
 
-function effectiveBinaryByteLimit(session: RSession): number {
+function effectiveBinaryByteLimit(session: ProducerSession): number {
   return Math.max(
     0,
-    Math.min(session.limits.maxMessageBytes, MAX_R_BINARY_FRAME_BYTES) -
-      MAX_R_BINARY_HEADER_BYTES - BINARY_PREFIX_BYTES,
+    Math.min(session.limits.maxMessageBytes, MAX_PRODUCER_BINARY_FRAME_BYTES) -
+      MAX_PRODUCER_BINARY_HEADER_BYTES - BINARY_PREFIX_BYTES,
   );
 }
 
@@ -1770,9 +1786,9 @@ function encodeBrowserBinary(
 ): Uint8Array | null {
   const header = encoder.encode(JSON.stringify(envelope));
   if (
-    header.byteLength > MAX_R_BINARY_HEADER_BYTES ||
+    header.byteLength > MAX_PRODUCER_BINARY_HEADER_BYTES ||
     header.byteLength + BINARY_PREFIX_BYTES + body.byteLength >
-      MAX_R_BINARY_FRAME_BYTES
+      MAX_PRODUCER_BINARY_FRAME_BYTES
   ) return null;
   const result = new Uint8Array(
     BINARY_PREFIX_BYTES + header.byteLength + body.byteLength,
@@ -1819,7 +1835,7 @@ function isTrackResponse(
     sanitizeTracking(result.tracking) !== null;
 }
 
-// The tracking object of R's view/tracking and view/track result, reduced to
+// The tracking object of the producer's view/tracking and view/track result, reduced to
 // the fields the protocol defines; null when it is not valid.
 function sanitizeTracking(value: unknown): JsonObject | null {
   if (!isObject(value) || typeof value.name !== "string") return null;

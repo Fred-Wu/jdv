@@ -1766,7 +1766,7 @@ Deno.test({
           };
         });
         assert(
-          probeState.warning === "R returned an invalid table page.",
+          probeState.warning === "The producer returned an invalid table page.",
           JSON.stringify(probeState),
         );
         assertEquals(probeState.state, "error");
@@ -1946,7 +1946,8 @@ Deno.test({
               document: BrowserDocument;
             }).document;
             return document.querySelector('#warnings li[data-state="error"]')
-                  ?.textContent === "R returned an invalid table page." &&
+                  ?.textContent ===
+                "The producer returned an invalid table page." &&
               document.querySelector("#status")?.getAttribute("data-state") ===
                 "error";
           },

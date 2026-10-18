@@ -1,15 +1,15 @@
 import type { ByteConnection } from "./platform.ts";
 
-export const MAX_R_FRAME_BYTES = 10 * 1024 * 1024;
-export const MAX_R_BINARY_HEADER_BYTES = 64 * 1024;
-export const MAX_R_BINARY_FRAME_BYTES = 10 * 1024 * 1024;
-export const DEFAULT_R_BINARY_BODY_TIMEOUT_MS = 30_000;
+export const MAX_PRODUCER_FRAME_BYTES = 10 * 1024 * 1024;
+export const MAX_PRODUCER_BINARY_HEADER_BYTES = 64 * 1024;
+export const MAX_PRODUCER_BINARY_FRAME_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_PRODUCER_BINARY_BODY_TIMEOUT_MS = 30_000;
 
 export interface JsonObject {
   [key: string]: unknown;
 }
 
-export interface RPeer {
+export interface ProtocolPeer {
   readonly connection: ByteConnection;
   readonly onMessage: (message: JsonObject, body?: Uint8Array) => void;
   readonly onClose: (reason: unknown) => void;
@@ -17,16 +17,16 @@ export interface RPeer {
   close(): void;
 }
 
-export interface RPeerOptions {
+export interface ProtocolPeerOptions {
   binaryBodyTimeoutMs?: number;
 }
 
-export function startRPeer(
+export function startProtocolPeer(
   connection: ByteConnection,
   onMessage: (message: JsonObject, body?: Uint8Array) => void,
   onClose: (reason: unknown) => void,
-  options: RPeerOptions = {},
-): RPeer {
+  options: ProtocolPeerOptions = {},
+): ProtocolPeer {
   const encoder = new TextEncoder();
   let closed = false;
   let writeTail = Promise.resolve();
@@ -37,13 +37,15 @@ export function startRPeer(
     timer: ReturnType<typeof setTimeout>;
   } | undefined;
   const binaryBodyTimeoutMs = options.binaryBodyTimeoutMs ??
-    DEFAULT_R_BINARY_BODY_TIMEOUT_MS;
-  const peer: RPeer = {
+    DEFAULT_PRODUCER_BINARY_BODY_TIMEOUT_MS;
+  const peer: ProtocolPeer = {
     connection,
     onMessage,
     onClose,
     send(message) {
-      if (closed) return Promise.reject(new Error("R connection is closed."));
+      if (closed) {
+        return Promise.reject(new Error("Producer connection is closed."));
+      }
       const bytes = encoder.encode(`${JSON.stringify(message)}\n`);
       const next = writeTail.then(() => connection.write(bytes));
       writeTail = next.catch(() => undefined);
@@ -65,7 +67,9 @@ export function startRPeer(
       if (closed) return;
       if (chunk === null) {
         if (pending.length || binaryBody) {
-          throw new Error("R closed with a partial JSONL or binary frame.");
+          throw new Error(
+            "Producer closed with a partial JSONL or binary frame.",
+          );
         }
         finish(null);
         return;
@@ -96,22 +100,22 @@ export function startRPeer(
         if (newline < 0) {
           const remaining = chunk.subarray(offset);
           pending = new Uint8Array(append(pending, remaining));
-          if (pending.length > MAX_R_FRAME_BYTES) {
-            throw new Error("R JSONL frame exceeds 10 MiB.");
+          if (pending.length > MAX_PRODUCER_FRAME_BYTES) {
+            throw new Error("Producer JSONL frame exceeds 10 MiB.");
           }
           break;
         }
         const frame = append(pending, chunk.subarray(offset, newline));
         pending = new Uint8Array(0);
-        if (frame.length > MAX_R_FRAME_BYTES) {
-          throw new Error("R JSONL frame exceeds 10 MiB.");
+        if (frame.length > MAX_PRODUCER_FRAME_BYTES) {
+          throw new Error("Producer JSONL frame exceeds 10 MiB.");
         }
         if (frame.length === 0) {
-          throw new Error("R sent an empty JSONL frame.");
+          throw new Error("Producer sent an empty JSONL frame.");
         }
         const value = JSON.parse(decoder.decode(frame)) as unknown;
         if (!value || typeof value !== "object" || Array.isArray(value)) {
-          throw new Error("R sent a JSON frame that is not an object.");
+          throw new Error("Producer sent a JSON frame that is not an object.");
         }
         const message = value as JsonObject;
         offset = newline + 1;
@@ -121,7 +125,9 @@ export function startRPeer(
         } else {
           const bytes = new Uint8Array(bodyLength);
           const timer = setTimeout(() => {
-            finish(new Error("R binary body exceeded its absolute timeout."));
+            finish(
+              new Error("Producer binary body exceeded its absolute timeout."),
+            );
           }, binaryBodyTimeoutMs);
           binaryBody = { message, bytes, copied: 0, timer };
           if (bodyLength === 0) {
@@ -170,13 +176,13 @@ function parseBinaryTransferLength(
     !isObject(result.transfer) || result.transfer.encoding !== "arrow-ipc" ||
     !Number.isSafeInteger(result.transfer.byte_length) ||
     Number(result.transfer.byte_length) < 0
-  ) throw new Error("R sent an invalid binary transfer descriptor.");
-  if (headerBytes > MAX_R_BINARY_HEADER_BYTES) {
-    throw new Error("R binary JSON header exceeds 64 KiB.");
+  ) throw new Error("Producer sent an invalid binary transfer descriptor.");
+  if (headerBytes > MAX_PRODUCER_BINARY_HEADER_BYTES) {
+    throw new Error("Producer binary JSON header exceeds 64 KiB.");
   }
   const length = Number(result.transfer.byte_length);
-  if (headerBytes + 1 + length > MAX_R_BINARY_FRAME_BYTES) {
-    throw new Error("R binary frame exceeds 10 MiB.");
+  if (headerBytes + 1 + length > MAX_PRODUCER_BINARY_FRAME_BYTES) {
+    throw new Error("Producer binary frame exceeds 10 MiB.");
   }
   return length;
 }

@@ -219,7 +219,7 @@ function concatBytes(...parts: Uint8Array[]): Uint8Array {
 Deno.test("invalid hello followed by valid hello in one chunk is terminal", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   const invalid = JSON.stringify({
     id: "bad",
     method: "hello",
@@ -252,7 +252,7 @@ Deno.test("invalid hello followed by valid hello in one chunk is terminal", asyn
 Deno.test("hello requires every positive integer receive and queue limit", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   const { max_request_bytes: _maxRequestBytes, ...incomplete } = DEFAULT_LIMITS;
   connection.inject({
     id: "hello",
@@ -267,7 +267,7 @@ Deno.test("hello requires every positive integer receive and queue limit", async
 Deno.test("hello accepts an omitted max_message_bytes limit for older peers", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   const browser = new MemoryBrowser();
   hub.attach(browser);
   const { max_message_bytes: _unused, ...legacyLimits } = DEFAULT_LIMITS;
@@ -290,7 +290,7 @@ Deno.test("hello accepts an omitted max_message_bytes limit for older peers", as
 Deno.test("Hub relays a bounded Arrow IPC body in one browser binary frame", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -347,7 +347,7 @@ Deno.test("Hub relays a bounded Arrow IPC body in one browser binary frame", asy
 Deno.test("Hub relays an empty binary body for a zero-byte request budget", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -391,7 +391,7 @@ Deno.test("Hub relays an empty binary body for a zero-byte request budget", asyn
 Deno.test("Hub rejects a binary response for a different view generation", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -433,7 +433,7 @@ Deno.test("Hub rejects a binary response for a different view generation", async
 Deno.test("Hub drains a cancelled binary body before the next JSONL response", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -496,7 +496,7 @@ Deno.test("Hub drains a cancelled binary body before the next JSONL response", a
 Deno.test("Hub rejects an over-budget binary response and continues with the next JSONL response", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -551,7 +551,7 @@ Deno.test("Hub rejects an over-budget binary response and continues with the nex
 Deno.test("R request ids are remapped and table close updates the Snapshot cache", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -636,7 +636,7 @@ Deno.test("R request ids are remapped and table close updates the Snapshot cache
 Deno.test("tree child requests route typed paths and distinguish stale views", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -777,7 +777,7 @@ Deno.test("tree child requests route typed paths and distinguish stale views", a
 Deno.test("object/open registers the child from R's notification even after browser detach", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -917,7 +917,7 @@ function viewIds(browser: MemoryBrowser): string[] {
 Deno.test("an object/open response alone never registers a child view", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -948,7 +948,7 @@ Deno.test("an object/open response alone never registers a child view", async ()
 Deno.test("a closed child is not revived by a late object/open response", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -979,7 +979,7 @@ Deno.test("a closed child is not revived by a late object/open response", async 
 Deno.test("view lineage rejects self-parent and cycles before cascade close", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1087,7 +1087,7 @@ Deno.test("view lineage rejects self-parent and cycles before cascade close", as
 Deno.test("cancelled late replies release their request slot without reaching the browser", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1126,7 +1126,7 @@ Deno.test("cancelled late replies release their request slot without reaching th
 Deno.test("queued row pages coalesce and wait behind the already sent page", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1165,7 +1165,7 @@ Deno.test("queued row pages coalesce and wait behind the already sent page", asy
 Deno.test("terminal replies free request slots without acknowledging wire credit", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1237,7 +1237,7 @@ Deno.test("terminal replies free request slots without acknowledging wire credit
 Deno.test("repeated limit errors release request slots but retain frame credit", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1306,7 +1306,7 @@ Deno.test("repeated limit errors release request slots but retain frame credit",
 Deno.test("reserved cancellation slots remain usable behind a full ordinary queue", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1365,7 +1365,7 @@ Deno.test("reserved cancellation slots remain usable behind a full ordinary queu
 Deno.test("late close results update only their still-current table generation", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1415,7 +1415,7 @@ Deno.test("late close results update only their still-current table generation",
 Deno.test("a cancelled table close still clears its current Snapshot cache", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1462,7 +1462,7 @@ Deno.test("a cancelled table close still clears its current Snapshot cache", asy
 Deno.test("closing a child clears only that view and cancels its pending work", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1554,7 +1554,7 @@ Deno.test("closing a child clears only that view and cancels its pending work", 
 Deno.test("request timeout stops wakes and ignores a later result", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1632,7 +1632,7 @@ Deno.test("request timeout stops wakes and ignores a later result", async () => 
 Deno.test("silent wake traffic pauses at the frame window and resumes on a result", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1703,7 +1703,7 @@ Deno.test("silent wake traffic pauses at the frame window and resumes on a resul
 Deno.test("future ACKs and terminal replies cannot free wire credit", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1774,7 +1774,7 @@ Deno.test("future ACKs and terminal replies cannot free wire credit", async () =
 Deno.test("a request larger than R's negotiated single-request limit is rejected", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1809,7 +1809,7 @@ Deno.test("a request larger than R's negotiated single-request limit is rejected
 Deno.test("a single request larger than R's queue byte limit is rejected", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1848,7 +1848,7 @@ Deno.test("a single request larger than R's queue byte limit is rejected", async
 Deno.test("a one-message R queue retains the latest unsent page behind a live page", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1904,7 +1904,7 @@ Deno.test("a one-message R queue retains the latest unsent page behind a live pa
 Deno.test("R queue bytes are charged on send and retained through a terminal reply", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -1958,7 +1958,7 @@ Deno.test("R queue bytes are charged on send and retained through a terminal rep
 Deno.test("more than 32 cancelled request waves leave the session usable", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -2017,7 +2017,7 @@ Deno.test("more than 32 cancelled request waves leave the session usable", async
 Deno.test("large ordinary frames stop at the 496 KiB byte budget", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -2091,7 +2091,7 @@ Deno.test("large ordinary frames stop at the 496 KiB byte budget", async () => {
 Deno.test("grid cell opens validate original row selectors and tree suffixes", async () => {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",
@@ -2208,7 +2208,7 @@ async function sequentialHubFixture(
 ) {
   const hub = new Hub(options);
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     method: "hello",
     params: { protocol: 1, session: "r-9010-1", limits: { ...DEFAULT_LIMITS } },
@@ -2901,7 +2901,7 @@ Deno.test("host cache keeps progress after immediate eviction and accepts legacy
 function refreshFixture(session: string, limits: JsonRecord = {}) {
   const hub = new Hub();
   const connection = new MemoryConnection();
-  hub.acceptR(connection);
+  hub.acceptProducer(connection);
   connection.inject({
     id: "hello",
     method: "hello",

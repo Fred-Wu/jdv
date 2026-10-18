@@ -29,7 +29,7 @@ import { type BrowserClient, Hub } from "./hub.ts";
 import { join } from "node:path";
 import {
   cacheDirectory,
-  listenR,
+  listenProducer,
   preparePrivateDirectory,
   removeIfOwned,
   writeAtomicPrivate,
@@ -69,7 +69,7 @@ export function createBrowserClient(
   };
   const send = (value: string | Uint8Array, cacheReply: boolean) => {
     if (stopped || socket.readyState !== WebSocket.OPEN) return;
-    // Cache reads bypass R credit; limit only their additional send queue.
+    // Cache reads bypass producer credit; limit only their additional send queue.
     if (cacheReply) {
       const bytes = typeof value === "string"
         ? encoder.encode(value).byteLength
@@ -110,16 +110,21 @@ export async function startServer(options: Options = parseOptions()): Promise<{
 }> {
   const hub = new Hub(options);
   await preparePrivateDirectory(options.cacheDir);
-  const r = await listenR({ mode: options.mode, cacheDir: options.cacheDir });
+  const producerListener = await listenProducer({
+    mode: options.mode,
+    cacheDir: options.cacheDir,
+  });
   let stopped = false;
   const instance = crypto.randomUUID();
   const pid = Deno.pid;
 
   const acceptLoop = (async () => {
     try {
-      for await (const connection of r.listener) hub.acceptR(connection);
+      for await (const connection of producerListener.listener) {
+        hub.acceptProducer(connection);
+      }
     } catch (error) {
-      if (!stopped) console.error(`R listener stopped: ${error}`);
+      if (!stopped) console.error(`Producer listener stopped: ${error}`);
     }
   })();
   let http: Deno.HttpServer | undefined;
@@ -129,12 +134,12 @@ export async function startServer(options: Options = parseOptions()): Promise<{
   let onSigint: (() => void) | undefined;
   let onSigterm: (() => void) | undefined;
   const removeOwnSocket = async () => {
-    if (!r.socketPath.startsWith("unix://")) return;
+    if (!producerListener.socketPath.startsWith("unix://")) return;
     try {
-      await Deno.remove(r.socketPath.slice("unix://".length));
+      await Deno.remove(producerListener.socketPath.slice("unix://".length));
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
-        console.error(`Could not remove R socket: ${error}`);
+        console.error(`Could not remove producer socket: ${error}`);
       }
     }
   };
@@ -168,7 +173,7 @@ export async function startServer(options: Options = parseOptions()): Promise<{
       JSON.stringify({
         pid,
         instance,
-        socketPath: r.socketPath,
+        socketPath: producerListener.socketPath,
         httpUrl: advertisedUrl,
       }),
     );
@@ -178,7 +183,7 @@ export async function startServer(options: Options = parseOptions()): Promise<{
       stopped = true;
       if (onSigint) Deno.removeSignalListener("SIGINT", onSigint);
       if (onSigterm) Deno.removeSignalListener("SIGTERM", onSigterm);
-      r.listener.close();
+      producerListener.listener.close();
       hub.close();
       await http!.shutdown();
       await removeIfOwned(discoveryPath, pid, instance);
@@ -199,7 +204,7 @@ export async function startServer(options: Options = parseOptions()): Promise<{
     console.log(
       JSON.stringify({
         url: advertisedUrl,
-        socketPath: r.socketPath,
+        socketPath: producerListener.socketPath,
         discoveryPath,
         pid,
       }),
@@ -209,7 +214,7 @@ export async function startServer(options: Options = parseOptions()): Promise<{
     });
     return {
       url: advertisedUrl,
-      socketPath: r.socketPath,
+      socketPath: producerListener.socketPath,
       discoveryPath,
       close,
     };
@@ -217,7 +222,7 @@ export async function startServer(options: Options = parseOptions()): Promise<{
     stopped = true;
     if (onSigint) Deno.removeSignalListener("SIGINT", onSigint);
     if (onSigterm) Deno.removeSignalListener("SIGTERM", onSigterm);
-    r.listener.close();
+    producerListener.listener.close();
     hub.close();
     if (http) await http.shutdown().catch(() => undefined);
     await removeIfOwned(discoveryPath, pid, instance);
