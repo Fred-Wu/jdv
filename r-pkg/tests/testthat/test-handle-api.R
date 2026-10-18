@@ -84,16 +84,25 @@ test_that("byte limits fail cleanly when a single item cannot fit", {
 })
 
 test_that("omitted mode and collation use defaults without warnings", {
+  old_collation <- options(jdv.collation = "locale")
+  on.exit(options(old_collation), add = TRUE)
   expect_warning(handle <- jdv_handle(mtcars), NA)
   on.exit(jdv_handle_close(handle), add = TRUE)
   descriptor <- .jdv_json_parse(jdv_handle_descriptor(handle))
   expect_null(descriptor$mode)
+  expect_identical(handle$state$entry$collation, "locale")
 
   root <- jdv_handle(list(value = data.frame(x = 1L)))
   on.exit(jdv_handle_close(root), add = TRUE)
   child <- jdv_handle_open(root, list(list(type = "index", index = 1L)))
   on.exit(jdv_handle_close(child), add = TRUE)
   expect_null(.jdv_json_parse(jdv_handle_descriptor(child))$mode)
+  expect_identical(child$state$entry$collation, "locale")
+
+  explicit_null <- jdv_handle(mtcars, mode = NULL, collation = NULL)
+  on.exit(jdv_handle_close(explicit_null), add = TRUE)
+  expect_identical(explicit_null$state$entry$intent_mode, "auto")
+  expect_identical(explicit_null$state$entry$collation, "C")
 })
 
 test_that("single explicit row labels remain in snapshot data", {

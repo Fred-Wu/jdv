@@ -861,8 +861,8 @@ jdv_json_object <- function(x = list()) {
 #'   generation; NULL titles always create independent tables.
 #' @param mode Grid view mode: `"auto"`, `"snapshot"`, or `"paged"`.
 #' @param collation Grid string ordering policy, `"C"` or `"locale"`. When
-#'   omitted, `getOption("jdv.collation", "C")` supplies the default; an
-#'   explicit argument takes precedence.
+#'   `NULL` (the default), `getOption("jdv.collation", "C")` supplies the
+#'   default. A non-`NULL` value is kept as the view's refresh intent.
 #' @param binding Optional `list(name = "x", env = env)` naming a variable that
 #'   holds `x`, for embedding hosts. The view then follows that variable as
 #'   [jdv_view()] does with `track = TRUE`: when the variable is assigned a
@@ -929,15 +929,13 @@ jdv_register <- function(
   x,
   title = NULL,
   mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale"),
+  collation = NULL,
   binding = NULL
 ) {
   .jdv_assert_active()
   mode <- .jdv_match_arg(mode, c("auto", "snapshot", "paged"), "'mode'")
-  collation <- if (missing(collation)) {
-    NULL
-  } else {
-    .jdv_match_arg(collation, c("C", "locale"), "'collation'")
+  if (!is.null(collation)) {
+    collation <- .jdv_match_arg(collation, c("C", "locale"), "'collation'")
   }
   tracking <- if (!is.null(binding)) .jdv_binding_verify(x, binding)
   registered <- .jdv_register_internal(

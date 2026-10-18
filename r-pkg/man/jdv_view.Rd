@@ -8,7 +8,7 @@ jdv_view(
   x,
   title = NULL,
   mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale"),
+  collation = NULL,
   track = TRUE
 )
 }
@@ -22,7 +22,9 @@ used; explicitly passing \code{NULL} creates an independent table slot.}
 
 \item{mode}{Grid view mode: \code{"auto"}, \code{"snapshot"}, or \code{"paged"}.}
 
-\item{collation}{Grid string ordering policy, \code{"C"} or \code{"locale"}.}
+\item{collation}{Grid string ordering policy, \code{"C"} or \code{"locale"}. When
+\code{NULL} (the default), \code{getOption("jdv.collation", "C")} supplies the
+default. A non-\code{NULL} value is kept as the view's refresh intent.}
 
 \item{track}{Whether to follow the variable passed as \code{x}; see Details. To
 follow a variable on behalf of a caller, see \code{\link[=jdv_binding]{jdv_binding()}}.}

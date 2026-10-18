@@ -1797,6 +1797,49 @@ local({
     )
   })
 
+  test_that(
+    "jdv_view uses NULL collation as option intent and preserves title defaults",
+    {
+      host <- lifecycle_host()
+      on.exit(host$cleanup(), add = TRUE)
+      expect_true(host$wait_ready())
+      old_collation <- options(jdv.collation = "locale")
+      on.exit(options(old_collation), add = TRUE)
+
+      source <- mtcars
+      id <- jdv_view(source, track = FALSE)
+      entry <- get(id, envir = .jdv_state$entries, inherits = FALSE)
+      expect_identical(entry$title, "source")
+      expect_identical(entry$collation, "locale")
+      expect_null(entry$intent_collation)
+
+      null_title_id <- jdv_view(
+        source,
+        title = NULL,
+        collation = NULL,
+        track = FALSE
+      )
+      null_title <- get(
+        null_title_id,
+        envir = .jdv_state$entries,
+        inherits = FALSE
+      )
+      expect_null(null_title$title)
+      expect_identical(null_title$collation, "locale")
+      expect_null(null_title$intent_collation)
+
+      fixed_id <- jdv_view(
+        source,
+        title = "fixed-collation",
+        collation = "locale",
+        track = FALSE
+      )
+      fixed <- get(fixed_id, envir = .jdv_state$entries, inherits = FALSE)
+      expect_identical(fixed$collation, "locale")
+      expect_identical(fixed$intent_collation, "locale")
+    }
+  )
+
   test_that("jdv_view tracks only a plain symbol and only on request", {
     skip_if_not(.jdv_track_supported())
     host <- lifecycle_host()

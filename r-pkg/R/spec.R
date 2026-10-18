@@ -875,8 +875,8 @@
 #' advances the generation by one. The registration `mode` and `collation` are
 #' reused as they were requested: an `"auto"` mode is decided again (a grid may
 #' move between Snapshot and Paged, and the effective mode is never frozen), an
-#' explicit mode is kept, and an omitted collation reads `jdv.collation` again.
-#' A refresh of a titled view keeps its title association, so a later
+#' explicit mode is kept, and a `NULL` collation intent reads `jdv.collation`
+#' again. A refresh of a titled view keeps its title association, so a later
 #' registration with that title continues from the refreshed generation.
 #'
 #' The replacement is built first. Only if the view, its generation, and (for a
@@ -1136,13 +1136,13 @@
 #'   x,
 #'   title = NULL,
 #'   mode = c("auto", "snapshot", "paged"),
-#'   collation = c("C", "locale")
+#'   collation = NULL
 #' )
 #'
 #' jdv_rpc(request = NULL)
 #'
 #' jdv_view(x, title = NULL, mode = c("auto", "snapshot", "paged"),
-#'   collation = c("C", "locale"))
+#'   collation = NULL)
 #'
 #' jdv_close(id = NULL)
 #' ```

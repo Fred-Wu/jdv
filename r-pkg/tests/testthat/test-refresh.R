@@ -186,6 +186,33 @@ test_that("the registration intent is replayed, not the effective mode", {
   )
 })
 
+test_that(
+  "NULL collation follows the option across registration wrappers and refresh",
+  {
+    refresh_new_session()
+    old <- options(jdv.collation = "locale")
+    on.exit(options(old), add = TRUE)
+
+    default <- jdv_register(mtcars)
+    explicit_null <- jdv_register(mtcars, collation = NULL)
+    fixed <- jdv_register(mtcars, collation = "locale")
+    jdv_notifications()
+    expect_identical(refresh_entry(default$id)$collation, "locale")
+    expect_null(refresh_entry(default$id)$intent_collation)
+    expect_identical(refresh_entry(explicit_null$id)$collation, "locale")
+    expect_null(refresh_entry(explicit_null$id)$intent_collation)
+
+    options(jdv.collation = "C")
+    for (view in list(default, explicit_null, fixed)) {
+      expect_null(refresh_json(view)$error)
+      expect_identical(
+        .jdv_json_parse(jdv_notifications())$params$collation,
+        if (identical(view, fixed)) "locale" else "C"
+      )
+    }
+  }
+)
+
 test_that("a failed rebuild leaves the generation, children, and state", {
   refresh_new_session()
   fail <- FALSE

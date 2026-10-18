@@ -12,7 +12,7 @@
 jdv_handle(
   x,
   mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale")
+  collation = getOption("jdv.collation", "C")
 )
 
 jdv_handle_register(handle, title = NULL, mode = NULL, collation = NULL)
@@ -33,7 +33,7 @@ jdv_handle_open(
   handle,
   path,
   mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale")
+  collation = getOption("jdv.collation", "C")
 )
 
 jdv_handle_close(handle)

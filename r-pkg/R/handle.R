@@ -390,19 +390,10 @@
 jdv_handle <- function(
   x,
   mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale")
+  collation = getOption("jdv.collation", "C")
 ) {
   .jdv_assert_active()
-  mode <- if (missing(mode)) {
-    "auto"
-  } else {
-    .jdv_match_arg(mode, c("auto", "snapshot", "paged"), "mode")
-  }
-  collation <- if (missing(collation)) {
-    getOption("jdv.collation", "C")
-  } else {
-    .jdv_match_arg(collation, c("C", "locale"), "collation")
-  }
+  mode <- .jdv_match_arg(mode, c("auto", "snapshot", "paged"), "mode")
   collation <- .jdv_match_arg(collation, c("C", "locale"), "collation")
   root <- new.env(parent = emptyenv())
   root$sequence <- 0
@@ -651,21 +642,12 @@ jdv_handle_open <- function(
   handle,
   path,
   mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale")
+  collation = getOption("jdv.collation", "C")
 ) {
   .jdv_assert_active()
   state <- .jdv_handle_state(handle)
   .jdv_handle_assert_current(state)
-  mode <- if (missing(mode)) {
-    "auto"
-  } else {
-    .jdv_match_arg(mode, c("auto", "snapshot", "paged"), "mode")
-  }
-  collation <- if (missing(collation)) {
-    getOption("jdv.collation", "C")
-  } else {
-    .jdv_match_arg(collation, c("C", "locale"), "collation")
-  }
+  mode <- .jdv_match_arg(mode, c("auto", "snapshot", "paged"), "mode")
   collation <- .jdv_match_arg(collation, c("C", "locale"), "collation")
   entry <- state$entry
   state$inflight <- state$inflight + 1L

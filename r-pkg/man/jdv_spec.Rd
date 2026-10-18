@@ -838,8 +838,8 @@ stays \code{"paused"}. The rebuild happens even if nothing changed and always
 advances the generation by one. The registration \code{mode} and \code{collation} are
 reused as they were requested: an \code{"auto"} mode is decided again (a grid may
 move between Snapshot and Paged, and the effective mode is never frozen), an
-explicit mode is kept, and an omitted collation reads \code{jdv.collation} again.
-A refresh of a titled view keeps its title association, so a later
+explicit mode is kept, and a \code{NULL} collation intent reads \code{jdv.collation}
+again. A refresh of a titled view keeps its title association, so a later
 registration with that title continues from the refreshed generation.
 
 The replacement is built first. Only if the view, its generation, and (for a
@@ -1084,13 +1084,13 @@ report its failure.
   x,
   title = NULL,
   mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale")
+  collation = NULL
 )
 
 jdv_rpc(request = NULL)
 
 jdv_view(x, title = NULL, mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale"))
+  collation = NULL)
 
 jdv_close(id = NULL)
 }\if{html}{\out{</div>}}

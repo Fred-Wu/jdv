@@ -696,7 +696,9 @@ jdv_notifications <- function() {
 #' @param title Display title. When omitted, the expression passed as `x` is
 #'   used; explicitly passing `NULL` creates an independent table slot.
 #' @param mode Grid view mode: `"auto"`, `"snapshot"`, or `"paged"`.
-#' @param collation Grid string ordering policy, `"C"` or `"locale"`.
+#' @param collation Grid string ordering policy, `"C"` or `"locale"`. When
+#'   `NULL` (the default), `getOption("jdv.collation", "C")` supplies the
+#'   default. A non-`NULL` value is kept as the view's refresh intent.
 #' @param track Whether to follow the variable passed as `x`; see Details. To
 #'   follow a variable on behalf of a caller, see [jdv_binding()].
 #' @return The view id, invisibly.
@@ -786,7 +788,7 @@ jdv_view <- function(
   x,
   title = NULL,
   mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale"),
+  collation = NULL,
   track = TRUE
 ) {
   .jdv_assert_active()
@@ -817,10 +819,8 @@ jdv_view <- function(
     }
   }
   mode <- .jdv_match_arg(mode, c("auto", "snapshot", "paged"), "'mode'")
-  collation <- if (missing(collation)) {
-    NULL
-  } else {
-    .jdv_match_arg(collation, c("C", "locale"), "'collation'")
+  if (!is.null(collation)) {
+    collation <- .jdv_match_arg(collation, c("C", "locale"), "'collation'")
   }
   original <- x
   source <- jdv_source(x)

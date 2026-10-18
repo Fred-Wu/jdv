@@ -8,7 +8,7 @@ jdv_register(
   x,
   title = NULL,
   mode = c("auto", "snapshot", "paged"),
-  collation = c("C", "locale"),
+  collation = NULL,
   binding = NULL
 )
 }
@@ -23,8 +23,8 @@ generation; NULL titles always create independent tables.}
 \item{mode}{Grid view mode: \code{"auto"}, \code{"snapshot"}, or \code{"paged"}.}
 
 \item{collation}{Grid string ordering policy, \code{"C"} or \code{"locale"}. When
-omitted, \code{getOption("jdv.collation", "C")} supplies the default; an
-explicit argument takes precedence.}
+\code{NULL} (the default), \code{getOption("jdv.collation", "C")} supplies the
+default. A non-\code{NULL} value is kept as the view's refresh intent.}
 
 \item{binding}{Optional \code{list(name = "x", env = env)} naming a variable that
 holds \code{x}, for embedding hosts. The view then follows that variable as
