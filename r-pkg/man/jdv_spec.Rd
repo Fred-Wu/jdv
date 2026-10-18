@@ -1278,9 +1278,10 @@ separate from viewer identifiers, with generation \code{1}. They cannot be used
 with \code{\link[=jdv_rpc]{jdv_rpc()}} or \code{\link[=jdv_close]{jdv_close()}}.
 
 \code{\link[=jdv_handle_register]{jdv_handle_register()}} uses the handle's mode and collation intent when
-those arguments are omitted, and reuses its title unless a title is supplied.
-A closed handle or parent signals \code{view_not_found}, an operation on a busy
-handle signals \code{in_use}, and a changed table schema signals \code{schema_changed}.
+those arguments are \code{NULL} (the default), and reuses its title unless a title
+is supplied. A closed handle or parent signals \code{view_not_found}, an operation
+on a busy handle signals \code{in_use}, and a changed table schema signals
+\code{schema_changed}.
 
 \code{\link[=jdv_handle_open]{jdv_handle_open()}} takes a typed path and returns a child R handle; call
 \code{\link[=jdv_handle_descriptor]{jdv_handle_descriptor()}} on that child to obtain its descriptor JSON. Other

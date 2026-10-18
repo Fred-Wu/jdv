@@ -1334,9 +1334,10 @@
 #' with [jdv_rpc()] or [jdv_close()].
 #'
 #' [jdv_handle_register()] uses the handle's mode and collation intent when
-#' those arguments are omitted, and reuses its title unless a title is supplied.
-#' A closed handle or parent signals `view_not_found`, an operation on a busy
-#' handle signals `in_use`, and a changed table schema signals `schema_changed`.
+#' those arguments are `NULL` (the default), and reuses its title unless a title
+#' is supplied. A closed handle or parent signals `view_not_found`, an operation
+#' on a busy handle signals `in_use`, and a changed table schema signals
+#' `schema_changed`.
 #'
 #' [jdv_handle_open()] takes a typed path and returns a child R handle; call
 #' [jdv_handle_descriptor()] on that child to obtain its descriptor JSON. Other

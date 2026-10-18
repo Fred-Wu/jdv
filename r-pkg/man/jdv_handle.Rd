@@ -15,7 +15,7 @@ jdv_handle(
   collation = c("C", "locale")
 )
 
-jdv_handle_register(handle, title = NULL, mode, collation)
+jdv_handle_register(handle, title = NULL, mode = NULL, collation = NULL)
 
 jdv_handle_descriptor(
   handle,
@@ -44,13 +44,13 @@ jdv_handle_close(handle)
 \item{mode}{For \code{\link[=jdv_handle]{jdv_handle()}}, the table mode: \code{"auto"}, \code{"snapshot"}, or
 \code{"paged"}. The default \code{"auto"} uses the same selection rules as
 \code{\link[=jdv_register]{jdv_register()}}. For \code{\link[=jdv_handle_register]{jdv_handle_register()}}, an explicit mode overrides
-the handle's original intent; omitting it inherits that intent.}
+the handle's original intent; \code{NULL} (the default) inherits that intent.}
 
 \item{collation}{For \code{\link[=jdv_handle]{jdv_handle()}}, the table collation: \code{"C"} or
 \code{"locale"}; by default the value of the \code{jdv.collation} option, or \code{"C"}
 when unset. Lists do not use this setting. For \code{\link[=jdv_handle_register]{jdv_handle_register()}}, an
-explicit value overrides the handle's original intent; omitting it inherits
-that intent.}
+explicit value overrides the handle's original intent; \code{NULL} (the default)
+inherits that intent.}
 
 \item{handle}{A handle returned by \code{\link[=jdv_handle]{jdv_handle()}} or \code{\link[=jdv_handle_open]{jdv_handle_open()}}.}
 
@@ -118,8 +118,8 @@ can have at most 32 live descendants at once.
 \code{\link[=jdv_handle_register]{jdv_handle_register()}} registers the captured value as a regular view. It
 uses the captured value directly, without resolving the handle's path again.
 The handle's mode and collation intent are used when those arguments are
-omitted. The returned view has its own lifetime and does not track a variable
-binding.
+\code{NULL} (the default). The returned view has its own lifetime and does not
+track a variable binding.
 
 The JSON strings returned by descriptor and request operations contain the
 result object only, without an RPC envelope. Errors are raised as jdv

@@ -133,14 +133,6 @@ test_that("handles can register captured values as independent views", {
     ))
   ]]
   expect_null(registered_open$params$tracking)
-  expect_error(
-    jdv_handle_register(handle, mode = NULL),
-    class = "jdv_error_invalid_argument"
-  )
-  expect_error(
-    jdv_handle_register(handle, collation = NULL),
-    class = "jdv_error_invalid_argument"
-  )
 
   overridden <- jdv_handle_register(
     handle,
@@ -257,6 +249,29 @@ test_that("handle registration inherits its creation collation intent", {
   on.exit(.jdv_close_internal(c_view$id), add = TRUE)
   c_entry <- get(c_view$id, envir = .jdv_state$entries, inherits = FALSE)
   expect_identical(c_entry$collation, "C")
+})
+
+test_that("wrappers can forward NULL to inherit handle registration intent", {
+  register <- function(handle, mode = NULL, collation = NULL) {
+    jdv_handle_register(handle, mode = mode, collation = collation)
+  }
+  old <- options(jdv.collation = "C")
+  on.exit(options(old), add = TRUE)
+  handle <- jdv_handle(mtcars, mode = "paged", collation = "locale")
+  on.exit(jdv_handle_close(handle), add = TRUE)
+
+  registered <- register(handle)
+  on.exit(.jdv_close_internal(registered$id), add = TRUE)
+  entry <- get(registered$id, envir = .jdv_state$entries, inherits = FALSE)
+  expect_identical(entry$mode, "paged")
+  expect_identical(entry$collation, "locale")
+
+  for (argument in list(list(mode = "unknown"), list(collation = "unknown"))) {
+    expect_error(
+      do.call(register, c(list(handle = handle), argument)),
+      class = "jdv_error_invalid_argument"
+    )
+  }
 })
 
 test_that("handle registration inherits automatic mode intent", {

@@ -336,8 +336,8 @@
 #' [jdv_handle_register()] registers the captured value as a regular view. It
 #' uses the captured value directly, without resolving the handle's path again.
 #' The handle's mode and collation intent are used when those arguments are
-#' omitted. The returned view has its own lifetime and does not track a variable
-#' binding.
+#' `NULL` (the default). The returned view has its own lifetime and does not
+#' track a variable binding.
 #'
 #' The JSON strings returned by descriptor and request operations contain the
 #' result object only, without an RPC envelope. Errors are raised as jdv
@@ -356,12 +356,12 @@
 #' @param mode For [jdv_handle()], the table mode: `"auto"`, `"snapshot"`, or
 #'   `"paged"`. The default `"auto"` uses the same selection rules as
 #'   [jdv_register()]. For [jdv_handle_register()], an explicit mode overrides
-#'   the handle's original intent; omitting it inherits that intent.
+#'   the handle's original intent; `NULL` (the default) inherits that intent.
 #' @param collation For [jdv_handle()], the table collation: `"C"` or
 #'   `"locale"`; by default the value of the `jdv.collation` option, or `"C"`
 #'   when unset. Lists do not use this setting. For [jdv_handle_register()], an
-#'   explicit value overrides the handle's original intent; omitting it inherits
-#'   that intent.
+#'   explicit value overrides the handle's original intent; `NULL` (the default)
+#'   inherits that intent.
 #' @param handle A handle returned by [jdv_handle()] or [jdv_handle_open()].
 #' @param title Optional title for a view registered from a handle. If omitted,
 #'   or `NULL`, the handle's title is reused.
@@ -411,28 +411,23 @@ jdv_handle <- function(
 
 #' @rdname jdv_handle
 #' @export
-jdv_handle_register <- function(handle, title = NULL, mode, collation) {
+jdv_handle_register <- function(
+  handle,
+  title = NULL,
+  mode = NULL,
+  collation = NULL
+) {
   .jdv_assert_active()
   state <- .jdv_handle_state(handle)
   .jdv_handle_assert_current(state)
   entry <- state$entry
-  mode <- if (missing(mode)) {
+  mode <- if (is.null(mode)) {
     entry$intent_mode %||% "auto"
-  } else if (is.null(mode)) {
-    jdv_abort(
-      "invalid_argument",
-      "'mode' must be one of \"auto\", \"snapshot\", \"paged\"."
-    )
   } else {
     .jdv_match_arg(mode, c("auto", "snapshot", "paged"), "'mode'")
   }
-  collation <- if (missing(collation)) {
+  collation <- if (is.null(collation)) {
     entry$intent_collation
-  } else if (is.null(collation)) {
-    jdv_abort(
-      "invalid_argument",
-      "'collation' must be one of \"C\", \"locale\"."
-    )
   } else {
     .jdv_match_arg(collation, c("C", "locale"), "'collation'")
   }
