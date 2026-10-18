@@ -65,10 +65,23 @@ See `?jdv_view` for the R interface.
 
 ## How it works
 
-R answers requests from a host over a Unix domain socket, a Windows named pipe,
-or TCP, using JSON Lines; Arrow pages are sent as Arrow IPC. See `?jdv_spec` and
-`?jdv_query_spec` for the protocol. The [reference server](server/README.md) is
-one such host.
+jdv separates the process that holds the data (the producer) from the host and
+the browser viewer. The R package is one producer. It answers requests from a
+host over a Unix domain socket, a Windows named pipe, or TCP, using JSON Lines;
+Arrow pages are sent as Arrow IPC. The protocol does not depend on R, so a
+producer written in another language can use the same host and viewer.
+
+A producer offers data in one of two ways:
+
+- **JSON grids** have a known row count. The producer sorts and filters the
+  data and returns any requested page.
+- **Arrow streams** are read forward, one page at a time, and the total row
+  count does not need to be known. Use them for data that is expensive to
+  count, such as query results.
+
+See `?jdv_spec` and `?jdv_query_spec` for the protocol. The common protocol is
+separate from the R producer's extensions. The [reference server](server/README.md)
+is one such host.
 
 ## Limitations
 
