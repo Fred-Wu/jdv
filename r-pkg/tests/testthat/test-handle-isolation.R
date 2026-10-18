@@ -179,6 +179,15 @@ test_that("handles remain independent while a viewer transport is connected", {
   ))
   expect_identical(handle_registry_snapshot(), before)
 
+  registered <- jdv_handle_register(handle, title = "registered handle")
+  expect_true(exists(
+    registered$id,
+    envir = .jdv_state$entries,
+    inherits = FALSE
+  ))
+  expect_length(.jdv_state$queue, 0L)
+  expect_identical(.jdv_state$queue_bytes, 0)
+
   jdv_disconnect()
   expect_silent(jdv_handle_request(
     handle,

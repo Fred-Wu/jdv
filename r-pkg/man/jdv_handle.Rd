@@ -2,6 +2,7 @@
 % Please edit documentation in R/handle.R
 \name{jdv_handle}
 \alias{jdv_handle}
+\alias{jdv_handle_register}
 \alias{jdv_handle_descriptor}
 \alias{jdv_handle_request}
 \alias{jdv_handle_open}
@@ -13,6 +14,8 @@ jdv_handle(
   mode = c("auto", "snapshot", "paged"),
   collation = c("C", "locale")
 )
+
+jdv_handle_register(handle, title = NULL, mode, collation)
 
 jdv_handle_descriptor(
   handle,
@@ -38,13 +41,21 @@ jdv_handle_close(handle)
 \arguments{
 \item{x}{A data frame, matrix, or list.}
 
-\item{mode}{For tables, \code{"auto"}, \code{"snapshot"}, or \code{"paged"}. The default
-\code{"auto"} uses the same selection rules as \code{\link[=jdv_register]{jdv_register()}}.}
+\item{mode}{For \code{\link[=jdv_handle]{jdv_handle()}}, the table mode: \code{"auto"}, \code{"snapshot"}, or
+\code{"paged"}. The default \code{"auto"} uses the same selection rules as
+\code{\link[=jdv_register]{jdv_register()}}. For \code{\link[=jdv_handle_register]{jdv_handle_register()}}, an explicit mode overrides
+the handle's original intent; omitting it inherits that intent.}
 
-\item{collation}{For tables, \code{"C"} or \code{"locale"}; by default the value of the
-\code{jdv.collation} option, or \code{"C"} when unset. Lists do not use this setting.}
+\item{collation}{For \code{\link[=jdv_handle]{jdv_handle()}}, the table collation: \code{"C"} or
+\code{"locale"}; by default the value of the \code{jdv.collation} option, or \code{"C"}
+when unset. Lists do not use this setting. For \code{\link[=jdv_handle_register]{jdv_handle_register()}}, an
+explicit value overrides the handle's original intent; omitting it inherits
+that intent.}
 
 \item{handle}{A handle returned by \code{\link[=jdv_handle]{jdv_handle()}} or \code{\link[=jdv_handle_open]{jdv_handle_open()}}.}
+
+\item{title}{Optional title for a view registered from a handle. If omitted,
+or \code{NULL}, the handle's title is reused.}
 
 \item{max_bytes}{Maximum encoded JSON result size in bytes. The effective
 maximum is also bounded by \code{jdv.max_message_bytes}.}
@@ -57,17 +68,18 @@ maximum is also bounded by \code{jdv.max_message_bytes}.}
 }
 \value{
 \code{\link[=jdv_handle]{jdv_handle()}} and \code{\link[=jdv_handle_open]{jdv_handle_open()}} return a \code{jdv_handle} object.
-\code{\link[=jdv_handle_descriptor]{jdv_handle_descriptor()}} and \code{\link[=jdv_handle_request]{jdv_handle_request()}} return a length-one JSON
-string. \code{\link[=jdv_handle_close]{jdv_handle_close()}} returns \code{invisible(NULL)}.
+\code{\link[=jdv_handle_register]{jdv_handle_register()}} returns the same \code{id} and \code{generation} list as
+\code{\link[=jdv_register]{jdv_register()}}. \code{\link[=jdv_handle_descriptor]{jdv_handle_descriptor()}} and \code{\link[=jdv_handle_request]{jdv_handle_request()}} return
+a length-one JSON string. \code{\link[=jdv_handle_close]{jdv_handle_close()}} returns \code{invisible(NULL)}.
 }
 \description{
-A handle captures a data frame, matrix, or list for local queries. It does
-not use the viewer registry, its table limit, or the notification queue, and
-it works whether or not a viewer connection or embedded session exists.
-Handles do not track variable bindings or refresh values. Recreate a handle
-after changing the captured object. A handle is valid only in the current R
-session; saving it, moving it to another process, or serializing and
-restoring it is not supported. Treat the returned environment as opaque.
+A handle captures a data frame, matrix, or list for local queries. Handle
+queries do not use the viewer registry, its table limit, or the notification
+queue, and they work whether or not a viewer connection or embedded session
+exists. Handles do not track variable bindings or refresh values. Recreate a
+handle after changing the captured object. A handle is valid only in the
+current R session; saving it, moving it to another process, or serializing
+and restoring it is not supported. Treat the returned environment as opaque.
 }
 \details{
 \code{\link[=jdv_handle_descriptor]{jdv_handle_descriptor()}} returns the JSON descriptor that corresponds to the
@@ -103,9 +115,16 @@ Arrow and Polars sources, signal \code{unsupported}. A closed handle signals
 \code{view_not_found}; closing an already closed handle succeeds. A root handle
 can have at most 32 live descendants at once.
 
-The returned JSON string contains the result object only, without an RPC
-envelope. Errors are raised as jdv conditions; see \link{jdv_errors}. For example,
-a child handle can be opened at a list element with a typed path:
+\code{\link[=jdv_handle_register]{jdv_handle_register()}} registers the captured value as a regular view. It
+uses the captured value directly, without resolving the handle's path again.
+The handle's mode and collation intent are used when those arguments are
+omitted. The returned view has its own lifetime and does not track a variable
+binding.
+
+The JSON strings returned by descriptor and request operations contain the
+result object only, without an RPC envelope. Errors are raised as jdv
+conditions; see \link{jdv_errors}. For example, a child handle can be opened at a
+list element with a typed path:
 
 \if{html}{\out{<div class="sourceCode">}}\preformatted{tree <- jdv_handle(list(items = list(answer = 42L)))
 child <- jdv_handle_open(tree, list(list(type = "index", index = 1L)))

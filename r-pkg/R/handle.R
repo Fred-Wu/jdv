@@ -258,6 +258,8 @@
       parent = if (is.null(parent_state)) NULL else parent_state$entry,
       sequence = root$sequence
     )
+    entry$intent_mode <- mode
+    entry$intent_collation <- collation
   }
   if (!is.null(parent_state)) {
     tryCatch(
@@ -290,13 +292,13 @@
 
 #' Create an isolated jdv handle
 #'
-#' A handle captures a data frame, matrix, or list for local queries. It does
-#' not use the viewer registry, its table limit, or the notification queue, and
-#' it works whether or not a viewer connection or embedded session exists.
-#' Handles do not track variable bindings or refresh values. Recreate a handle
-#' after changing the captured object. A handle is valid only in the current R
-#' session; saving it, moving it to another process, or serializing and
-#' restoring it is not supported. Treat the returned environment as opaque.
+#' A handle captures a data frame, matrix, or list for local queries. Handle
+#' queries do not use the viewer registry, its table limit, or the notification
+#' queue, and they work whether or not a viewer connection or embedded session
+#' exists. Handles do not track variable bindings or refresh values. Recreate a
+#' handle after changing the captured object. A handle is valid only in the
+#' current R session; saving it, moving it to another process, or serializing
+#' and restoring it is not supported. Treat the returned environment as opaque.
 #'
 #' [jdv_handle_descriptor()] returns the JSON descriptor that corresponds to the
 #' parameters of a normal `view/open` message. A Snapshot descriptor contains
@@ -331,9 +333,16 @@
 #' `view_not_found`; closing an already closed handle succeeds. A root handle
 #' can have at most 32 live descendants at once.
 #'
-#' The returned JSON string contains the result object only, without an RPC
-#' envelope. Errors are raised as jdv conditions; see [jdv_errors]. For example,
-#' a child handle can be opened at a list element with a typed path:
+#' [jdv_handle_register()] registers the captured value as a regular view. It
+#' uses the captured value directly, without resolving the handle's path again.
+#' The handle's mode and collation intent are used when those arguments are
+#' omitted. The returned view has its own lifetime and does not track a variable
+#' binding.
+#'
+#' The JSON strings returned by descriptor and request operations contain the
+#' result object only, without an RPC envelope. Errors are raised as jdv
+#' conditions; see [jdv_errors]. For example, a child handle can be opened at a
+#' list element with a typed path:
 #'
 #' ```
 #' tree <- jdv_handle(list(items = list(answer = 42L)))
@@ -344,11 +353,18 @@
 #' ```
 #'
 #' @param x A data frame, matrix, or list.
-#' @param mode For tables, `"auto"`, `"snapshot"`, or `"paged"`. The default
-#'   `"auto"` uses the same selection rules as [jdv_register()].
-#' @param collation For tables, `"C"` or `"locale"`; by default the value of the
-#'   `jdv.collation` option, or `"C"` when unset. Lists do not use this setting.
+#' @param mode For [jdv_handle()], the table mode: `"auto"`, `"snapshot"`, or
+#'   `"paged"`. The default `"auto"` uses the same selection rules as
+#'   [jdv_register()]. For [jdv_handle_register()], an explicit mode overrides
+#'   the handle's original intent; omitting it inherits that intent.
+#' @param collation For [jdv_handle()], the table collation: `"C"` or
+#'   `"locale"`; by default the value of the `jdv.collation` option, or `"C"`
+#'   when unset. Lists do not use this setting. For [jdv_handle_register()], an
+#'   explicit value overrides the handle's original intent; omitting it inherits
+#'   that intent.
 #' @param handle A handle returned by [jdv_handle()] or [jdv_handle_open()].
+#' @param title Optional title for a view registered from a handle. If omitted,
+#'   or `NULL`, the handle's title is reused.
 #' @param max_bytes Maximum encoded JSON result size in bytes. The effective
 #'   maximum is also bounded by `jdv.max_message_bytes`.
 #' @param method Either `"grid/rows"` or `"object/children"`.
@@ -356,8 +372,9 @@
 #' @param path A non-empty typed object path as used by `object/open`.
 #' @return
 #' [jdv_handle()] and [jdv_handle_open()] return a `jdv_handle` object.
-#' [jdv_handle_descriptor()] and [jdv_handle_request()] return a length-one JSON
-#' string. [jdv_handle_close()] returns `invisible(NULL)`.
+#' [jdv_handle_register()] returns the same `id` and `generation` list as
+#' [jdv_register()]. [jdv_handle_descriptor()] and [jdv_handle_request()] return
+#' a length-one JSON string. [jdv_handle_close()] returns `invisible(NULL)`.
 #' @examples
 #' handle <- jdv_handle(mtcars, mode = "paged")
 #' descriptor <- jdv_handle_descriptor(handle)
@@ -390,6 +407,74 @@ jdv_handle <- function(
   root <- new.env(parent = emptyenv())
   root$sequence <- 0
   .jdv_handle_install(x, mode, collation, root)
+}
+
+#' @rdname jdv_handle
+#' @export
+jdv_handle_register <- function(handle, title = NULL, mode, collation) {
+  .jdv_assert_active()
+  state <- .jdv_handle_state(handle)
+  .jdv_handle_assert_current(state)
+  entry <- state$entry
+  mode <- if (missing(mode)) {
+    entry$intent_mode %||% "auto"
+  } else if (is.null(mode)) {
+    jdv_abort(
+      "invalid_argument",
+      "'mode' must be one of \"auto\", \"snapshot\", \"paged\"."
+    )
+  } else {
+    .jdv_match_arg(mode, c("auto", "snapshot", "paged"), "'mode'")
+  }
+  collation <- if (missing(collation)) {
+    entry$intent_collation
+  } else if (is.null(collation)) {
+    jdv_abort(
+      "invalid_argument",
+      "'collation' must be one of \"C\", \"locale\"."
+    )
+  } else {
+    .jdv_match_arg(collation, c("C", "locale"), "'collation'")
+  }
+  if (!is.null(title)) {
+    title <- query_string(title, 4096L)
+  } else {
+    title <- entry$title
+  }
+  state$inflight <- state$inflight + 1L
+  entry$inflight <- entry$inflight + 1L
+  on.exit(
+    {
+      entry$inflight <- max(0L, entry$inflight - 1L)
+      state$inflight <- max(0L, state$inflight - 1L)
+      if (isTRUE(entry$close_pending) && entry$inflight == 0L) {
+        .jdv_handle_release_entry(entry)
+        state$entry <- NULL
+      }
+    },
+    add = TRUE
+  )
+  .jdv_handle_check_source(entry)
+  .jdv_handle_assert_current(state, check_busy = FALSE)
+  value <- if (identical(entry$mode, "tree")) {
+    entry$tree_value
+  } else {
+    entry$captured
+  }
+  registered <- .jdv_register_internal(
+    value,
+    title,
+    mode,
+    collation,
+    tracking = NULL
+  )
+  .jdv_assert_active()
+  if (
+    identical(.jdv_session_owner(), "transport") && .jdv_state$rpc_depth == 0L
+  ) {
+    .jdv_transport_flush()
+  }
+  list(id = registered$id, generation = registered$generation)
 }
 
 #' @rdname jdv_handle

@@ -52,6 +52,76 @@ test_that("user format methods cannot reenter a running handle", {
   expect_silent(jdv_handle_descriptor(handle))
 })
 
+test_that("registration keeps a handle busy while user methods run", {
+  source <- data.frame(
+    probe = structure(c(2L, 1L), class = "jdv_register_reentry_probe")
+  )
+  handle <- jdv_handle(source, mode = "paged")
+  on.exit(jdv_handle_close(handle), add = TRUE)
+  observations <- new.env(parent = emptyenv())
+  observations$attempted <- FALSE
+
+  with_column_method(
+    "format",
+    "jdv_register_reentry_probe",
+    function(x, ...) {
+      if (!observations$attempted) {
+        observations$attempted <- TRUE
+        observations$register <- tryCatch(
+          jdv_handle_register(handle),
+          error = identity
+        )
+      }
+      format(unclass(x), ...)
+    },
+    {
+      registered <- jdv_handle_register(handle)
+    }
+  )
+  on.exit(.jdv_close_internal(registered$id), add = TRUE)
+
+  expect_true(observations$attempted)
+  expect_s3_class(observations$register, "jdv_error_in_use")
+  expect_identical(registered$generation, 1)
+  expect_silent(jdv_handle_descriptor(handle))
+})
+
+test_that("closing a handle while registering leaves an independent view", {
+  source <- data.frame(
+    probe = structure(c(2L, 1L), class = "jdv_register_close_probe")
+  )
+  handle <- jdv_handle(source, mode = "paged")
+  observations <- new.env(parent = emptyenv())
+  observations$closed <- FALSE
+
+  with_column_method(
+    "format",
+    "jdv_register_close_probe",
+    function(x, ...) {
+      if (!observations$closed) {
+        observations$closed <- TRUE
+        jdv_handle_close(handle)
+      }
+      format(unclass(x), ...)
+    },
+    {
+      registered <- jdv_handle_register(handle)
+    }
+  )
+  on.exit(.jdv_close_internal(registered$id), add = TRUE)
+
+  expect_true(observations$closed)
+  expect_error(
+    jdv_handle_descriptor(handle),
+    class = "jdv_error_view_not_found"
+  )
+  expect_true(exists(
+    registered$id,
+    envir = .jdv_state$entries,
+    inherits = FALSE
+  ))
+})
+
 test_that("closing a parent during a child query defers cleanup safely", {
   child <- data.frame(value = structure(1:2, class = "jdv_close_probe"))
   parent <- jdv_handle(data.frame(nested = I(list(child))), mode = "paged")

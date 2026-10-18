@@ -1312,11 +1312,16 @@
 #' @section R producer extension: Registry-free R handles:
 #'
 #' [jdv_handle()] captures a data frame, matrix, or list for an embedding host
-#' without registering a viewer slot. Handles do not consume `jdv.max_tables`,
-#' advance viewer identifiers, evict views, or produce notifications. They work
-#' without a session and alongside either an embedded session or a viewer
-#' connection. Closing registered views or disconnecting does not close handles.
-#' Sequential sources, including Arrow and Polars sources, are unsupported.
+#' without registering a viewer slot. Handle operations do not consume
+#' `jdv.max_tables`, advance viewer identifiers, evict views, or produce
+#' notifications. [jdv_handle_register()] is the exception: it registers the
+#' captured value as an ordinary view, with the same registry limit, return
+#' value, notification, and transport flush behavior as [jdv_register()]. It
+#' uses the captured value directly and does not track a variable binding. The
+#' resulting view has a lifetime independent of the handle. Handles work without
+#' a session and alongside either an embedded session or a viewer connection.
+#' Closing registered views or disconnecting does not close handles. Sequential
+#' sources, including Arrow and Polars sources, are unsupported.
 #'
 #' [jdv_handle_descriptor()] returns a JSON string with the shape of `view/open`
 #' params (or the `object/open` result for a child). [jdv_handle_request()]
@@ -1327,6 +1332,11 @@
 #' `invalid_request` error. Result identifiers are opaque handle identifiers,
 #' separate from viewer identifiers, with generation `1`. They cannot be used
 #' with [jdv_rpc()] or [jdv_close()].
+#'
+#' [jdv_handle_register()] uses the handle's mode and collation intent when
+#' those arguments are omitted, and reuses its title unless a title is supplied.
+#' A closed handle or parent signals `view_not_found`, an operation on a busy
+#' handle signals `in_use`, and a changed table schema signals `schema_changed`.
 #'
 #' [jdv_handle_open()] takes a typed path and returns a child R handle; call
 #' [jdv_handle_descriptor()] on that child to obtain its descriptor JSON. Other
