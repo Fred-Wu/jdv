@@ -168,8 +168,49 @@ test_that("implicit page sizing samples only returned string and factor rows", {
   expect_identical(first$data$columns[[2L]]$data$values, "low")
 
   long_rows <- paged_table(data.frame(text = rep(strrep("x", 1000L), 2L)))
-  bounded <- query_page(long_rows, limit = 2L, budget = .jdv_budget(20000))
+  bounded <- query_page(long_rows, limit = 2L, budget = .jdv_budget(40000))
   expect_equal(bounded$limit, 1L)
+  bounded_budget <- attr(bounded, "jdv_work_budget")
+  encoded <- .jdv_json_encode(
+    list(
+      limit = bounded$limit,
+      data = list(columns = lapply(bounded$data$columns, .jdv_page_column))
+    ),
+    work_limit = .jdv_budget_remaining(bounded_budget)
+  )
+  expect_type(encoded, "character")
+
+  outlier_rows <- paged_table(data.frame(
+    id = seq_len(501L),
+    text = c(rep("a", 500L), strrep("z", 100000L))
+  ))
+  offset_page <- query_page(
+    outlier_rows,
+    offset = 1L,
+    limit = 500L,
+    sort = list(list(col = 0L, desc = TRUE)),
+    budget = .jdv_budget(64 * 1024^2)
+  )
+  expect_identical(offset_page$limit, 500L)
+  expect_identical(offset_page$data$row_index, rev(seq_len(500L)))
+
+  long_page <- query_page(
+    outlier_rows,
+    limit = 1L,
+    sort = list(list(col = 0L, desc = TRUE)),
+    budget = .jdv_budget(10 * 1024^2)
+  )
+  expect_identical(long_page$limit, 1L)
+  expect_identical(long_page$data$row_index, 501L)
+  long_budget <- attr(long_page, "jdv_work_budget")
+  long_encoded <- .jdv_json_encode(
+    list(
+      limit = long_page$limit,
+      data = list(columns = lapply(long_page$data$columns, .jdv_page_column))
+    ),
+    work_limit = .jdv_budget_remaining(long_budget)
+  )
+  expect_type(long_encoded, "character")
 
   unused_long_level <- paged_table(data.frame(
     ordered = ordered(c("low", "low"), levels = c("low", strrep("u", 10000L))),

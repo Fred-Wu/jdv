@@ -204,9 +204,11 @@ test_that("explicit wide string pages are sized before channel extraction", {
 
   expect_page_channels <- function(page, expected_rows) {
     expect_identical(page$data$row_index, expected_rows)
-    expect_equal(length(page$data$row_index), page$limit)
+    expect_lte(length(page$data$row_index), page$limit)
     for (column in page$data$columns) {
-      expect_true(all(vapply(column$data, length, integer(1L)) == page$limit))
+      expect_true(all(
+        vapply(column$data, length, integer(1L)) == length(page$data$row_index)
+      ))
     }
   }
 
@@ -235,7 +237,7 @@ test_that("explicit wide string pages are sized before channel extraction", {
         cols = columns
       )
       expect_identical(explicit$limit, implicit$limit)
-      expect_lt(explicit$limit, n)
+      expect_lt(length(explicit$data$row_index), n)
       expect_page_channels(explicit, implicit$data$row_index)
       expected_names <- names(source)[columns + 1L]
       expect_identical(
@@ -266,7 +268,8 @@ test_that("explicit wide string pages are sized before channel extraction", {
       )
       for (column in rpc$result$data$columns) {
         expect_true(all(
-          vapply(column$data, length, integer(1L)) == rpc$result$limit
+          vapply(column$data, length, integer(1L)) ==
+            length(rpc$result$data$source_row)
         ))
       }
       expect_identical(
@@ -278,11 +281,10 @@ test_that("explicit wide string pages are sized before channel extraction", {
         expected_names
       )
 
-      response <- .jdv_json_parse(jdv_handle_request(
-        handle,
-        "grid/rows",
-        params
-      ))
+      response <- jsonlite::fromJSON(
+        jdv_handle_request(handle, "grid/rows", params),
+        simplifyVector = FALSE
+      )
       expect_null(response$error)
       expect_equal(response$limit, implicit$limit)
       expect_equal(
@@ -291,7 +293,8 @@ test_that("explicit wide string pages are sized before channel extraction", {
       )
       for (column in response$data$columns) {
         expect_true(all(
-          vapply(column$data, length, integer(1L)) == response$limit
+          vapply(column$data, length, integer(1L)) ==
+            length(response$data$source_row)
         ))
       }
       expect_identical(

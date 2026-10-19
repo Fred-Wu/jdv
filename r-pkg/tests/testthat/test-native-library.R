@@ -25,6 +25,7 @@ test_that("the native library registers only its private routines", {
       ),
       "C_jdv_json_parse",
       "C_jdv_json_encode",
+      "C_jdv_json_string_measure",
       paste0(
         "C_jdv_tree_",
         c(

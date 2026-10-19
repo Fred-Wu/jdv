@@ -823,6 +823,78 @@ static size_t printed_string_size(output_state *state, const char *text)
     return size;
 }
 
+/* Return exact JSON string sizes for plain UTF-8 strings we can measure
+ * without invoking any R formatting or encoding methods. The matrix columns
+ * hold quoted JSON bytes, native string-tree work, and one missingness node.
+ * Unsupported input returns NULL so callers retain their conservative estimate. */
+SEXP C_jdv_json_string_measure(SEXP value, SEXP max_bytes)
+{
+    if (TYPEOF(value) != STRSXP || TYPEOF(max_bytes) != REALSXP ||
+        XLENGTH(max_bytes) != 1 || !R_FINITE(REAL(max_bytes)[0]) ||
+        REAL(max_bytes)[0] < 1) return R_NilValue;
+    R_xlen_t n = XLENGTH(value);
+    if (n > INT_MAX || (size_t)n > SIZE_MAX / 3) return R_NilValue;
+    SEXP result = PROTECT(Rf_allocMatrix(REALSXP, n, 3));
+    double *sizes = REAL(result);
+    double *work = sizes + n;
+    double *nodes = work + n;
+    output_state state;
+    memset(&state, 0, sizeof(state));
+    double total = 0;
+    for (R_xlen_t i = 0; i < n; ++i) {
+        SEXP charsxp = STRING_ELT(value, i);
+        if (charsxp == NA_STRING) {
+            UNPROTECT(1);
+            return R_NilValue;
+        }
+        cetype_t encoding = getCharCE(charsxp);
+        if (encoding != CE_UTF8 && encoding != CE_NATIVE) {
+            UNPROTECT(1);
+            return R_NilValue;
+        }
+        if ((double)LENGTH(charsxp) * 8 > REAL(max_bytes)[0]) {
+            UNPROTECT(1);
+            return R_NilValue;
+        }
+        void *vmax = vmaxget();
+        const char *text = Rf_translateCharUTF8(charsxp);
+        if (!valid_utf8_cstr(text)) {
+            vmaxset(vmax);
+            UNPROTECT(1);
+            return R_NilValue;
+        }
+        for (const unsigned char *p = (const unsigned char *)text; *p; ++p) {
+            if (*p < 32) {
+                vmaxset(vmax);
+                UNPROTECT(1);
+                return R_NilValue;
+            }
+        }
+        size_t bytes = strlen(text);
+        size_t json_size = printed_string_size(&state, text);
+        if (bytes > (SIZE_MAX - sizeof(cJSON) - 2) / 8) {
+            vmaxset(vmax);
+            UNPROTECT(1);
+            return R_NilValue;
+        }
+        size_t work_size = bytes * 8 + sizeof(cJSON) + 2;
+        vmaxset(vmax);
+        total += (double)json_size + (double)work_size;
+        if (total > REAL(max_bytes)[0]) {
+            UNPROTECT(1);
+            return R_NilValue;
+        }
+        sizes[i] = (double)json_size;
+        work[i] = (double)work_size;
+        nodes[i] = (double)sizeof(cJSON);
+    }
+    SEXP node_bytes = PROTECT(Rf_ScalarReal((double)sizeof(cJSON)));
+    Rf_setAttrib(result, Rf_install("node_bytes"), node_bytes);
+    UNPROTECT(1);
+    UNPROTECT(1);
+    return result;
+}
+
 static size_t printed_number_size(output_state *state, const cJSON *node)
 {
     unsigned char number_buffer[26] = {0};

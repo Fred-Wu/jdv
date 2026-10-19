@@ -107,6 +107,7 @@ static void release_module_entry(void *data)
 
 SEXP C_jdv_json_parse(SEXP input, SEXP max_bytes);
 SEXP C_jdv_json_encode(SEXP object, SEXP max_bytes, SEXP max_work_bytes);
+SEXP C_jdv_json_string_measure(SEXP value, SEXP max_bytes);
 SEXP C_jdv_transport_connect(SEXP address, SEXP request_callback,
                              SEXP disconnect_callback, SEXP limits);
 SEXP C_jdv_transport_send(SEXP messages);
@@ -137,6 +138,7 @@ JDV_WRAP_2(jdv_entry_int64_eq, C_jdv_int64_eq)
 JDV_WRAP_3(jdv_entry_int64_between, C_jdv_int64_between)
 JDV_WRAP_2(jdv_entry_json_parse, C_jdv_json_parse)
 JDV_WRAP_3(jdv_entry_json_encode, C_jdv_json_encode)
+JDV_WRAP_2(jdv_entry_json_string_measure, C_jdv_json_string_measure)
 JDV_WRAP_4(jdv_entry_transport_connect, C_jdv_transport_connect)
 JDV_WRAP_1(jdv_entry_transport_send, C_jdv_transport_send)
 JDV_WRAP_0(jdv_entry_transport_poll, C_jdv_transport_poll)
@@ -187,6 +189,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"C_jdv_int64_between", (DL_FUNC)&jdv_entry_int64_between, 3},
     {"C_jdv_json_parse", (DL_FUNC)&jdv_entry_json_parse, 2},
     {"C_jdv_json_encode", (DL_FUNC)&jdv_entry_json_encode, 3},
+    {"C_jdv_json_string_measure", (DL_FUNC)&jdv_entry_json_string_measure, 2},
     {"C_jdv_transport_connect", (DL_FUNC)&jdv_entry_transport_connect, 4},
     {"C_jdv_transport_send", (DL_FUNC)&jdv_entry_transport_send, 1},
     {"C_jdv_transport_poll", (DL_FUNC)&jdv_entry_transport_poll, 0},

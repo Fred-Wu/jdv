@@ -40,13 +40,138 @@
   max(1, budget$limit - budget$used)
 }
 
+.jdv_plain_string_dispatch <- function() {
+  tryCatch(
+    {
+      registry_method <- function(generic, class, namespace) {
+        table <- get(".__S3MethodsTable__.", envir = namespace)
+        get0(paste(generic, class, sep = "."), envir = table, inherits = FALSE)
+      }
+      visible_method <- function(generic, class) {
+        name <- paste(generic, class, sep = ".")
+        get0(name, envir = .GlobalEnv, mode = "function", inherits = TRUE)
+      }
+      method_matches <- function(generic, class, namespace, expected) {
+        registered <- registry_method(generic, class, namespace)
+        visible <- visible_method(generic, class)
+        identical(registered, expected) &&
+          (is.null(visible) || identical(visible, expected))
+      }
+      no_method <- function(generic, class, namespace) {
+        is.null(registry_method(generic, class, namespace)) &&
+          is.null(visible_method(generic, class))
+      }
+      method_matches(
+        "col_display",
+        "default",
+        asNamespace("jdv"),
+        col_display.default
+      ) &&
+        no_method("col_display", "character", asNamespace("jdv")) &&
+        method_matches(
+          "col_values",
+          "character",
+          asNamespace("jdv"),
+          col_values.character
+        ) &&
+        method_matches(
+          "col_is_na",
+          "default",
+          asNamespace("jdv"),
+          col_is_na.default
+        ) &&
+        no_method("col_is_na", "character", asNamespace("jdv")) &&
+        method_matches(
+          "format",
+          "default",
+          asNamespace("base"),
+          get("format.default", envir = asNamespace("base"), inherits = FALSE)
+        ) &&
+        no_method("format", "character", asNamespace("base"))
+    },
+    error = function(error) FALSE
+  )
+}
+
+.jdv_plain_query_dispatch <- function(type) {
+  if (!query_plain_dispatch(type)) {
+    return(FALSE)
+  }
+  namespace <- asNamespace("jdv")
+  base_namespace <- asNamespace("base")
+  registry_method <- function(generic, class, method_namespace) {
+    table <- get(".__S3MethodsTable__.", envir = method_namespace)
+    get0(paste(generic, class, sep = "."), envir = table, inherits = FALSE)
+  }
+  visible_method <- function(generic, class) {
+    name <- paste(generic, class, sep = ".")
+    get0(name, envir = .GlobalEnv, mode = "function", inherits = TRUE)
+  }
+  no_method <- function(generic, class, method_namespace) {
+    is.null(registry_method(generic, class, method_namespace)) &&
+      is.null(visible_method(generic, class))
+  }
+  method_matches <- function(generic, class, method_namespace, expected) {
+    registered <- registry_method(generic, class, method_namespace)
+    visible <- visible_method(generic, class)
+    identical(registered, expected) &&
+      (is.null(visible) || identical(visible, expected))
+  }
+  classes <- c(type, if (type != "logical") "numeric")
+  for (generic in c("col_display", "col_is_na", "col_values", "col_sort_key")) {
+    for (class in classes) {
+      if (!no_method(generic, class, namespace)) {
+        return(FALSE)
+      }
+    }
+    if (
+      !method_matches(
+        generic,
+        "default",
+        namespace,
+        get(paste0(generic, ".default"), envir = namespace, inherits = FALSE)
+      )
+    ) {
+      return(FALSE)
+    }
+  }
+  for (generic in c("xtfrm", "format")) {
+    for (class in classes) {
+      if (!no_method(generic, class, base_namespace)) {
+        return(FALSE)
+      }
+    }
+    default <- get0(
+      paste(generic, "default", sep = "."),
+      envir = get(".__S3MethodsTable__.", envir = base_namespace),
+      inherits = FALSE
+    )
+    if (!method_matches(generic, "default", base_namespace, default)) {
+      return(FALSE)
+    }
+  }
+  TRUE
+}
+
+.jdv_plain_column_attributes <- function(x) {
+  attributes <- attributes(x)
+  is.null(attributes) || all(names(attributes) %in% "names")
+}
+
+.jdv_plain_numeric_format <- function() {
+  identical(getOption("scipen"), 0L) &&
+    identical(getOption("digits"), 7L) &&
+    identical(getOption("OutDec"), ".")
+}
+
 .jdv_page_row_capacity <- function(
   holder,
   columns,
   candidate_rows,
   requested_rows,
   budget,
-  message_limit = .jdv_max_message_bytes()
+  message_limit = .jdv_max_message_bytes(),
+  exact_strings = TRUE
 ) {
   column_count <- length(columns)
   work_fixed <- 128 + 128 * column_count
@@ -110,6 +235,101 @@
   wire_rows <- rep(32, requested_rows)
   work_display_prefix <- rep(0, requested_rows)
   wire_display_prefix <- rep(0, requested_rows)
+  native_tree_prefix <- rep(0, requested_rows)
+  plain_preflight_peak <- rep(0, requested_rows)
+  plain_preflight_prior <- 64 * seq_len(requested_rows)
+  measure_cap <- max(
+    1,
+    remaining_work - work_fixed + message_limit - wire_fixed
+  )
+  plain_string_methods <- .jdv_plain_string_dispatch()
+  plain_query_types <- if (is.matrix(holder$source)) {
+    if (
+      any(vapply(
+        columns,
+        function(j) {
+          holder$schema[[j]]$type %in% c("number", "integer", "boolean")
+        },
+        logical(1L)
+      ))
+    ) {
+      typeof(holder$source)
+    } else {
+      character()
+    }
+  } else {
+    unique(vapply(
+      columns,
+      function(j) {
+        if (holder$schema[[j]]$type %in% c("number", "integer", "boolean")) {
+          typeof(holder$source[[j]])
+        } else {
+          NA_character_
+        }
+      },
+      character(1L)
+    ))
+  }
+  plain_query_types <- plain_query_types[!is.na(plain_query_types)]
+  plain_query_methods <- stats::setNames(
+    vapply(plain_query_types, .jdv_plain_query_dispatch, logical(1L)),
+    plain_query_types
+  )
+  plain_capacity_page <- length(columns) > 0L &&
+    requested_rows > 0L &&
+    isTRUE(exact_strings) &&
+    any(vapply(
+      columns,
+      function(j) holder$schema[[j]]$type == "string",
+      logical(1L)
+    )) &&
+    all(vapply(
+      columns,
+      function(j) {
+        schema <- holder$schema[[j]]
+        if (is.matrix(holder$source)) {
+          standard_matrix <- identical(
+            class(holder$source),
+            c("matrix", "array")
+          )
+          standard_matrix &&
+            schema$type %in% c("string", "number", "integer", "boolean") &&
+            if (schema$type == "string") {
+              plain_string_methods
+            } else {
+              isTRUE(plain_query_methods[[typeof(holder$source)]])
+            }
+        } else {
+          value <- holder$source[[j]]
+          if (schema$type == "string") {
+            is.character(value) &&
+              !is.object(value) &&
+              .jdv_plain_column_attributes(value) &&
+              plain_string_methods
+          } else if (schema$type %in% c("number", "integer", "boolean")) {
+            !is.object(value) &&
+              .jdv_plain_column_attributes(value) &&
+              isTRUE(plain_query_methods[[typeof(value)]])
+          } else {
+            FALSE
+          }
+        }
+      },
+      logical(1L)
+    ))
+  if (plain_capacity_page) {
+    has_numeric <- any(vapply(
+      columns,
+      function(j) holder$schema[[j]]$type %in% c("number", "integer"),
+      logical(1L)
+    ))
+    plain_capacity_page <- !has_numeric || .jdv_plain_numeric_format()
+  }
+  native_node_bytes <- if (plain_capacity_page) {
+    attr(.jdv_json_string_measure(character(), measure_cap), "node_bytes")
+  } else {
+    NULL
+  }
   string_widths <- function(x) {
     if (!is.character(x) || !length(x)) {
       return(numeric())
@@ -162,16 +382,68 @@
       }
     }
     if (cost_kind == "string") {
-      work_rows <- work_rows + 64
-      wire_rows <- wire_rows + 64
-      if (length(widths)) {
-        positions <- seq_along(widths)
-        work_display_prefix <- work_display_prefix +
-          cumsum(32 + 6 * widths) +
-          6 * positions * cummax(widths)
-        wire_display_prefix <- wire_display_prefix +
-          cumsum(32 + 12 * widths) +
-          2 * positions * cummax(widths)
+      source_column <- if (is.matrix(holder$source)) {
+        .subset(holder$source, candidate_rows + (j - 1L) * holder$nrow)
+      } else {
+        .subset(holder$source[[j]], candidate_rows)
+      }
+      measured <- if (
+        !is.object(source_column) &&
+          plain_capacity_page &&
+          schema$type == "string" &&
+          length(source_column)
+      ) {
+        .jdv_json_string_measure(source_column, measure_cap)
+      } else {
+        NULL
+      }
+      if (!is.null(measured) && nrow(measured) == requested_rows) {
+        positions <- seq_len(requested_rows)
+        width <- pmax(widths, 1)
+        # Keep the existing channel charges; the transient preflight has its
+        # own peak bound below.
+        display_generated <- cumsum(19 + 6 * width)
+        values_generated <- cumsum(19 + 6 * width)
+        display_reserved <- positions * (16 + 2 * cummax(width))
+        r_work <- pmax(display_reserved, display_generated) +
+          values_generated +
+          4 * positions
+        native_strings <- cumsum(measured[, 2L] + measured[, 3L]) + 256
+        work_display_prefix <- work_display_prefix + r_work
+        native_tree_prefix <- pmax(native_tree_prefix, native_strings)
+        # The extraction preflight rejects a column when its conservative
+        # max-string bound exceeds the remaining budget. Reserve enough room
+        # for that check after the page's other estimated work has been used.
+        plain_preflight_peak <- pmax(
+          plain_preflight_peak,
+          plain_preflight_prior + 6 * positions * cummax(width)
+        )
+        plain_preflight_prior <- plain_preflight_prior + r_work
+        wire_items <- measured[, 1L] + ifelse(is.na(source_column), 4, 5) + 2
+        wire_display_prefix <- wire_display_prefix + cumsum(wire_items)
+      } else {
+        if (plain_capacity_page) {
+          return(.jdv_page_row_capacity(
+            holder,
+            columns,
+            candidate_rows,
+            requested_rows,
+            budget,
+            message_limit,
+            exact_strings = FALSE
+          ))
+        }
+        work_rows <- work_rows + 64
+        wire_rows <- wire_rows + 64
+        if (length(widths)) {
+          positions <- seq_along(widths)
+          work_display_prefix <- work_display_prefix +
+            cumsum(32 + 6 * widths) +
+            6 * positions * cummax(widths)
+          wire_display_prefix <- wire_display_prefix +
+            cumsum(32 + 12 * widths) +
+            2 * positions * cummax(widths)
+        }
       }
     } else if (cost_kind == "factor") {
       work_rows <- work_rows + 64
@@ -242,6 +514,18 @@
       )
       work_rows <- work_rows + column_work
       wire_rows <- wire_rows + column_wire
+      if (
+        plain_capacity_page && cost_kind %in% c("number", "integer", "boolean")
+      ) {
+        plain_preflight_prior <- plain_preflight_prior +
+          column_work * seq_len(requested_rows)
+        # Default display text (32 bytes) and special tokens (7 bytes)
+        # coexist with the values and missingness nodes in one column tree.
+        native_tree_prefix <- pmax(
+          native_tree_prefix,
+          (8 * 39 + 4 * native_node_bytes + 4) * seq_len(requested_rows) + 512
+        )
+      }
     }
   }
   if (holder$explicit_row_names && requested_rows > 0) {
@@ -267,8 +551,24 @@
   }
   work_cumulative <- cumsum(work_rows) + work_display_prefix
   wire_cumulative <- cumsum(wire_rows) + wire_display_prefix
+  if (plain_capacity_page) {
+    column_names <- vapply(
+      columns,
+      function(j) holder$schema[[j]]$name %||% "",
+      character(1L)
+    )
+    metadata_tree <- 2048 + 8 * max(string_widths(column_names), 0)
+    # Buffer growth, a printed column, and the returned R string need at
+    # most four times the wire size, alongside one streamed column tree.
+    work_cumulative <- work_cumulative +
+      native_tree_prefix +
+      4 * (wire_fixed + wire_cumulative) +
+      metadata_tree
+  }
   fits <- which(
-    work_cumulative <= available_work & wire_cumulative <= available_wire
+    work_cumulative <= available_work &
+      wire_cumulative <= available_wire &
+      (!plain_capacity_page | plain_preflight_peak <= available_work)
   )
   if (!length(fits)) {
     .jdv_budget_error(
@@ -484,7 +784,7 @@
     } else {
       0
     }
-    # format.character aligns all cells to the widest string.
+    # Reserve for width-dependent formatting without relying on method output.
     reserve("display", n * (16 + 2 * max(width, 1)))
     if (schema$sortable) {
       reserve("sortKey", 16 * n + bytes)

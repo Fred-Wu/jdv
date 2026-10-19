@@ -425,6 +425,13 @@ jdv_json_object <- function(x = list()) {
   )
 }
 
+.jdv_json_string_measure <- function(x, max_bytes) {
+  tryCatch(
+    .Call(C_jdv_json_string_measure, x, as.numeric(max_bytes)),
+    error = function(error) NULL
+  )
+}
+
 .jdv_json_encode_error <- function(x) {
   # Control responses have a separate, fixed allowance so the engine can
   # report a work-budget failure even when the request exhausted that budget.
