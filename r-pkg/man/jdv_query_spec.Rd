@@ -225,9 +225,13 @@ Page column data requests display, missingness, and values only; it does not
 contain sort keys or full-column filter text. Display is always character
 text, with missing display results normalized to \code{"NA"}. Missingness and
 semantic values remain independent of display. For a number or duration
-column, \code{special} distinguishes missing, NaN, positive infinity, and negative
-infinity when present. Columns without a plain values representation can
-return display and missingness without values.
+column, \code{special} lists the response-local zero-based positions of NaN,
+positive infinity, and negative infinity by kind. \code{na_rows} independently
+lists missing positions (including NaN); \verb{[]} means no missing rows and
+omission means extraction failed. These sparse channels use the same format
+in Snapshot data and pages, and positions are rebased after sort, filter, and
+slicing. Columns without a plain values representation can return display and
+missingness without values.
 
 An error object contains a stable \code{code}, a human-readable \code{message}, and
 optional \code{details}:\tabular{ll}{
@@ -245,14 +249,14 @@ optional \code{details}:\tabular{ll}{
  Query diagnostics and R conditions:
 
 The R producer can downgrade individual page channels and include channel
-errors in the response. A display failure can yield \verb{<class>} fallback text.
-Sort/filter requests that require an unavailable full-column channel raise a
-query error whose details can include the extraction's \code{schema}, \code{data}, and
-\code{errors}. Failed channel results are not cached, and extraction does not
-overwrite the registered holder schema. The R package exposes query failures
-as conditions inheriting from \code{jdv_query_error}, \verb{jdv_error_<code>},
-\code{jdv_error}, \code{error}, and \code{condition} (see \link{jdv_errors}); these classes are
-not wire fields.
+errors in the response, using \code{na_rows} for missingness failures. A display
+failure can yield \verb{<class>} fallback text. Sort/filter requests that require
+an unavailable full-column channel raise a query error whose details can
+include the extraction's \code{schema}, \code{data}, and \code{errors}. Failed channel
+results are not cached, and extraction does not overwrite the registered
+holder schema. The R package exposes query failures as conditions inheriting
+from \code{jdv_query_error}, \verb{jdv_error_<code>}, \code{jdv_error}, \code{error}, and
+\code{condition} (see \link{jdv_errors}); these classes are not wire fields.
 
  Source slicing contract:
 
@@ -497,9 +501,9 @@ producer's native ordering. The \code{utf8-byte-order} fixture records that U+E0
 sorts before U+1F600 under C order. For string, categorical, and integer64
 columns, a Snapshot may omit \code{display} only when every nonmissing display
 value equals its semantic value and every missing display value is \code{"NA"}.
-The missingness mask reconstructs omitted missing labels. If a formatter uses
-another missing label, \code{display} remains present, including when all rows are
-missing. Empty comparisons for zero-row columns count as equal.
+The \code{na_rows} positions reconstruct omitted missing labels. If a formatter
+uses another missing label, \code{display} remains present, including when all
+rows are missing. Empty comparisons for zero-row columns count as equal.
 
 For supported inputs with valid required channels, Paged and Snapshot must
 return identical original source-row positions for every sort/filter request.
@@ -510,7 +514,8 @@ The version 1 query fixture ships with the package as shared conformance data
 for query semantics. Its \code{fold} entries record ASCII folding. Each \code{cases}
 entry describes typed source columns and \code{queries} with expected zero-based
 positions in original source order. An \code{r} member is only an R test-harness
-construction hint, not a wire field. Number \code{special} entries reconstruct
+construction hint, not a wire field. Fixture number \code{special} arrays are
+source-construction hints, not sparse wire channels; they reconstruct
 nonfinite source values; JSON null means missing data. Factor columns include
 levels and orderedness; datetime columns include timezone metadata; duration
 columns include \code{units}, and an \code{r} of \code{hms} marks a vector with the

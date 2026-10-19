@@ -1562,7 +1562,7 @@ Deno.test({
               columns: [0, 1].map(() => ({
                 values: durationValues,
                 display: durationValues.map(String),
-                na: durationValues.map(() => false),
+                na_rows: [],
               })),
             },
           },
@@ -2445,7 +2445,7 @@ async function respondToR(
                   ? "<img src=x onerror=alert(1)>"
                   : `value-${position}-${rowIndex + 1}`
               ),
-              na: rowIndices.map(() => false),
+              na_rows: [],
             },
           })),
         },
@@ -2488,17 +2488,17 @@ function snapshotDescriptor(
           values,
           display: values.map(String),
           sort_key: values,
-          na: values.map(() => false),
+          na_rows: [],
         },
         {
           values: strings,
           display: strings,
-          na: values.map(() => false),
+          na_rows: [],
         },
         {
           values: values.map((value) => value * 2),
           display: values.map((value) => String(value * 2)),
-          na: values.map(() => false),
+          na_rows: [],
         },
       ],
     },
@@ -2582,7 +2582,7 @@ Deno.test({
                 : String(value)
             ),
             ...(schema.sortable ? { sort_key: values } : {}),
-            na: values.map(() => false),
+            na_rows: [],
           })),
         },
       },
@@ -2913,7 +2913,7 @@ async function respondToRefresh(
             data: {
               source_row: [0],
               row_labels: null,
-              columns: [{ values: [7], display: ["7"], na: [false] }],
+              columns: [{ values: [7], display: ["7"], na_rows: [] }],
             },
           },
         });
@@ -2990,7 +2990,7 @@ async function respondToRefresh(
               schema: columns[0],
               data: {
                 display: rows.map((row) => String(row + 1)),
-                na: rows.map(() => false),
+                na_rows: [],
               },
             }],
           },

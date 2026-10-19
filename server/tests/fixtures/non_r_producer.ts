@@ -322,7 +322,7 @@ export class FixtureProducer {
             columns: [{
               values,
               display: values.map(String),
-              na: values.map(() => false),
+              na_rows: [],
             }],
           },
         }
@@ -355,7 +355,7 @@ export class FixtureProducer {
               schema: descriptor.columns[0],
               data: {
                 display: selected.map(String),
-                na: selected.map(() => false),
+                na_rows: [],
               },
               errors: [],
             }],

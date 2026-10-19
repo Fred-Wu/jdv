@@ -181,7 +181,7 @@ test_that("missingness never depends on displayed labels", {
   out <- column_extract(x)
   expect_identical(
     out$data$special,
-    c(NA_character_, "na", "nan", "pos_inf", "neg_inf")
+    c(NA_character_, NA_character_, "nan", "pos_inf", "neg_inf")
   )
   expect_identical(
     out$data$values,

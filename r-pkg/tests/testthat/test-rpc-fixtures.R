@@ -67,7 +67,7 @@ rpc_fixture_snapshot <- function(open_message, template) {
   template$columns <- lapply(seq_along(params$data$columns), function(j) {
     wire <- params$data$columns[[j]]
     data <- list()
-    for (field in c("values", "display", "sort_key", "special", "na")) {
+    for (field in c("values", "display", "sort_key")) {
       internal_field <- if (identical(field, "sort_key")) "sortKey" else field
       if (!is.null(wire[[field]])) {
         data[[internal_field]] <- rpc_fixture_values(
@@ -75,6 +75,22 @@ rpc_fixture_snapshot <- function(open_message, template) {
           template$columns[[j]]$data[[internal_field]]
         )
       }
+    }
+    if (!is.null(wire$special)) {
+      special <- rep(NA_character_, length(template$columns[[j]]$data$special))
+      for (kind in c("nan", "pos_inf", "neg_inf")) {
+        rows <- wire$special[[kind]]
+        if (length(rows)) special[as.integer(unlist(rows)) + 1L] <- kind
+      }
+      data$special <- special
+    }
+    if (!is.null(wire$na_rows)) {
+      missing <- rep(FALSE, length(template$columns[[j]]$data$na))
+      rows <- as.integer(unlist(wire$na_rows)) + 1L
+      if (length(rows)) {
+        missing[rows] <- TRUE
+      }
+      data$na <- missing
     }
     if (is.null(data$display) && !is.null(data$values)) {
       data$display <- as.character(data$values)

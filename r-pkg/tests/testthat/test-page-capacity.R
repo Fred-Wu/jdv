@@ -117,7 +117,8 @@ test_that(
       .jdv_json_encode(wire$values),
       "[null,\"NA\",\"plain\",null]"
     )
-    expect_identical(.jdv_json_encode(wire$na), "[true,false,false,true]")
+    expect_identical(.jdv_json_encode(wire$na_rows), "[0,3]")
+    expect_false("na" %in% names(wire))
 
     all_missing <- column_extract(
       rep(NA_character_, 4L),
@@ -149,12 +150,15 @@ test_that("column wire estimates cover mask bytes near the message limit", {
   measured <- .jdv_json_string_measure(column$data$values, 64 * 1024^2)
   wire_column <- .jdv_json_column(column)
   values_bytes <- nchar(.jdv_json_encode(wire_column$values), type = "bytes")
-  na_bytes <- nchar(.jdv_json_encode(wire_column$na), type = "bytes")
+  na_bytes <- nchar(.jdv_json_encode(wire_column$na_rows), type = "bytes")
+  missing_rows <- which(column$data$na) - 1L
+  estimated_na_bytes <- 2L +
+    sum(nchar(as.character(missing_rows))) +
+    max(0L, length(missing_rows) - 1L)
   measured_column_bytes <- sum(measured[, 1L]) +
     length(column$data$values) +
     1L +
-    6L * length(column$data$na) +
-    1L
+    estimated_na_bytes
   expect_gte(measured_column_bytes, values_bytes + na_bytes)
 
   old_message_limit <- getOption("jdv.max_message_bytes")
@@ -167,6 +171,96 @@ test_that("column wire estimates cover mask bytes near the message limit", {
     attr(bounded, "jdv_work_budget")
   )
   expect_lte(nchar(bounded_encoded, type = "bytes"), full_bytes - 1L)
+})
+
+test_that(
+  "special values use ordered sparse row positions on every wire view",
+  {
+    values <- c(1, NA_real_, NaN, Inf, -Inf, NaN)
+    column <- column_extract(values)
+    wire <- .jdv_json_column(column)
+
+    expect_identical(names(wire$special), c("nan", "pos_inf", "neg_inf"))
+    expect_identical(unclass(wire$special$nan), c(2L, 5L))
+    expect_identical(.jdv_json_encode(wire$special$nan), "[2,5]")
+    expect_identical(.jdv_json_encode(wire$special$pos_inf), "[3]")
+    expect_identical(.jdv_json_encode(wire$special$neg_inf), "[4]")
+    expect_identical(.jdv_json_encode(wire$na_rows), "[1,2,5]")
+    expect_false("na" %in% names(wire))
+
+    finite <- .jdv_json_column(column_extract(c(1, 2)))
+    expect_null(finite$special)
+    expect_identical(.jdv_json_encode(finite$na_rows), "[]")
+    unavailable <- list(data = list(), errors = list(na = "unavailable"))
+    expect_null(.jdv_json_column(unavailable)$na_rows)
+    expect_identical(
+      names(.jdv_json_column(unavailable, snapshot = TRUE)$errors),
+      "na_rows"
+    )
+    expect_identical(
+      names(.jdv_json_channel_errors(list(na = "unavailable"))),
+      "na_rows"
+    )
+    budget <- .jdv_budget(1024)
+    .jdv_json_column(column, budget = budget)
+    expect_identical(budget$used, 16 * length(column$data$na) + 64)
+    expect_error(
+      .jdv_json_column(column, budget = .jdv_budget(127)),
+      class = "jdv_query_error"
+    )
+
+    snapshot <- snapshot_table(data.frame(value = values))
+    snapshot_wire <- .jdv_json_column(snapshot$columns[[1L]], snapshot = TRUE)
+    holder <- paged_table(data.frame(value = values))
+    page <- query_page(holder, limit = length(values))
+    page_wire <- .jdv_page_column(page$data$columns[[1L]])$data
+    expect_identical(snapshot_wire$special, page_wire$special)
+    expect_identical(snapshot_wire$na_rows, page_wire$na_rows)
+
+    wire_page <- page
+    wire_page$data$source_row <- .jdv_json_values(page$data$row_index - 1L)
+    wire_page$data$columns <- lapply(page$data$columns, .jdv_page_column)
+    trimmed <- .jdv_trim_page(wire_page, 4L)
+    trimmed_wire <- trimmed$data$columns[[1L]]$data
+    expect_identical(.jdv_json_encode(trimmed_wire$na_rows), "[1,2]")
+    expect_identical(.jdv_json_encode(trimmed_wire$special$nan), "[2]")
+    expect_identical(.jdv_json_encode(trimmed_wire$special$pos_inf), "[3]")
+    expect_false("neg_inf" %in% names(trimmed_wire$special))
+  }
+)
+
+test_that("sparse row estimates cover missing densities and digit boundaries", {
+  set.seed(20261019)
+  n <- 1000L
+  for (fraction in c(0, 0.1, 1)) {
+    values <- rep(strrep("x", 20L), n)
+    missing <- if (fraction == 1) {
+      seq_len(n)
+    } else if (fraction == 0) {
+      integer()
+    } else {
+      sort(sample.int(n, n * fraction))
+    }
+    values[missing] <- NA_character_
+    holder <- paged_table(data.frame(text = values))
+    page <- query_page(holder, limit = n)
+    encoded <- page_capacity_wire_encode(page, attr(page, "jdv_work_budget"))
+    expect_identical(page$limit, n)
+    expect_lte(nchar(encoded, type = "bytes"), .jdv_max_message_bytes())
+    expect_lte(
+      attr(page, "jdv_work_budget")$used,
+      attr(page, "jdv_work_budget")$limit
+    )
+  }
+
+  values <- rep("x", n + 1L)
+  values[c(10L, 11L, 100L, 101L, 1000L, 1001L)] <- NA_character_
+  holder <- paged_table(data.frame(text = values))
+  page <- query_page(holder, limit = n + 1L)
+  wire <- .jdv_page_column(page$data$columns[[1L]])$data
+  expect_identical(unclass(wire$na_rows), c(9L, 10L, 99L, 100L, 999L, 1000L))
+  encoded <- page_capacity_wire_encode(page, attr(page, "jdv_work_budget"))
+  expect_lte(nchar(encoded, type = "bytes"), .jdv_max_message_bytes())
 })
 
 test_that("plain string fast path falls back when S3 dispatch changes", {

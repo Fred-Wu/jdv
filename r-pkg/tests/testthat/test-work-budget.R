@@ -272,7 +272,11 @@ test_that("explicit wide string pages are sized before channel extraction", {
       )
       for (column in rpc$result$data$columns) {
         expect_true(all(
-          vapply(column$data, length, integer(1L)) ==
+          vapply(
+            column$data[setdiff(names(column$data), c("na_rows", "special"))],
+            length,
+            integer(1L)
+          ) ==
             length(rpc$result$data$source_row)
         ))
       }
@@ -297,7 +301,11 @@ test_that("explicit wide string pages are sized before channel extraction", {
       )
       for (column in response$data$columns) {
         expect_true(all(
-          vapply(column$data, length, integer(1L)) ==
+          vapply(
+            column$data[setdiff(names(column$data), c("na_rows", "special"))],
+            length,
+            integer(1L)
+          ) ==
             length(response$data$source_row)
         ))
       }
@@ -358,7 +366,8 @@ test_that("one-row wide double packed matrices return a shape summary", {
   expect_null(reply$error)
   column <- reply$result$data$columns[[1L]]$data
   expect_identical(column$display, list("<matrix [1 x 20000]>"))
-  expect_identical(column$na, list(FALSE))
+  expect_identical(column$na_rows, list())
+  expect_null(column[["na"]])
 })
 
 test_that("page sizing bounds packed matrix and frame row slicing", {
@@ -547,7 +556,7 @@ test_that("numeric special-value work is reserved before value conversion", {
   )
   expect_identical(
     result$data$special,
-    c("na", "nan", "pos_inf", "neg_inf", rep(NA_character_, 20L))
+    c(NA_character_, "nan", "pos_inf", "neg_inf", rep(NA_character_, 20L))
   )
 })
 

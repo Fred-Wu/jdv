@@ -577,23 +577,37 @@
 #' compatible; the Column types section defines how to treat an unknown `type`
 #' value.
 #'
-#' A column payload is columnar. Channel arrays may be omitted when absent:
+#' A column payload is columnar. Channels may be omitted when unavailable:
 #'
 #' ```json
 #' {
 #'   "values": [1, null, null],
 #'   "display": ["1", "NaN", "NA"],
-#'   "special": [null, "nan", "na"],
-#'   "na": [false, true, true]
+#'   "special": {"nan": [1]},
+#'   "na_rows": [1, 2]
 #' }
 #' ```
 #'
-#' `values`, `display`, `sort_key`, `special`, and `na`, when present, have one
-#' entry for each row in the payload. `na` is sent whenever its extraction
-#' succeeds and is the authoritative missingness mask; clients must not infer
-#' missingness from display text. A producer may omit a channel that is
-#' unavailable, while keeping other channels usable. Clients use the
-#' descriptor's capability fields to decide which operations are available.
+#' `values`, `display`, and `sort_key`, when present, have one entry for each
+#' row in the payload. `na_rows` lists missing row positions in this response,
+#' starting at zero, in strictly increasing order without duplicates. Positions
+#' must be integers within the payload's row count; they are not `source_row`
+#' identifiers. `na_rows` is sent whenever missingness extraction succeeds,
+#' including `[]` when no rows are missing. Omission means missingness is
+#' unavailable. It is authoritative; clients must not infer missingness from
+#' display text. A producer may omit an unavailable channel while keeping other
+#' channels usable. Clients use descriptor capabilities and channel availability
+#' to decide which operations are available.
+#'
+#' `special`, when present, is an object with only `nan`, `pos_inf`, and
+#' `neg_inf` keys, in that producer order. Each value is a nonempty array of row
+#' positions with the same integer, order, uniqueness, and range requirements as
+#' `na_rows`. Empty kinds are omitted, and the whole field is omitted when no
+#' kind occurs. Kinds must not overlap. NaN positions also occur in `na_rows`
+#' when missingness is available, following R's `is.na()` semantics; infinities
+#' are not missing. Clients reject invalid position channels as
+#' `schema_changed`. The old `na` field and per-row `special` arrays are not
+#' part of this format.
 #'
 #' In snapshot access, `data.columns` entries contain the complete channel data.
 #' A random-access response wraps each selected column as `{ "schema": ...,
@@ -607,13 +621,13 @@
 #'   `duration` values are numbers in the schema's `units` (`secs`, `mins`,
 #'   `hours`, `days`, or `weeks`), with the same missing and non-finite rules as
 #'   `number`; `display` carries the formatted text.
-#'   Missing values use JSON `null` and are identified by `na`.
-#' - Non-finite doubles use JSON `null` in `values`; the parallel `special` entry
-#'   distinguishes `na`, `nan`, `pos_inf`, and `neg_inf`. Numeric comparisons and
-#'   sorting restore infinities from `special`; `na` controls missingness
-#'   and NA-last placement.
+#'   Missing values use JSON `null` and are identified by `na_rows`.
+#' - Non-finite doubles use JSON `null` in `values`; `special` identifies NaN
+#'   and positive or negative infinity by row position. NA is represented only
+#'   by `na_rows`. Numeric comparisons and sorting restore infinities from
+#'   `special`; `na_rows` controls missingness and NA-last placement.
 #' - `int64` values are canonical base-10 JSON strings, never JSON numbers, to
-#'   preserve exact integer precision. `na` identifies missing entries. The
+#'   preserve exact integer precision. `na_rows` identifies missing entries. The
 #'   `display` channel may be omitted only when its nonmissing labels equal
 #'   `values` and every missing label is `"NA"`. The client reconstructs display
 #'   from values, using `"NA"` for missing entries. A producer may retain
@@ -627,7 +641,7 @@
 #'   recovered from its `values` and `special` entries. It carries the producer's ordering
 #'   key; consumers compare keys rather than recomputing a producer's native
 #'   ordering. A `null` sort key is ordered after every non-null key, regardless
-#'   of the `na` mask. random-access rows never include sort keys.
+#'   of `na_rows`. random-access rows never include sort keys.
 #' - `source_row` always reports zero-based positions in original source order.
 #'   Snapshot `data` and random-access page `data` may contain one `row_labels`
 #'   string per row; an absent or `null` field means there are no explicit row
@@ -1030,8 +1044,9 @@
 #' R column channel diagnostics use an empty `errors` array on random-access
 #' pages when no channel failed, and a named object of channel-specific messages
 #' when errors are present. Snapshot-access columns include `errors` only when a
-#' channel failed. Channel failures are reflected in the schema capability
-#' flags; failed channel results are not cached.
+#' channel failed. Missingness failures use the `na_rows` diagnostic key,
+#' matching the wire channel name. Channel failures are reflected in the schema
+#' capability flags; failed channel results are not cached.
 #'
 #' The R package uses base R and its bundled cJSON implementation at runtime; it
 #' does not require jsonlite. Consumers can parse and construct JSON with their

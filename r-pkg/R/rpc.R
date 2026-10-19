@@ -516,12 +516,20 @@ jdv_json_object <- function(x = list()) {
     return(NULL)
   }
   names(errors)[names(errors) == "sortKey"] <- "sort_key"
+  names(errors)[names(errors) == "na"] <- "na_rows"
   errors
 }
 
-.jdv_json_column <- function(column, snapshot = FALSE) {
+.jdv_json_column <- function(column, snapshot = FALSE, budget = NULL) {
   data <- column$data
   out <- list()
+  if (!is.null(budget) && (!is.null(data$na) || !is.null(data$special))) {
+    .jdv_budget_charge(
+      budget,
+      16 * length(data$na %||% data$special) + 64,
+      "sparse_channels"
+    )
+  }
   if (!is.null(data$values)) {
     out$values <- .jdv_json_values(data$values)
   }
@@ -548,10 +556,19 @@ jdv_json_object <- function(x = list()) {
     out$sort_key <- .jdv_json_values(data$sortKey)
   }
   if (!is.null(data$special)) {
-    out$special <- .jdv_json_values(data$special)
+    special <- list()
+    for (kind in c("nan", "pos_inf", "neg_inf")) {
+      rows <- which(!is.na(data$special) & data$special == kind) - 1L
+      if (length(rows)) {
+        special[[kind]] <- .jdv_json_values(rows)
+      }
+    }
+    if (length(special)) {
+      out$special <- special
+    }
   }
   if (!is.null(data$na)) {
-    out$na <- .jdv_json_values(data$na)
+    out$na_rows <- .jdv_json_values(which(data$na) - 1L)
   }
   if (snapshot && length(column$errors)) {
     out$errors <- .jdv_json_channel_errors(column$errors)
@@ -559,10 +576,10 @@ jdv_json_object <- function(x = list()) {
   out
 }
 
-.jdv_page_column <- function(column) {
+.jdv_page_column <- function(column, budget = NULL) {
   list(
     schema = .jdv_schema_fields(column$schema),
-    data = .jdv_json_column(column),
+    data = .jdv_json_column(column, budget = budget),
     errors = .jdv_json_channel_errors(column$errors)
   )
 }
@@ -603,7 +620,12 @@ jdv_json_object <- function(x = list()) {
         } else {
           .jdv_json_values(row_names)
         },
-        columns = lapply(snapshot$columns, .jdv_json_column, snapshot = TRUE)
+        columns = lapply(
+          snapshot$columns,
+          .jdv_json_column,
+          snapshot = TRUE,
+          budget = work_budget
+        )
       ),
       work_used = work_budget$used,
       work_limit = work_budget$limit,
@@ -1467,7 +1489,11 @@ jdv_register <- function(
   limit <- if (is.null(params$limit)) 200 else params$limit
   budget <- .jdv_budget(entry$holder$limits$page_work_bytes)
   result <- query_page(entry$holder, offset, limit, sort, filter, cols, budget)
-  result$data$columns <- lapply(result$data$columns, .jdv_page_column)
+  result$data$columns <- lapply(
+    result$data$columns,
+    .jdv_page_column,
+    budget = budget
+  )
   output <- list(
     view = entry$id,
     generation = entry$generation,
@@ -1763,7 +1789,23 @@ jdv_register <- function(
   page$data$row_labels <- take(page$data$row_labels)
   page$data$columns <- lapply(page$data$columns, function(column) {
     for (channel in names(column$data)) {
-      column$data[[channel]] <- take(column$data[[channel]])
+      if (identical(channel, "na_rows")) {
+        rows <- column$data[[channel]]
+        column$data[[channel]] <- structure(
+          rows[rows < count],
+          class = class(rows)
+        )
+      } else if (identical(channel, "special")) {
+        special <- column$data[[channel]]
+        for (kind in names(special)) {
+          rows <- special[[kind]]
+          special[[kind]] <- structure(rows[rows < count], class = class(rows))
+          if (!length(special[[kind]])) special[[kind]] <- NULL
+        }
+        column$data[[channel]] <- if (length(special)) special else NULL
+      } else {
+        column$data[[channel]] <- take(column$data[[channel]])
+      }
     }
     column
   })

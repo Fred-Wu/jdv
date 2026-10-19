@@ -410,6 +410,18 @@ Deno.test({
         );
         const snapshot = await openedTable(browser, "e2e-snapshot");
         assertEquals(snapshot.params.access, "snapshot");
+        const snapshotNumber = asRecord(
+          (asRecord(snapshot.params.data).columns as Array<
+            Record<string, unknown>
+          >)[0],
+        );
+        assertEquals(snapshotNumber.na_rows, [0, 1, 3, 4]);
+        assertEquals(snapshotNumber.special, {
+          nan: [0, 4],
+          pos_inf: [5],
+          neg_inf: [6],
+        });
+        assert(!Object.hasOwn(snapshotNumber, "na"));
         const snapshotEnvelope = { params: snapshot.params };
         const rowsBeforeSnapshotQuery =
           server.wire.snapshot().tableRowsRequests.length;
@@ -641,6 +653,25 @@ Deno.test({
         }
         const numericTable = semTables["numeric-special"];
         const numericCase = fixtureCase("numeric-special");
+        const numericPage = await request(
+          browser,
+          numericTable,
+          "e2e-sparse-special-page",
+          "grid/rows",
+          { offset: 0, limit: 8, cols: [0] },
+        );
+        const numericPageColumn = asRecord(
+          (asRecord(responseResult(numericPage).data).columns as Array<
+            Record<string, unknown>
+          >)[0].data,
+        );
+        assertEquals(numericPageColumn.na_rows, [0, 1, 3, 4]);
+        assertEquals(numericPageColumn.special, {
+          nan: [0, 4],
+          pos_inf: [5],
+          neg_inf: [6],
+        });
+        assert(!Object.hasOwn(numericPageColumn, "na"));
         for (
           const query of numericCase.queries as Array<Record<string, unknown>>
         ) {

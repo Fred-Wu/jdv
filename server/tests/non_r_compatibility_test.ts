@@ -143,7 +143,7 @@ Deno.test("R-free producer interoperates with the host over WebSocket", async ()
     const rowColumn = (rowData.columns as Frame[])[0];
     assertEquals((rowColumn.schema as Frame).name, "value");
     assertEquals((rowColumn.data as Frame).display, ["30"]);
-    assertEquals((rowColumn.data as Frame).na, [false]);
+    assertEquals((rowColumn.data as Frame).na_rows, []);
 
     const invalid = await request("not/a/method", {
       view: "fixture-random",

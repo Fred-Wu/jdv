@@ -545,7 +545,10 @@ local({
       expect_identical(page$data$columns[[1L]]$schema$name, "text150")
       expect_identical(page$data$columns[[2L]]$schema$name, "id")
       for (column in page$data$columns) {
-        expect_true(all(vapply(column$data, length, integer(1L)) == page$limit))
+        dense <- column$data[
+          setdiff(names(column$data), c("na_rows", "special"))
+        ]
+        expect_true(all(vapply(dense, length, integer(1L)) == page$limit))
       }
     }
   )

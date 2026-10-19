@@ -135,10 +135,11 @@ test_that("matrix snapshots and grid child descriptors match ordinary views", {
     "grid/rows",
     list(offset = 0L, limit = 2L)
   ))
-  expect_identical(
-    unlist(page$data$columns[[1L]]$data$na, use.names = FALSE),
-    c(TRUE, FALSE)
+  expect_equal(
+    unlist(page$data$columns[[1L]]$data$na_rows, use.names = FALSE),
+    0
   )
+  expect_null(page$data$columns[[1L]]$data[["na"]])
 })
 
 test_that("tree child handles preserve scalar, missing, and empty values", {

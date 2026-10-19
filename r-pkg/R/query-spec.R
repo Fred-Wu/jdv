@@ -239,9 +239,13 @@
 #' contain sort keys or full-column filter text. Display is always character
 #' text, with missing display results normalized to `"NA"`. Missingness and
 #' semantic values remain independent of display. For a number or duration
-#' column, `special` distinguishes missing, NaN, positive infinity, and negative
-#' infinity when present. Columns without a plain values representation can
-#' return display and missingness without values.
+#' column, `special` lists the response-local zero-based positions of NaN,
+#' positive infinity, and negative infinity by kind. `na_rows` independently
+#' lists missing positions (including NaN); `[]` means no missing rows and
+#' omission means extraction failed. These sparse channels use the same format
+#' in Snapshot data and pages, and positions are rebased after sort, filter, and
+#' slicing. Columns without a plain values representation can return display and
+#' missingness without values.
 #'
 #' An error object contains a stable `code`, a human-readable `message`, and
 #' optional `details`:
@@ -261,14 +265,14 @@
 #'
 #'
 #' The R producer can downgrade individual page channels and include channel
-#' errors in the response. A display failure can yield `<class>` fallback text.
-#' Sort/filter requests that require an unavailable full-column channel raise a
-#' query error whose details can include the extraction's `schema`, `data`, and
-#' `errors`. Failed channel results are not cached, and extraction does not
-#' overwrite the registered holder schema. The R package exposes query failures
-#' as conditions inheriting from `jdv_query_error`, `jdv_error_<code>`,
-#' `jdv_error`, `error`, and `condition` (see [jdv_errors]); these classes are
-#' not wire fields.
+#' errors in the response, using `na_rows` for missingness failures. A display
+#' failure can yield `<class>` fallback text. Sort/filter requests that require
+#' an unavailable full-column channel raise a query error whose details can
+#' include the extraction's `schema`, `data`, and `errors`. Failed channel
+#' results are not cached, and extraction does not overwrite the registered
+#' holder schema. The R package exposes query failures as conditions inheriting
+#' from `jdv_query_error`, `jdv_error_<code>`, `jdv_error`, `error`, and
+#' `condition` (see [jdv_errors]); these classes are not wire fields.
 #'
 #'
 #' @section R producer extension: Source slicing contract:
@@ -526,9 +530,9 @@
 #' sorts before U+1F600 under C order. For string, categorical, and integer64
 #' columns, a Snapshot may omit `display` only when every nonmissing display
 #' value equals its semantic value and every missing display value is `"NA"`.
-#' The missingness mask reconstructs omitted missing labels. If a formatter uses
-#' another missing label, `display` remains present, including when all rows are
-#' missing. Empty comparisons for zero-row columns count as equal.
+#' The `na_rows` positions reconstruct omitted missing labels. If a formatter
+#' uses another missing label, `display` remains present, including when all
+#' rows are missing. Empty comparisons for zero-row columns count as equal.
 #'
 #' For supported inputs with valid required channels, Paged and Snapshot must
 #' return identical original source-row positions for every sort/filter request.
@@ -539,7 +543,8 @@
 #' for query semantics. Its `fold` entries record ASCII folding. Each `cases`
 #' entry describes typed source columns and `queries` with expected zero-based
 #' positions in original source order. An `r` member is only an R test-harness
-#' construction hint, not a wire field. Number `special` entries reconstruct
+#' construction hint, not a wire field. Fixture number `special` arrays are
+#' source-construction hints, not sparse wire channels; they reconstruct
 #' nonfinite source values; JSON null means missing data. Factor columns include
 #' levels and orderedness; datetime columns include timezone metadata; duration
 #' columns include `units`, and an `r` of `hms` marks a vector with the

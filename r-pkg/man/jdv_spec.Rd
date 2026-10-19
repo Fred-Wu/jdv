@@ -551,22 +551,36 @@ fields must be ignored by clients so future schema extensions remain
 compatible; the Column types section defines how to treat an unknown \code{type}
 value.
 
-A column payload is columnar. Channel arrays may be omitted when absent:
+A column payload is columnar. Channels may be omitted when unavailable:
 
 \if{html}{\out{<div class="sourceCode json">}}\preformatted{\{
   "values": [1, null, null],
   "display": ["1", "NaN", "NA"],
-  "special": [null, "nan", "na"],
-  "na": [false, true, true]
+  "special": \{"nan": [1]\},
+  "na_rows": [1, 2]
 \}
 }\if{html}{\out{</div>}}
 
-\code{values}, \code{display}, \code{sort_key}, \code{special}, and \code{na}, when present, have one
-entry for each row in the payload. \code{na} is sent whenever its extraction
-succeeds and is the authoritative missingness mask; clients must not infer
-missingness from display text. A producer may omit a channel that is
-unavailable, while keeping other channels usable. Clients use the
-descriptor's capability fields to decide which operations are available.
+\code{values}, \code{display}, and \code{sort_key}, when present, have one entry for each
+row in the payload. \code{na_rows} lists missing row positions in this response,
+starting at zero, in strictly increasing order without duplicates. Positions
+must be integers within the payload's row count; they are not \code{source_row}
+identifiers. \code{na_rows} is sent whenever missingness extraction succeeds,
+including \verb{[]} when no rows are missing. Omission means missingness is
+unavailable. It is authoritative; clients must not infer missingness from
+display text. A producer may omit an unavailable channel while keeping other
+channels usable. Clients use descriptor capabilities and channel availability
+to decide which operations are available.
+
+\code{special}, when present, is an object with only \code{nan}, \code{pos_inf}, and
+\code{neg_inf} keys, in that producer order. Each value is a nonempty array of row
+positions with the same integer, order, uniqueness, and range requirements as
+\code{na_rows}. Empty kinds are omitted, and the whole field is omitted when no
+kind occurs. Kinds must not overlap. NaN positions also occur in \code{na_rows}
+when missingness is available, following R's \code{is.na()} semantics; infinities
+are not missing. Clients reject invalid position channels as
+\code{schema_changed}. The old \code{na} field and per-row \code{special} arrays are not
+part of this format.
 
 In snapshot access, \code{data.columns} entries contain the complete channel data.
 A random-access response wraps each selected column as \verb{\{ "schema": ..., "data": ..., "errors": ... \}}, preserving the page-time schema. The \code{data}
@@ -579,13 +593,13 @@ The following encoding rules apply:
 \code{duration} values are numbers in the schema's \code{units} (\code{secs}, \code{mins},
 \code{hours}, \code{days}, or \code{weeks}), with the same missing and non-finite rules as
 \code{number}; \code{display} carries the formatted text.
-Missing values use JSON \code{null} and are identified by \code{na}.
-\item Non-finite doubles use JSON \code{null} in \code{values}; the parallel \code{special} entry
-distinguishes \code{na}, \code{nan}, \code{pos_inf}, and \code{neg_inf}. Numeric comparisons and
-sorting restore infinities from \code{special}; \code{na} controls missingness
-and NA-last placement.
+Missing values use JSON \code{null} and are identified by \code{na_rows}.
+\item Non-finite doubles use JSON \code{null} in \code{values}; \code{special} identifies NaN
+and positive or negative infinity by row position. NA is represented only
+by \code{na_rows}. Numeric comparisons and sorting restore infinities from
+\code{special}; \code{na_rows} controls missingness and NA-last placement.
 \item \code{int64} values are canonical base-10 JSON strings, never JSON numbers, to
-preserve exact integer precision. \code{na} identifies missing entries. The
+preserve exact integer precision. \code{na_rows} identifies missing entries. The
 \code{display} channel may be omitted only when its nonmissing labels equal
 \code{values} and every missing label is \code{"NA"}. The client reconstructs display
 from values, using \code{"NA"} for missing entries. A producer may retain
@@ -599,7 +613,7 @@ timestamp strings; the schema's \code{tz} records the source time-zone setting.
 recovered from its \code{values} and \code{special} entries. It carries the producer's ordering
 key; consumers compare keys rather than recomputing a producer's native
 ordering. A \code{null} sort key is ordered after every non-null key, regardless
-of the \code{na} mask. random-access rows never include sort keys.
+of \code{na_rows}. random-access rows never include sort keys.
 \item \code{source_row} always reports zero-based positions in original source order.
 Snapshot \code{data} and random-access page \code{data} may contain one \code{row_labels}
 string per row; an absent or \code{null} field means there are no explicit row
@@ -984,8 +998,9 @@ the common descriptor section.
 R column channel diagnostics use an empty \code{errors} array on random-access
 pages when no channel failed, and a named object of channel-specific messages
 when errors are present. Snapshot-access columns include \code{errors} only when a
-channel failed. Channel failures are reflected in the schema capability
-flags; failed channel results are not cached.
+channel failed. Missingness failures use the \code{na_rows} diagnostic key,
+matching the wire channel name. Channel failures are reflected in the schema
+capability flags; failed channel results are not cached.
 
 The R package uses base R and its bundled cJSON implementation at runtime; it
 does not require jsonlite. Consumers can parse and construct JSON with their

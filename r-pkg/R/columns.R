@@ -633,7 +633,6 @@ column_extract <- function(
       }
       if (schema$type %in% c("number", "duration") && !is.null(value)) {
         special <- rep(NA_character_, n)
-        special[is.na(value)] <- "na"
         special[is.nan(value)] <- "nan"
         special[is.infinite(value) & value > 0] <- "pos_inf"
         special[is.infinite(value) & value < 0] <- "neg_inf"

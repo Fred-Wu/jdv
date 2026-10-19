@@ -73,7 +73,18 @@ export function querySnapshot(descriptor, {
     const source = columns[position];
     const data = {};
     for (const [key, value] of Object.entries(source.data)) {
-      if (Array.isArray(value) && value.length === rowCount) {
+      if (key === "na_rows") {
+        data.na_rows = projectSparseRows(value, pageIndices);
+      } else if (key === "special") {
+        const projected = {};
+        for (const kind of SPECIAL_KINDS) {
+          if (value[kind]) {
+            const rows = projectSparseRows(value[kind], pageIndices);
+            if (rows.length) projected[kind] = rows;
+          }
+        }
+        if (Object.keys(projected).length) data.special = projected;
+      } else if (Array.isArray(value) && value.length === rowCount) {
         data[key] = pageIndices.map((row) => value[row]);
       } else if (key !== "errors") {
         data[key] = value;
@@ -100,6 +111,17 @@ export function querySnapshot(descriptor, {
   };
 }
 
+const SPECIAL_KINDS = ["nan", "pos_inf", "neg_inf"];
+
+function projectSparseRows(rows, pageIndices) {
+  const positions = new Set(rows);
+  const projected = [];
+  for (let index = 0; index < pageIndices.length; index++) {
+    if (positions.has(pageIndices[index])) projected.push(index);
+  }
+  return projected;
+}
+
 function snapshotRowCount(table) {
   if (Number.isSafeInteger(table?.nrow) && table.nrow >= 0) {
     return table.nrow;
@@ -114,7 +136,7 @@ function snapshotRowCount(table) {
     lengths.push(table.data.row_labels.length);
   }
   for (const column of table.data?.columns ?? []) {
-    for (const name of ["values", "display", "sort_key", "special", "na"]) {
+    for (const name of ["values", "display", "sort_key"]) {
       if (Array.isArray(column?.[name])) lengths.push(column[name].length);
     }
   }
@@ -148,21 +170,18 @@ export function decodeRows(schema, data, rowIndex = null, rowNames = null) {
   }
   const values = data?.values;
   const display = data?.display;
-  const na = data?.na;
-  const count = [values, display, na].find(Array.isArray)?.length ?? 0;
-  for (const channel of [values, display, na, data?.special]) {
+  const naRows = data?.na_rows;
+  const count = [values, display].find(Array.isArray)?.length ?? 0;
+  for (const channel of [values, display]) {
     if (Array.isArray(channel) && channel.length !== count) {
       throw queryError("schema_changed", "Snapshot channel lengths differ.");
     }
   }
-  if (
-    na !== undefined &&
-    (!Array.isArray(na) || na.some((v) => typeof v !== "boolean"))
-  ) {
-    throw queryError("schema_changed", "Invalid missingness channel.");
-  }
+  validateSparseRows(naRows, count, "missingness");
+  validateSpecial(data?.special, count);
+  const missingRows = new Set(naRows ?? []);
   return Array.from({ length: count }, (_, index) => {
-    const missing = Array.isArray(na) ? na[index] : false;
+    const missing = missingRows.has(index);
     let text;
     if (Array.isArray(display)) {
       text = display[index];
@@ -171,9 +190,9 @@ export function decodeRows(schema, data, rowIndex = null, rowNames = null) {
     } else if (Array.isArray(values)) {
       text = values[index];
       const numeric = schema?.type === "number" || schema?.type === "duration";
-      if (numeric && data.special?.[index] === "nan") text = "NaN";
-      if (numeric && data.special?.[index] === "pos_inf") text = "Inf";
-      if (numeric && data.special?.[index] === "neg_inf") text = "-Inf";
+      if (numeric && specialAt(data, index) === "nan") text = "NaN";
+      if (numeric && specialAt(data, index) === "pos_inf") text = "Inf";
+      if (numeric && specialAt(data, index) === "neg_inf") text = "-Inf";
     } else {
       text = "";
     }
@@ -206,7 +225,7 @@ function validateChannels(nrow, columns) {
     if (!schema || schema.position !== i || typeof schema.type !== "string") {
       throw queryError("invalid_request", "Malformed Snapshot schema.");
     }
-    for (const name of ["values", "display", "sort_key", "special", "na"]) {
+    for (const name of ["values", "display", "sort_key"]) {
       const channel = data[name];
       if (
         channel !== undefined &&
@@ -215,9 +234,7 @@ function validateChannels(nrow, columns) {
         throw queryError("schema_changed", `Invalid ${name} channel.`);
       }
     }
-    if (data.na?.some((value) => typeof value !== "boolean")) {
-      throw queryError("schema_changed", "Invalid missingness channel.");
-    }
+    validateSparseRows(data.na_rows, nrow, "missingness");
     if (data.display?.some((value) => typeof value !== "string")) {
       throw queryError("schema_changed", "Invalid display channel.");
     }
@@ -228,14 +245,76 @@ function validateChannels(nrow, columns) {
     ) {
       throw queryError("schema_changed", "Invalid sort key channel.");
     }
+    validateSpecial(data.special, nrow);
+  }
+}
+
+function validateSparseRows(rows, nrow, label) {
+  if (rows === undefined) return;
+  if (!Array.isArray(rows)) {
+    throw queryError("schema_changed", `Invalid ${label} channel.`);
+  }
+  let previous = -1;
+  for (const row of rows) {
     if (
-      data.special?.some((value) =>
-        value !== null && !["na", "nan", "pos_inf", "neg_inf"].includes(value)
-      )
+      !Number.isSafeInteger(row) || row < 0 || row >= nrow || row <= previous
     ) {
+      throw queryError("schema_changed", `Invalid ${label} row positions.`);
+    }
+    previous = row;
+  }
+}
+
+function validateSpecial(special, nrow) {
+  if (special === undefined) return;
+  if (
+    special === null || typeof special !== "object" || Array.isArray(special)
+  ) {
+    throw queryError("schema_changed", "Invalid special-value channel.");
+  }
+  const keys = Object.keys(special);
+  if (keys.length === 0 || keys.some((key) => !SPECIAL_KINDS.includes(key))) {
+    throw queryError("schema_changed", "Invalid special-value channel.");
+  }
+  const seen = new Set();
+  for (const kind of SPECIAL_KINDS) {
+    if (!Object.hasOwn(special, kind)) continue;
+    const rows = special[kind];
+    if (!Array.isArray(rows) || rows.length === 0) {
       throw queryError("schema_changed", "Invalid special-value channel.");
     }
+    validateSparseRows(rows, nrow, "special-value");
+    for (const row of rows) {
+      if (seen.has(row)) {
+        throw queryError("schema_changed", "Overlapping special-value rows.");
+      }
+      seen.add(row);
+    }
   }
+}
+
+function specialAt(data, row) {
+  for (const kind of SPECIAL_KINDS) {
+    if (containsSparse(data?.special?.[kind], row)) return kind;
+  }
+  return undefined;
+}
+
+function isMissing(data, row) {
+  return containsSparse(data?.na_rows, row);
+}
+
+function containsSparse(rows, target) {
+  if (!Array.isArray(rows)) return false;
+  let low = 0;
+  let high = rows.length - 1;
+  while (low <= high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (rows[middle] === target) return true;
+    if (rows[middle] < target) low = middle + 1;
+    else high = middle - 1;
+  }
+  return false;
 }
 
 function validateRequest(columns, sort, filter, cols) {
@@ -254,7 +333,7 @@ function validateRequest(columns, sort, filter, cols) {
     }
     seen.add(col);
     const schema = columns[col].schema;
-    if (!schema.sortable || !columns[col].data.na) {
+    if (!schema.sortable || !Array.isArray(columns[col].data.na_rows)) {
       throw queryError("unsupported", "Column cannot be sorted.");
     }
     if (!hasSortKey(schema, columns[col].data)) {
@@ -362,7 +441,7 @@ function validateFilter(columns, node, context, depth) {
   else throw queryError("invalid_request", "Unknown filter operator.");
   const col = selector(node.col, columns.length);
   const { schema, data } = columns[col];
-  if (!data.na) {
+  if (!Array.isArray(data.na_rows)) {
     throw queryError(
       "schema_changed",
       "Filter column has no missingness channel.",
@@ -667,7 +746,7 @@ function hasSortKey(schema, data) {
 
 function keyAt(column, row) {
   const { schema, data } = column;
-  if (data.na[row] || data.sort_key?.[row] === null) {
+  if (isMissing(data, row) || data.sort_key?.[row] === null) {
     return { missing: true, value: null };
   }
   if (Array.isArray(data.sort_key)) {
@@ -677,14 +756,14 @@ function keyAt(column, row) {
     return { kind: "decimal", missing: false, value: data.values[row] };
   }
   if (["boolean", "integer", "number", "duration"].includes(schema.type)) {
-    const special = data.special?.[row];
+    const special = specialAt(data, row);
     if (special === "pos_inf") {
       return { kind: "numeric", missing: false, value: Infinity };
     }
     if (special === "neg_inf") {
       return { kind: "numeric", missing: false, value: -Infinity };
     }
-    if (special === "nan" || special === "na") {
+    if (special === "nan") {
       return { missing: true, value: null };
     }
     return { kind: "numeric", missing: false, value: data.values[row] };
@@ -721,7 +800,7 @@ function testFilter(columns, node, row) {
   if (node.op === "not") return !testFilter(columns, node.arg, row);
   const column = columns[node.col];
   const { schema, data } = column;
-  const missing = data.na[row];
+  const missing = isMissing(data, row);
   if (node.op === "is_na") return missing;
   if (node.op === "is_true") return !missing && data.values[row] === true;
   if (node.op === "is_false") return !missing && data.values[row] === false;
@@ -740,10 +819,10 @@ function testFilter(columns, node, row) {
   if (node.op === "in") return node.values.has(data.values?.[row]);
   let value = data.values?.[row];
   if (schema.type === "number" || schema.type === "duration") {
-    const special = data.special?.[row];
+    const special = specialAt(data, row);
     if (special === "pos_inf") value = Infinity;
     else if (special === "neg_inf") value = -Infinity;
-    else if (special === "nan" || special === "na") return false;
+    else if (special === "nan") return false;
   } else if (schema.type === "date") {
     value = parseDateValue(value, true);
   } else if (schema.type === "datetime") {

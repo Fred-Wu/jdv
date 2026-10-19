@@ -81,6 +81,12 @@ A producer offers data in one of two ways:
   count does not need to be known. Use them for data that is expensive to
   count, such as query results.
 
+JSON grid columns send missing positions as `na_rows` and non-finite numeric
+positions as `special` objects keyed by `nan`, `pos_inf`, and `neg_inf`.
+Positions start at zero within each response; Snapshot data and pages share
+this format. An empty `na_rows` array means no missing rows, while an absent
+channel means missingness could not be extracted.
+
 See `?jdv_spec` and `?jdv_query_spec` for the protocol. The common protocol is
 separate from the R producer's extensions. The [reference server](server/README.md)
 is one such host.

@@ -189,8 +189,7 @@
       data = list(
         values = .jdv_json_values(numeric()),
         display = .jdv_json_values(character()),
-        special = .jdv_json_values(character()),
-        na = .jdv_json_values(logical())
+        na_rows = .jdv_json_values(integer())
       ),
       errors = list()
     )
@@ -407,7 +406,7 @@
         display_reserved <- positions * (16 + 2 * cummax(width))
         r_work <- pmax(display_reserved, display_generated) +
           values_generated +
-          4 * positions
+          20 * positions
         native_strings <- cumsum(measured[, 2L] + measured[, 3L]) + 256
         work_display_prefix <- work_display_prefix + r_work
         native_tree_prefix <- pmax(native_tree_prefix, native_strings)
@@ -419,9 +418,18 @@
           plain_preflight_prior + 6 * positions * cummax(width)
         )
         plain_preflight_prior <- plain_preflight_prior + r_work
-        wire_items <- measured[, 1L] + ifelse(is.na(source_column), 4, 5) + 2
+        row_positions <- seq_len(requested_rows) - 1L
+        missing_positions <- nchar(
+          as.character(row_positions),
+          type = "bytes"
+        ) +
+          1L
+        wire_items <- measured[, 1L] +
+          1 +
+          ifelse(is.na(source_column), missing_positions, 0)
         wire_display_prefix <- wire_display_prefix + cumsum(wire_items)
       } else {
+        work_rows <- work_rows + 16
         if (plain_capacity_page) {
           return(.jdv_page_row_capacity(
             holder,
@@ -446,6 +454,7 @@
         }
       }
     } else if (cost_kind == "factor") {
+      work_rows <- work_rows + 16
       work_rows <- work_rows + 64
       wire_rows <- wire_rows + 64
       if (length(widths)) {
@@ -467,6 +476,7 @@
       is.data.frame(holder$source) &&
         (is.matrix(holder$source[[j]]) || is.data.frame(holder$source[[j]]))
     ) {
+      work_rows <- work_rows + 16
       source_column <- holder$source[[j]]
       row_cells <- if (nrow(source_column)) {
         .jdv_packed_cells(source_column) / nrow(source_column)
@@ -476,6 +486,7 @@
       work_rows <- work_rows + 6200 + 32 * row_cells + 16 * ncol(source_column)
       wire_rows <- wire_rows + 512
     } else if (cost_kind == "list") {
+      work_rows <- work_rows + 16
       source_column <- holder$source[[j]]
       cell_bytes <- vapply(
         candidate_rows,

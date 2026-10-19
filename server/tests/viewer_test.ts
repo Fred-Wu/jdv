@@ -128,6 +128,113 @@ Deno.test("Snapshot query applies sort and filter before paging", () => {
   assertEquals(page.data.source_row, [3, 4]);
 });
 
+Deno.test("sparse Snapshot channels preserve query results and page positions", () => {
+  const descriptor = {
+    params: {
+      nrow: 5,
+      ncol: 1,
+      columns: [{
+        position: 0,
+        type: "number",
+        sortable: true,
+        filterable: true,
+      }],
+      data: {
+        columns: [{
+          values: [1, null, null, null, 2],
+          display: ["1", "NaN", "Inf", "-Inf", "2"],
+          na_rows: [1],
+          special: { nan: [1], pos_inf: [2], neg_inf: [3] },
+        }],
+      },
+    },
+  };
+  const sorted = querySnapshot(descriptor, {
+    sort: [{ col: 0, desc: false }],
+  });
+  assertEquals(sorted.data.source_row, [3, 0, 4, 2, 1]);
+  assertEquals(sorted.data.columns[0].data.na_rows, [4]);
+  assertEquals(sorted.data.columns[0].data.special, {
+    nan: [4],
+    pos_inf: [3],
+    neg_inf: [0],
+  });
+
+  const filtered = querySnapshot(descriptor, {
+    filter: { op: "is_na", col: 0 },
+  });
+  assertEquals(filtered.data.source_row, [1]);
+  assertEquals(filtered.data.columns[0].data.na_rows, [0]);
+  assertEquals(filtered.data.columns[0].data.special, { nan: [0] });
+
+  const emptyPage = querySnapshot(descriptor, { offset: 5, limit: 0 });
+  assertEquals(emptyPage.data.columns[0].data.na_rows, []);
+  assert(!Object.hasOwn(emptyPage.data.columns[0].data, "special"));
+
+  const decoded = decodeRows(
+    descriptor.params.columns[0],
+    descriptor.params.data.columns[0],
+  );
+  assertEquals(
+    decoded.map((row: Record<string, unknown>) => row.c0),
+    ["1", "NaN", "Inf", "-Inf", "2"],
+  );
+});
+
+Deno.test("sparse Snapshot position channels reject invalid rows and special kinds", () => {
+  const base = {
+    params: {
+      nrow: 3,
+      ncol: 1,
+      columns: [{ position: 0, type: "number", sortable: true }],
+      data: {
+        columns: [{ values: [1, null, 2], na_rows: [], special: { nan: [1] } }],
+      },
+    },
+  };
+  const cases = [
+    { na_rows: [1, 1] },
+    { na_rows: [2, 1] },
+    { na_rows: [3] },
+    { na_rows: [1.5] },
+    { na_rows: [-1] },
+    { na_rows: ["1"] },
+    { na_rows: null },
+    { na_rows: "1" },
+    { special: {} },
+    { special: null },
+    { special: ["nan"] },
+    { special: { unsupported: [1] } },
+    { special: { nan: [] } },
+    { special: { nan: [1, 1] } },
+    { special: { nan: [2, 1] } },
+    { special: { nan: [1], pos_inf: [1] } },
+    { special: { nan: [3] } },
+  ];
+  for (const replacement of cases) {
+    const malformed = structuredClone(base);
+    Object.assign(malformed.params.data.columns[0], replacement);
+    let code = "";
+    try {
+      querySnapshot(malformed);
+    } catch (error) {
+      code = (error as Error & { code?: string }).code ?? "";
+    }
+    assertEquals(code, "schema_changed");
+
+    code = "";
+    try {
+      decodeRows(
+        { position: 0, type: "number" },
+        malformed.params.data.columns[0],
+      );
+    } catch (error) {
+      code = (error as Error & { code?: string }).code ?? "";
+    }
+    assertEquals(code, "schema_changed");
+  }
+});
+
 Deno.test("browser transport ignores stale responses after table replacement", async () => {
   const socket = new FakeSocket();
   const transport = createBrowserTransport(socket);
@@ -603,12 +710,12 @@ function snapshot(nrow: number) {
           {
             values,
             sort_key: values,
-            na: values.map(() => false),
+            na_rows: [],
           },
           {
             values: values.map((value) => nrow + 1 - value),
             sort_key: values.map((value) => nrow + 1 - value),
-            na: values.map(() => false),
+            na_rows: [],
           },
         ],
       },
