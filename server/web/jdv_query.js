@@ -179,6 +179,7 @@ export function decodeRows(schema, data, rowIndex = null, rowNames = null) {
   }
   validateSparseRows(naRows, count, "missingness");
   validateSpecial(data?.special, count);
+  validateNanMissing(naRows, data?.special);
   const missingRows = new Set(naRows ?? []);
   return Array.from({ length: count }, (_, index) => {
     const missing = missingRows.has(index);
@@ -246,6 +247,24 @@ function validateChannels(nrow, columns) {
       throw queryError("schema_changed", "Invalid sort key channel.");
     }
     validateSpecial(data.special, nrow);
+    validateNanMissing(data.na_rows, data.special);
+  }
+}
+
+// NaN positions must also be listed as missing whenever missingness is known.
+// Both arrays are validated ascending, so a single merge pass is enough.
+function validateNanMissing(naRows, special) {
+  const nan = special?.nan;
+  if (!Array.isArray(naRows) || !Array.isArray(nan)) return;
+  let j = 0;
+  for (const row of nan) {
+    while (j < naRows.length && naRows[j] < row) j++;
+    if (naRows[j] !== row) {
+      throw queryError(
+        "schema_changed",
+        "NaN rows must be listed in missingness rows.",
+      );
+    }
   }
 }
 

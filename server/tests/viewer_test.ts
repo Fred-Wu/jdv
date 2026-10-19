@@ -181,6 +181,51 @@ Deno.test("sparse Snapshot channels preserve query results and page positions", 
   );
 });
 
+Deno.test("sparse Snapshot requires NaN rows to be listed as missing", () => {
+  const make = (column: Record<string, unknown>) => ({
+    params: {
+      nrow: 4,
+      ncol: 1,
+      columns: [{ position: 0, type: "number", sortable: true }],
+      data: { columns: [{ values: [1, null, null, 2], ...column }] },
+    },
+  });
+  const codeOf = (fn: () => unknown) => {
+    try {
+      fn();
+    } catch (error) {
+      return (error as Error & { code?: string }).code ?? "";
+    }
+    return "";
+  };
+  const schema = { position: 0, type: "number" };
+  for (
+    const bad of [{ na_rows: [], special: { nan: [1] } }, {
+      na_rows: [2],
+      special: { nan: [1, 2] },
+    }]
+  ) {
+    assertEquals(codeOf(() => querySnapshot(make(bad))), "schema_changed");
+    assertEquals(
+      codeOf(() => decodeRows(schema, { values: [1, null, null, 2], ...bad })),
+      "schema_changed",
+    );
+  }
+  for (
+    const good of [
+      { na_rows: [1, 2], special: { nan: [1, 2] } },
+      { na_rows: [0, 1, 3], special: { nan: [1] } },
+      { special: { nan: [1] } },
+    ]
+  ) {
+    assertEquals(codeOf(() => querySnapshot(make(good))), "");
+    assertEquals(
+      codeOf(() => decodeRows(schema, { values: [1, null, null, 2], ...good })),
+      "",
+    );
+  }
+});
+
 Deno.test("sparse Snapshot position channels reject invalid rows and special kinds", () => {
   const base = {
     params: {
@@ -188,7 +233,11 @@ Deno.test("sparse Snapshot position channels reject invalid rows and special kin
       ncol: 1,
       columns: [{ position: 0, type: "number", sortable: true }],
       data: {
-        columns: [{ values: [1, null, 2], na_rows: [], special: { nan: [1] } }],
+        columns: [{
+          values: [1, null, 2],
+          na_rows: [1],
+          special: { nan: [1] },
+        }],
       },
     },
   };
