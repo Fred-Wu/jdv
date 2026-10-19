@@ -77,8 +77,69 @@ test_that("plain string capacity returns and encodes 500 rows", {
   expect_lte(work_budget$used, work_budget$limit)
 })
 
+test_that("plain strings with missing values retain exact page capacity", {
+  source <- matrix(strrep("x", 20L), nrow = 500L, ncol = 150L)
+  source[seq.int(10L, length(source), by = 10L)] <- NA_character_
+  holder <- paged_table(source)
+  fallback <- page_capacity_rows(holder, exact_strings = FALSE)
+
+  page <- query_page(holder, limit = 500L, budget = .jdv_budget(64 * 1024^2))
+
+  expect_identical(page$limit, 500L)
+  expect_gt(page$limit, fallback)
+  expect_false(any(vapply(
+    page$data$columns,
+    function(column) "display" %in% names(.jdv_json_column(column)),
+    logical(1L)
+  )))
+  work_budget <- attr(page, "jdv_work_budget")
+  encoded <- page_capacity_wire_encode(page, work_budget)
+  expect_lte(nchar(encoded, type = "bytes"), .jdv_max_message_bytes())
+  expect_lte(work_budget$used, work_budget$limit)
+})
+
+test_that(
+  "missing and literal NA strings encode their values and display mask",
+  {
+    values <- c(NA_character_, "NA", "plain", NA_character_)
+    column <- column_extract(
+      values,
+      channels = c("display", "na", "values"),
+      schema = column_schema(values)
+    )
+    wire <- .jdv_json_column(column)
+
+    expect_identical(column$data$display, c("NA", "NA", "plain", "NA"))
+    expect_identical(column$data$na, c(TRUE, FALSE, FALSE, TRUE))
+    expect_identical(column$data$values, values)
+    expect_false("display" %in% names(wire))
+    expect_identical(
+      .jdv_json_encode(wire$values),
+      "[null,\"NA\",\"plain\",null]"
+    )
+    expect_identical(.jdv_json_encode(wire$na), "[true,false,false,true]")
+
+    all_missing <- column_extract(
+      rep(NA_character_, 4L),
+      channels = c("display", "na", "values"),
+      schema = column_schema("text")
+    )
+    expect_false("display" %in% names(.jdv_json_column(all_missing)))
+    empty <- .jdv_json_string_measure(character(), 1)
+    expect_identical(dim(empty), c(0L, 3L))
+
+    holder <- paged_table(data.frame(text = rep(NA_character_, 5L)))
+    page <- query_page(holder, limit = 5L, budget = .jdv_budget(64 * 1024^2))
+    expect_identical(page$limit, 5L)
+    encoded <- page_capacity_wire_encode(page, attr(page, "jdv_work_budget"))
+    expect_lte(nchar(encoded, type = "bytes"), .jdv_max_message_bytes())
+  }
+)
+
 test_that("column wire estimates cover mask bytes near the message limit", {
-  holder <- paged_table(data.frame(text = rep(strrep("x", 20L), 500L)))
+  text <- rep(strrep("x", 20L), 500L)
+  text[c(1L, length(text))] <- NA_character_
+  holder <- paged_table(data.frame(text = text))
   full <- query_page(holder, limit = 500L, budget = .jdv_budget(64 * 1024^2))
   full_budget <- attr(full, "jdv_work_budget")
   full_encoded <- page_capacity_wire_encode(full, full_budget)

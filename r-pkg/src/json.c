@@ -823,10 +823,11 @@ static size_t printed_string_size(output_state *state, const char *text)
     return size;
 }
 
-/* Return exact JSON string sizes for plain UTF-8 strings we can measure
+/* Return exact JSON value sizes for plain UTF-8 strings we can measure
  * without invoking any R formatting or encoding methods. The matrix columns
- * hold quoted JSON bytes, native string-tree work, and one missingness node.
- * Unsupported input returns NULL so callers retain their conservative estimate. */
+ * hold JSON value bytes, native value-tree work, and missingness-channel tree
+ * work. Unsupported input returns NULL so callers retain their conservative
+ * estimate. */
 SEXP C_jdv_json_string_measure(SEXP value, SEXP max_bytes)
 {
     if (TYPEOF(value) != STRSXP || TYPEOF(max_bytes) != REALSXP ||
@@ -844,8 +845,15 @@ SEXP C_jdv_json_string_measure(SEXP value, SEXP max_bytes)
     for (R_xlen_t i = 0; i < n; ++i) {
         SEXP charsxp = STRING_ELT(value, i);
         if (charsxp == NA_STRING) {
-            UNPROTECT(1);
-            return R_NilValue;
+            sizes[i] = 4;
+            work[i] = (double)sizeof(cJSON);
+            nodes[i] = (double)sizeof(cJSON);
+            total += sizes[i] + work[i];
+            if (total > REAL(max_bytes)[0]) {
+                UNPROTECT(1);
+                return R_NilValue;
+            }
+            continue;
         }
         cetype_t encoding = getCharCE(charsxp);
         if (encoding != CE_UTF8 && encoding != CE_NATIVE) {

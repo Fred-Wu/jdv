@@ -186,7 +186,11 @@ test_that("explicit wide string pages are sized before channel extraction", {
     mixed[[paste0("number", j)]] <- seq_len(n)
     mixed[[paste0("text", j)]] <- strings
   }
-  sources <- list(strings = source, mixed = mixed)
+  missing <- source
+  for (j in seq.int(2L, ncol(missing))) {
+    missing[[j]][seq.int(10L, n, by = 10L)] <- NA_character_
+  }
+  sources <- list(strings = source, mixed = mixed, missing = missing)
   queries <- list(
     list(sort = list(), filter = NULL, offset = 3L),
     list(sort = list(list(col = 0L, desc = TRUE)), filter = NULL, offset = 3L),

@@ -43,6 +43,8 @@ test_that("native string measurements bound encoded JSON and tree work", {
       },
       character(1L)
     )
+    random_with_missing <- random_ascii
+    random_with_missing[sample(seq_along(random_ascii), 16L)] <- NA_character_
     c(
       "",
       "a",
@@ -53,7 +55,8 @@ test_that("native string measurements bound encoded JSON and tree work", {
       enc2utf8("é界日本語🙂"),
       strrep("x", 255L),
       strrep("y", 4096L),
-      random_ascii
+      random_ascii,
+      random_with_missing
     )
   })
 
@@ -73,6 +76,12 @@ test_that("native string measurements bound encoded JSON and tree work", {
   actual_bytes <- nchar(encoded, type = "bytes")
   measured_array_bytes <- sum(measured[, 1L]) + length(values) + 1
   expect_gte(measured_array_bytes, actual_bytes)
+  na_values <- is.na(values)
+  na_bytes_upper <- sum(ifelse(na_values, 4, 5)) + length(values) + 1
+  expect_gte(
+    na_bytes_upper,
+    nchar(.jdv_json_encode(.jdv_json_values(na_values)), type = "bytes")
+  )
 
   work_limit <- sum(measured[, 2L]) +
     attr(measured, "node_bytes") +
@@ -84,8 +93,50 @@ test_that("native string measurements bound encoded JSON and tree work", {
   ))
 })
 
+test_that("native string measurements cover missing values and boundaries", {
+  values <- c(NA_character_, "NA", "", "first", "last", NA_character_)
+  measured <- .jdv_json_string_measure(values, 1024)
+
+  expect_false(is.null(measured))
+  expect_identical(unname(measured[, 1L]), c(4, 4, 2, 7, 6, 4))
+  expected_work <- 8 * nchar(values, type = "bytes", allowNA = TRUE) +
+    attr(measured, "node_bytes") +
+    2
+  expected_work[is.na(expected_work)] <- attr(measured, "node_bytes")
+  expect_identical(unname(measured[, 2L]), expected_work)
+  expect_identical(
+    unname(measured[, 3L]),
+    rep(attr(measured, "node_bytes"), length(values))
+  )
+  expect_null(.jdv_json_string_measure(
+    NA_character_,
+    3 + attr(measured, "node_bytes")
+  ))
+  expect_false(is.null(.jdv_json_string_measure(
+    NA_character_,
+    4 + attr(measured, "node_bytes")
+  )))
+  expect_identical(dim(.jdv_json_string_measure(character(), 1)), c(0L, 3L))
+  expect_null(.jdv_json_string_measure(NA_character_, 0))
+
+  values_encoded <- .jdv_json_encode(.jdv_json_values(values))
+  value_bytes <- sum(measured[, 1L]) + length(values) - 1L + 2L
+  expect_gte(value_bytes, nchar(values_encoded, type = "bytes"))
+  expect_identical(
+    .jdv_json_encode(.jdv_json_values(is.na(values))),
+    "[true,false,false,false,false,true]"
+  )
+  channel_wire <- list(
+    values = .jdv_json_values(values),
+    na = .jdv_json_values(is.na(values))
+  )
+  expect_no_error(.jdv_json_encode(
+    channel_wire,
+    work_limit = sum(measured[, 2L] + measured[, 3L]) + 4096
+  ))
+})
+
 test_that("unsupported strings and measurements over the cap fall back", {
-  expect_null(.jdv_json_string_measure(NA_character_, 1024))
   expect_null(.jdv_json_string_measure("line\nbreak", 1024))
 
   latin1 <- "\xe9"
