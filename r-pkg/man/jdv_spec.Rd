@@ -406,8 +406,11 @@ Column selectors are positions rather than names, so duplicate or unusual
 column names are safe. \verb{cols: []} requests only the row metadata. An omitted
 or \code{null} \code{cols} selects every column. A producer may reduce the effective
 \code{limit} to satisfy its response budget; if the fixed page schema or one row
-cannot fit, the request returns \code{limit_exceeded}. Snapshot access rejects row
-requests with \code{unsupported} because its payload is host-cached.
+cannot fit, the request returns \code{limit_exceeded}. The R producer estimates a
+row count for the selected columns against its page work and response budgets
+before extracting page channels, preserving all selected columns. Snapshot
+access rejects row requests with \code{unsupported} because its payload is
+host-cached.
 
  \code{hello}:
 

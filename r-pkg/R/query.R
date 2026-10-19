@@ -625,15 +625,13 @@ query_page <- function(
     count <- min(limit, max(0, total - offset))
     candidate_rows <- if (count) indices[offset + seq_len(count)] else integer()
     requested_count <- count
-    if (implicit_cols) {
-      count <- .jdv_page_row_capacity(
-        holder,
-        js,
-        candidate_rows,
-        requested_count,
-        budget
-      )
-    }
+    count <- .jdv_page_row_capacity(
+      holder,
+      js,
+      candidate_rows,
+      requested_count,
+      budget
+    )
     if (count < requested_count) {
       page_limit <- count
     }
@@ -649,15 +647,13 @@ query_page <- function(
       integer()
     }
     requested_count <- count
-    if (implicit_cols) {
-      count <- .jdv_page_row_capacity(
-        holder,
-        js,
-        candidate_rows,
-        requested_count,
-        budget
-      )
-    }
+    count <- .jdv_page_row_capacity(
+      holder,
+      js,
+      candidate_rows,
+      requested_count,
+      budget
+    )
     if (count < requested_count) {
       page_limit <- count
     }

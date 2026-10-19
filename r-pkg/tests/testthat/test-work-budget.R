@@ -143,17 +143,15 @@ test_that(
       data.frame(value = as.double(1:100)),
       limits = list(work_bytes = 8192)
     )
-    reply <- tryCatch(
-      query_page(
-        holder,
-        limit = 100L,
-        sort = list(list(col = 0L, desc = TRUE)),
-        cols = 0L
-      ),
-      error = identity
+    explicit <- query_page(
+      holder,
+      limit = 100L,
+      sort = list(list(col = 0L, desc = TRUE)),
+      cols = 0L
     )
-    expect_s3_class(reply, "jdv_query_error")
-    expect_identical(reply$code, "limit_exceeded")
+    expect_lt(explicit$limit, 100L)
+    explicit_budget <- attr(explicit, "jdv_work_budget")
+    expect_lte(explicit_budget$used, explicit_budget$limit)
 
     implicit <- query_page(
       holder,
@@ -165,6 +163,150 @@ test_that(
     expect_lte(page_budget$used, page_budget$limit)
   }
 )
+
+test_that("explicit wide string pages are sized before channel extraction", {
+  skip_if_not_installed("jsonlite")
+  .jdv_close_internal()
+  on.exit(.jdv_close_internal(), add = TRUE)
+  restore <- jdv_budget_test_options(list(
+    jdv.max_work_bytes = NULL,
+    jdv.max_query_rows = NULL,
+    jdv.max_message_bytes = NULL
+  ))
+  on.exit(restore(), add = TRUE)
+
+  n <- 300L
+  strings <- rep(strrep("x", 200L), n)
+  source <- data.frame(id = seq_len(n))
+  for (j in seq_len(150L)) {
+    source[[paste0("text", j)]] <- strings
+  }
+  mixed <- data.frame(id = seq_len(n))
+  for (j in seq_len(75L)) {
+    mixed[[paste0("number", j)]] <- seq_len(n)
+    mixed[[paste0("text", j)]] <- strings
+  }
+  sources <- list(strings = source, mixed = mixed)
+  queries <- list(
+    list(sort = list(), filter = NULL, offset = 3L),
+    list(sort = list(list(col = 0L, desc = TRUE)), filter = NULL, offset = 3L),
+    list(
+      sort = list(),
+      filter = list(op = "ge", col = 0L, value = 100L),
+      offset = 3L
+    ),
+    list(
+      sort = list(list(col = 0L, desc = TRUE)),
+      filter = list(op = "ge", col = 0L, value = 100L),
+      offset = 3L
+    )
+  )
+
+  expect_page_channels <- function(page, expected_rows) {
+    expect_identical(page$data$row_index, expected_rows)
+    expect_equal(length(page$data$row_index), page$limit)
+    for (column in page$data$columns) {
+      expect_true(all(vapply(column$data, length, integer(1L)) == page$limit))
+    }
+  }
+
+  for (source in sources) {
+    holder <- paged_table(source)
+    columns <- rev(seq_len(ncol(source))) - 1L
+    registered <- register_view(source, mode = "paged")
+    handle <- jdv_handle(source, mode = "paged")
+    on.exit(jdv_handle_close(handle), add = TRUE)
+    on.exit(.jdv_close_internal(registered$id), add = TRUE)
+
+    for (query in queries) {
+      implicit <- query_page(
+        holder,
+        offset = query$offset,
+        limit = n,
+        sort = query$sort,
+        filter = query$filter
+      )
+      explicit <- query_page(
+        holder,
+        offset = query$offset,
+        limit = n,
+        sort = query$sort,
+        filter = query$filter,
+        cols = columns
+      )
+      expect_identical(explicit$limit, implicit$limit)
+      expect_lt(explicit$limit, n)
+      expect_page_channels(explicit, implicit$data$row_index)
+      expected_names <- names(source)[columns + 1L]
+      expect_identical(
+        vapply(
+          explicit$data$columns,
+          function(column) column$schema$name,
+          character(1L)
+        ),
+        expected_names
+      )
+
+      params <- list(
+        offset = query$offset,
+        limit = n,
+        cols = as.list(columns),
+        sort = query$sort,
+        filter = query$filter
+      )
+      rpc <- jdv_budget_test_rpc(
+        "grid/rows",
+        c(list(view = registered$id, generation = 1), params)
+      )
+      expect_null(rpc$error)
+      expect_equal(rpc$result$limit, implicit$limit)
+      expect_equal(
+        unlist(rpc$result$data$source_row, use.names = FALSE) + 1,
+        implicit$data$row_index
+      )
+      for (column in rpc$result$data$columns) {
+        expect_true(all(
+          vapply(column$data, length, integer(1L)) == rpc$result$limit
+        ))
+      }
+      expect_identical(
+        vapply(
+          rpc$result$data$columns,
+          function(column) column$schema$name,
+          character(1L)
+        ),
+        expected_names
+      )
+
+      response <- .jdv_json_parse(jdv_handle_request(
+        handle,
+        "grid/rows",
+        params
+      ))
+      expect_null(response$error)
+      expect_equal(response$limit, implicit$limit)
+      expect_equal(
+        unlist(response$data$source_row, use.names = FALSE) + 1,
+        implicit$data$row_index
+      )
+      for (column in response$data$columns) {
+        expect_true(all(
+          vapply(column$data, length, integer(1L)) == response$limit
+        ))
+      }
+      expect_identical(
+        vapply(
+          response$data$columns,
+          function(column) column$schema$name,
+          character(1L)
+        ),
+        expected_names
+      )
+    }
+    jdv_handle_close(handle)
+    .jdv_close_internal(registered$id)
+  }
+})
 
 test_that("public registration and RPC encode with unset work options", {
   .jdv_close_internal()

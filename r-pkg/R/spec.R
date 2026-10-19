@@ -420,8 +420,11 @@
 #' column names are safe. `cols: []` requests only the row metadata. An omitted
 #' or `null` `cols` selects every column. A producer may reduce the effective
 #' `limit` to satisfy its response budget; if the fixed page schema or one row
-#' cannot fit, the request returns `limit_exceeded`. Snapshot access rejects row
-#' requests with `unsupported` because its payload is host-cached.
+#' cannot fit, the request returns `limit_exceeded`. The R producer estimates a
+#' row count for the selected columns against its page work and response budgets
+#' before extracting page channels, preserving all selected columns. Snapshot
+#' access rejects row requests with `unsupported` because its payload is
+#' host-cached.
 #'
 #'
 #' @section Common protocol: `hello`:

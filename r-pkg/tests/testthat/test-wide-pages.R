@@ -114,10 +114,18 @@ test_that(
       class = "data.frame",
       row.names = .set_row_names(1L)
     ))
-    expect_query_code(
+    implicit_metadata <- tryCatch(
       query_page(wide, limit = 1L, budget = .jdv_budget(1024)),
-      "limit_exceeded"
+      error = identity
     )
+    explicit_metadata <- tryCatch(
+      query_page(wide, limit = 1L, cols = 0:255, budget = .jdv_budget(1024)),
+      error = identity
+    )
+    expect_identical(implicit_metadata$code, "limit_exceeded")
+    expect_identical(explicit_metadata$code, "limit_exceeded")
+    expect_identical(implicit_metadata$details$kind, "page_metadata")
+    expect_identical(explicit_metadata$details$kind, "page_metadata")
 
     old_message_limit <- getOption("jdv.max_message_bytes")
     options(jdv.max_message_bytes = 1024)
@@ -126,6 +134,23 @@ test_that(
       query_page(wide, limit = 1L, budget = .jdv_budget(64 * 1024^2)),
       "limit_exceeded"
     )
+    expect_query_code(
+      query_page(
+        wide,
+        limit = 1L,
+        cols = 0:255,
+        budget = .jdv_budget(64 * 1024^2)
+      ),
+      "limit_exceeded"
+    )
+
+    long_row <- paged_table(data.frame(text = strrep("x", 4000L)))
+    one_row <- tryCatch(
+      query_page(long_row, limit = 1L, cols = 0L, budget = .jdv_budget(20000)),
+      error = identity
+    )
+    expect_identical(one_row$code, "limit_exceeded")
+    expect_identical(one_row$details$kind, "page_rows")
   }
 )
 

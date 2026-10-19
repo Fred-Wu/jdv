@@ -523,6 +523,33 @@ local({
     )
   })
 
+  test_that(
+    "transport rows size explicit wide string pages before extraction",
+    {
+      skip_on_cran()
+      n <- 300L
+      text <- rep(strrep("x", 200L), n)
+      source <- data.frame(id = seq_len(n))
+      for (j in seq_len(150L)) {
+        source[[paste0("text", j)]] <- text
+      }
+      received <- with_mock_transport("explicit-page-sizing", source)
+      page <- received$responses[[1L]]$result
+      expect_true(page$limit > 0)
+      expect_lt(page$limit, n)
+      expect_identical(
+        unlist(page$data$source_row, use.names = FALSE) + 1,
+        as.double(seq.int(n - 3L, length.out = page$limit, by = -1L))
+      )
+      expect_length(page$data$columns, 151L)
+      expect_identical(page$data$columns[[1L]]$schema$name, "text150")
+      expect_identical(page$data$columns[[2L]]$schema$name, "id")
+      for (column in page$data$columns) {
+        expect_true(all(vapply(column$data, length, integer(1L)) == page$limit))
+      }
+    }
+  )
+
   test_that("the largest allowed request frame can arrive in one write", {
     skip_on_cran()
     skip_if_not_installed("jsonlite")
@@ -1038,14 +1065,14 @@ local({
       jdv.max_message_bytes = 32 * 1024^2
     )
     on.exit(options(old_options), add = TRUE)
-    value <- strrep("z", 2 * 1024^2)
+    value <- strrep("z", 768 * 1024)
     received <- with_mock_transport(
       "large-response",
       data.frame(value = c(value, value))
     )
     rows <- received$responses[[1]]$result$data$columns[[1]]$data$values
     expect_length(rows, 2L)
-    expect_identical(nchar(rows[[1]], type = "bytes"), as.integer(2 * 1024^2))
+    expect_identical(nchar(rows[[1]], type = "bytes"), as.integer(768 * 1024))
     expect_identical(rows[[1]], rows[[2]])
   })
 

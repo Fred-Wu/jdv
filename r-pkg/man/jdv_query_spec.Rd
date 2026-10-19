@@ -410,16 +410,16 @@ total-result computation still apply. A larger limit is clamped to
 
 \code{cols = NULL} selects every column, preserving source order, and is not
 subject to \code{page_columns}. Before extracting page channels, jdv estimates a
-row count that fits the selected schemas, page work budget, and JSON message
-budget. It preserves every selected column and reduces the effective page
-\code{limit}; if the fixed schema or one row cannot fit, it returns
-\code{limit_exceeded}. Final JSON encoding can shorten the page further for
-unusually large values or custom formatters. Explicit \code{cols} arrays remain
-limited by \code{page_columns} (256 by default). An empty explicit selection
-returns no data columns while still returning row indices and totals.
-Selected columns follow selector order. Table width is otherwise bounded by
-descriptor and response message budgets rather than a fixed registration
-column count.
+row count for both implicit and explicit selections that fits the selected
+schemas, page work budget, and JSON message budget. It preserves every
+selected column and reduces the effective page \code{limit}; if the fixed schema
+or one row cannot fit, it returns \code{limit_exceeded}. Final JSON encoding can
+shorten the page further for unusually large values or custom formatters.
+Explicit \code{cols} arrays remain limited by \code{page_columns} (256 by default). An
+empty explicit selection returns no data columns while still returning row
+indices and totals. Selected columns follow selector order. Table width is
+otherwise bounded by descriptor and response message budgets rather than a
+fixed registration column count.
 
  R date and datetime parsing:
 

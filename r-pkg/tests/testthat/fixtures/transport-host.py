@@ -189,8 +189,20 @@ def main():
                     "limit": 2,
                 },
             }
+            if args.scenario == "explicit-page-sizing":
+                column_count = params["ncol"]
+                request["params"].update(
+                    {
+                        "offset": 3,
+                        "limit": 300,
+                        "cols": [column_count - 1]
+                        + list(range(column_count - 1)),
+                        "sort": [{"col": 0, "desc": True}],
+                        "filter": {"op": "ge", "col": 0, "value": 100},
+                    }
+                )
             if args.scenario == "large-response":
-                # Keep framing coverage independent of implicit page sizing.
+                # Exercise explicit-column sizing with a multi-megabyte body.
                 request["params"]["cols"] = [0]
             payload = json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n"
             expected_ids = ["mock-rows-1"]

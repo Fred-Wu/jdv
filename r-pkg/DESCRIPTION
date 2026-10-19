@@ -33,12 +33,12 @@ Authors@R:
         comment = "flatcc in src/nanoarrow/"
       )
     )
-Description: A lightweight data viewer with no package dependencies. It
-    sends data frames, lists, and other R objects, as well as 'Apache Arrow'
-    data, over a local connection to an external viewer application, and
-    answers the viewer's requests for sorted, filtered, and paged rows. Arrow
-    data is read through the Arrow C stream interface and sent as Arrow IPC
-    without conversion to R vectors.
+Description: A lightweight data viewer with no package dependencies. It sends
+    data frames, lists, and other R objects, as well as 'Apache Arrow' data,
+    over a local connection to an external viewer application, and answers the
+    viewer's requests for sorted, filtered, and paged rows. Arrow data is read
+    through the Arrow C stream interface and sent as Arrow IPC without
+    conversion to R vectors.
 License: MIT + file LICENSE
 URL: https://github.com/eitsupi/jdv
 BugReports: https://github.com/eitsupi/jdv/issues
