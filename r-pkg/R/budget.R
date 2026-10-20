@@ -40,34 +40,38 @@
   max(1, budget$limit - budget$used)
 }
 
+.jdv_registry_method <- function(generic, class, namespace) {
+  table <- get(".__S3MethodsTable__.", envir = namespace)
+  get0(paste(generic, class, sep = "."), envir = table, inherits = FALSE)
+}
+
+.jdv_visible_method <- function(generic, class) {
+  name <- paste(generic, class, sep = ".")
+  get0(name, envir = .GlobalEnv, mode = "function", inherits = TRUE)
+}
+
+.jdv_method_matches <- function(generic, class, namespace, expected) {
+  registered <- .jdv_registry_method(generic, class, namespace)
+  visible <- .jdv_visible_method(generic, class)
+  identical(registered, expected) &&
+    (is.null(visible) || identical(visible, expected))
+}
+
+.jdv_no_method <- function(generic, class, namespace) {
+  is.null(.jdv_registry_method(generic, class, namespace)) &&
+    is.null(.jdv_visible_method(generic, class))
+}
+
 .jdv_plain_format_dispatch <- function() {
   tryCatch(
     {
-      registry_method <- function(generic, class, namespace) {
-        table <- get(".__S3MethodsTable__.", envir = namespace)
-        get0(paste(generic, class, sep = "."), envir = table, inherits = FALSE)
-      }
-      visible_method <- function(generic, class) {
-        name <- paste(generic, class, sep = ".")
-        get0(name, envir = .GlobalEnv, mode = "function", inherits = TRUE)
-      }
-      method_matches <- function(generic, class, namespace, expected) {
-        registered <- registry_method(generic, class, namespace)
-        visible <- visible_method(generic, class)
-        identical(registered, expected) &&
-          (is.null(visible) || identical(visible, expected))
-      }
-      no_method <- function(generic, class, namespace) {
-        is.null(registry_method(generic, class, namespace)) &&
-          is.null(visible_method(generic, class))
-      }
-      method_matches(
+      .jdv_method_matches(
         "format",
         "default",
         asNamespace("base"),
         get("format.default", envir = asNamespace("base"), inherits = FALSE)
       ) &&
-        no_method("format", "character", asNamespace("base"))
+        .jdv_no_method("format", "character", asNamespace("base"))
     },
     error = function(error) FALSE
   )
@@ -76,44 +80,26 @@
 .jdv_plain_string_dispatch <- function() {
   tryCatch(
     {
-      registry_method <- function(generic, class, namespace) {
-        table <- get(".__S3MethodsTable__.", envir = namespace)
-        get0(paste(generic, class, sep = "."), envir = table, inherits = FALSE)
-      }
-      visible_method <- function(generic, class) {
-        name <- paste(generic, class, sep = ".")
-        get0(name, envir = .GlobalEnv, mode = "function", inherits = TRUE)
-      }
-      method_matches <- function(generic, class, namespace, expected) {
-        registered <- registry_method(generic, class, namespace)
-        visible <- visible_method(generic, class)
-        identical(registered, expected) &&
-          (is.null(visible) || identical(visible, expected))
-      }
-      no_method <- function(generic, class, namespace) {
-        is.null(registry_method(generic, class, namespace)) &&
-          is.null(visible_method(generic, class))
-      }
-      method_matches(
+      .jdv_method_matches(
         "col_display",
         "default",
         asNamespace("jdv"),
         col_display.default
       ) &&
-        no_method("col_display", "character", asNamespace("jdv")) &&
-        method_matches(
+        .jdv_no_method("col_display", "character", asNamespace("jdv")) &&
+        .jdv_method_matches(
           "col_values",
           "character",
           asNamespace("jdv"),
           col_values.character
         ) &&
-        method_matches(
+        .jdv_method_matches(
           "col_is_na",
           "default",
           asNamespace("jdv"),
           col_is_na.default
         ) &&
-        no_method("col_is_na", "character", asNamespace("jdv")) &&
+        .jdv_no_method("col_is_na", "character", asNamespace("jdv")) &&
         .jdv_plain_format_dispatch()
     },
     error = function(error) FALSE
@@ -126,33 +112,15 @@
   }
   namespace <- asNamespace("jdv")
   base_namespace <- asNamespace("base")
-  registry_method <- function(generic, class, method_namespace) {
-    table <- get(".__S3MethodsTable__.", envir = method_namespace)
-    get0(paste(generic, class, sep = "."), envir = table, inherits = FALSE)
-  }
-  visible_method <- function(generic, class) {
-    name <- paste(generic, class, sep = ".")
-    get0(name, envir = .GlobalEnv, mode = "function", inherits = TRUE)
-  }
-  no_method <- function(generic, class, method_namespace) {
-    is.null(registry_method(generic, class, method_namespace)) &&
-      is.null(visible_method(generic, class))
-  }
-  method_matches <- function(generic, class, method_namespace, expected) {
-    registered <- registry_method(generic, class, method_namespace)
-    visible <- visible_method(generic, class)
-    identical(registered, expected) &&
-      (is.null(visible) || identical(visible, expected))
-  }
   classes <- c(type, if (type != "logical") "numeric")
   for (generic in c("col_display", "col_is_na", "col_values", "col_sort_key")) {
     for (class in classes) {
-      if (!no_method(generic, class, namespace)) {
+      if (!.jdv_no_method(generic, class, namespace)) {
         return(FALSE)
       }
     }
     if (
-      !method_matches(
+      !.jdv_method_matches(
         generic,
         "default",
         namespace,
@@ -164,7 +132,7 @@
   }
   for (generic in c("xtfrm", "format")) {
     for (class in classes) {
-      if (!no_method(generic, class, base_namespace)) {
+      if (!.jdv_no_method(generic, class, base_namespace)) {
         return(FALSE)
       }
     }
@@ -173,7 +141,7 @@
       envir = get(".__S3MethodsTable__.", envir = base_namespace),
       inherits = FALSE
     )
-    if (!method_matches(generic, "default", base_namespace, default)) {
+    if (!.jdv_method_matches(generic, "default", base_namespace, default)) {
       return(FALSE)
     }
   }
