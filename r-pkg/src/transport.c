@@ -1940,7 +1940,13 @@ static SEXP connect_body(void *data)
         Rf_error("The transport connection was cancelled during setup.");
     }
     active_state = state;
-    jdv_loop_start((uintptr_t)state->socket);
+    jdv_loop_start((uintptr_t)state->socket,
+#ifdef _WIN32
+                   (uintptr_t)state->pipe
+#else
+                   (uintptr_t)0
+#endif
+    );
     state->source_active = jdv_loop_source_active();
     if (!state->source_active) {
         active_state = NULL;

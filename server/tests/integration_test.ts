@@ -448,258 +448,274 @@ Deno.test({
   },
 });
 
-Deno.test({
-  name: "installed R package connects and services a browser schema request",
-  async fn() {
-    const testLibrary = Deno.env.get("JDV_TEST_R_LIB")?.trim();
-    const cacheRoot = await makeSocketTempDir("jdv-r-integration-");
-    const cacheDir = join(cacheRoot, "jdv");
-    const donePath = join(cacheDir, "finish-r-loop");
-    const scriptPath = join(cacheDir, "mock-r.R");
-    let server: RunningServer | undefined;
-    let rChild: Deno.ChildProcess | undefined;
-    let outputReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    let browser: RawWebSocket | undefined;
-    let stderrOutput: Promise<string> | undefined;
-    let rExited = false;
-    let rPid: number | undefined;
-    const originalFailure: unknown[] = [];
-    try {
-      const { startServer } = await import("../main.ts");
-      server = await startServer({ mode: "default", httpPort: 0, cacheDir });
-      if (Deno.build.os === "windows") {
-        if (!server.socketPath.startsWith("npipe:")) {
-          throw new Error(
-            "The default Windows R listener was not a named pipe.",
-          );
-        }
-      }
-      const browserClient = await RawWebSocket.connect(server.url);
-      browser = browserClient;
-      assertMessage(await browserClient.read(), "welcome");
-      const source = [
-        "args <- commandArgs(trailingOnly = TRUE)",
-        "done_path <- args[[1L]]",
-        "library(jdv)",
-        'cat("JDV_PACKAGE\\t", find.package("jdv"), "\\n", sep = "", file = stderr())',
-        'id <- jdv_view(data.frame(value = c(2L, 4L, 8L)), title = "integration", mode = "paged")',
-        'cat("READY\\t", id, "\\t", Sys.getpid(), "\\n", sep = "")',
-        "flush.console()",
-        "repeat {",
-        "  jdv_rpc(NULL)",
-        "  if (file.exists(done_path)) break",
-        "  Sys.sleep(0.01)",
-        "}",
-        "jdv_close(id)",
-        'cat("CLOSED\\n")',
-        "flush.console()",
-      ].join("\n");
-      await Deno.writeTextFile(scriptPath, source);
-      const rEnv = Deno.env.toObject();
-      rEnv.XDG_CACHE_HOME = cacheRoot;
-      for (
-        const name of [
-          "JDV_ADDRESS",
-          "JDV_DISCOVERY_PATH",
-          "JDV_CACHE_DIR",
-          "R_PROFILE_USER",
-          "R_ENVIRON_USER",
-        ]
-      ) delete rEnv[name];
-      rEnv.JDV_ADDRESS = server.socketPath;
-      if (testLibrary) rEnv.R_LIBS_USER = testLibrary;
-      rChild = new Deno.Command("Rscript", {
-        args: ["--vanilla", scriptPath, donePath],
-        env: rEnv,
-        stdout: "piped",
-        stderr: "piped",
-      }).spawn();
-      outputReader = rChild.stdout.getReader();
-      stderrOutput = new Response(rChild.stderr).text();
-      const readyLine = await readLine(outputReader, 10_000);
-      if (!readyLine?.startsWith("READY\t")) {
-        const status = await cleanupDeadline(
-          rChild.status,
-          10_000,
-          "R status timed out.",
-        );
-        rExited = true;
-        const error = await cleanupDeadline(
-          stderrOutput,
-          5_000,
-          "R stderr EOF timed out.",
-        );
-        throw new Error(
-          `Installed R package did not start: ${status.code}: ${error}`,
-        );
-      }
-      const readyParts = readyLine.split("\t");
-      if (readyParts.length !== 3) {
-        throw new Error(`Invalid R READY line: ${JSON.stringify(readyLine)}`);
-      }
-      const tableId = readyParts[1];
-      rPid = fixturePid(readyParts[2]);
-      console.log(
-        `[installed R ready] ${
-          JSON.stringify({ readyLine, launcherPid: rChild.pid, rPid })
-        }`,
-      );
-      let sessionOpen: Record<string, unknown>;
+for (const mode of ["default", "tcp"] as const) {
+  Deno.test({
+    name:
+      `installed R package connects and services a browser schema request (${mode})`,
+    async fn() {
+      const testLibrary = Deno.env.get("JDV_TEST_R_LIB")?.trim();
+      const cacheRoot = await makeSocketTempDir(`jdv-r-integration-${mode}-`);
+      const cacheDir = join(cacheRoot, "jdv");
+      const donePath = join(cacheDir, "finish-r-loop");
+      const scriptPath = join(cacheDir, "mock-r.R");
+      let server: RunningServer | undefined;
+      let rChild: Deno.ChildProcess | undefined;
+      let outputReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      let browser: RawWebSocket | undefined;
+      let stderrOutput: Promise<string> | undefined;
+      let rExited = false;
+      let rPid: number | undefined;
+      const originalFailure: unknown[] = [];
       try {
-        sessionOpen = await withTimeout(
-          browserClient.read(),
-          10_000,
-          "Timed out waiting for the R session to connect.",
-        );
-      } catch (error) {
-        try {
-          await stopRChild(rChild, rExited);
+        const { startServer } = await import("../main.ts");
+        server = await startServer({ mode, httpPort: 0, cacheDir });
+        if (Deno.build.os === "windows" && mode === "default") {
+          if (!server.socketPath.startsWith("npipe:")) {
+            throw new Error(
+              "The default Windows R listener was not a named pipe.",
+            );
+          }
+        }
+        const browserClient = await RawWebSocket.connect(server.url);
+        browser = browserClient;
+        assertMessage(await browserClient.read(), "welcome");
+        const source = [
+          "args <- commandArgs(trailingOnly = TRUE)",
+          "done_path <- args[[1L]]",
+          "library(jdv)",
+          'cat("JDV_PACKAGE\\t", find.package("jdv"), "\\n", sep = "", file = stderr())',
+          'id <- jdv_view(data.frame(value = c(2L, 4L, 8L)), title = "integration", mode = "paged")',
+          'cat("READY\\t", id, "\\t", Sys.getpid(), "\\n", sep = "")',
+          "flush.console()",
+          "repeat {",
+          '  if (.Platform$OS.type != "windows") jdv_rpc(NULL)',
+          "  if (file.exists(done_path)) break",
+          "  Sys.sleep(0.01)",
+          "}",
+          "jdv_close(id)",
+          'cat("CLOSED\\n")',
+          "flush.console()",
+        ].join("\n");
+        await Deno.writeTextFile(scriptPath, source);
+        const rEnv = Deno.env.toObject();
+        rEnv.XDG_CACHE_HOME = cacheRoot;
+        for (
+          const name of [
+            "JDV_ADDRESS",
+            "JDV_DISCOVERY_PATH",
+            "JDV_CACHE_DIR",
+            "R_PROFILE_USER",
+            "R_ENVIRON_USER",
+          ]
+        ) delete rEnv[name];
+        rEnv.JDV_ADDRESS = server.socketPath;
+        if (testLibrary) rEnv.R_LIBS_USER = testLibrary;
+        rChild = new Deno.Command("Rscript", {
+          args: ["--vanilla", scriptPath, donePath],
+          env: rEnv,
+          stdout: "piped",
+          stderr: "piped",
+        }).spawn();
+        outputReader = rChild.stdout.getReader();
+        stderrOutput = new Response(rChild.stderr).text();
+        const readyLine = await readLine(outputReader, 10_000);
+        if (!readyLine?.startsWith("READY\t")) {
+          const status = await cleanupDeadline(
+            rChild.status,
+            10_000,
+            "R status timed out.",
+          );
           rExited = true;
-        } catch (cleanupError) {
-          throw new AggregateError(
-            [error, cleanupError],
-            "R session connection and termination failed.",
-            { cause: error },
+          const error = await cleanupDeadline(
+            stderrOutput,
+            5_000,
+            "R stderr EOF timed out.",
+          );
+          throw new Error(
+            `Installed R package did not start: ${status.code}: ${error}`,
           );
         }
-        const status = await cleanupDeadline(
-          rChild.status,
-          10_000,
-          "R status timed out.",
-        );
-        rExited = true;
-        const stderr = await cleanupDeadline(
-          stderrOutput,
-          5_000,
-          "R stderr EOF timed out.",
-        );
-        const discovery = await Deno.readTextFile(server.discoveryPath)
-          .catch(() => "unavailable");
-        throw new Error(
-          `${error instanceof Error ? error.message : String(error)} ` +
-            `R exit=${status.code}; server socket=${server.socketPath}; ` +
-            `discovery=${discovery}; stderr=${stderr}`,
-        );
-      }
-      assertMessage(sessionOpen, "session/open");
-      const tableOpen = await browserClient.read();
-      assertMessage(tableOpen, "view/open");
-      const descriptor = tableOpen.message as Record<string, unknown>;
-      const params = descriptor.params as Record<string, unknown>;
-      console.log(
-        `[installed R view/open] ${
-          JSON.stringify({
-            expected: { view: tableId, generation: 1 },
-            actual: params,
-          })
-        }`,
-      );
-      if (params.view !== tableId || params.generation !== 1) {
-        throw new Error(
-          `R view/open mismatch: expected=${
-            JSON.stringify({ view: tableId, generation: 1 })
-          }; actual=${JSON.stringify(params)}; READY=${
-            JSON.stringify(readyLine)
+        const readyParts = readyLine.split("\t");
+        if (readyParts.length !== 3) {
+          throw new Error(`Invalid R READY line: ${JSON.stringify(readyLine)}`);
+        }
+        const tableId = readyParts[1];
+        rPid = fixturePid(readyParts[2]);
+        console.log(
+          `[installed R ready] ${
+            JSON.stringify({ readyLine, launcherPid: rChild.pid, rPid })
           }`,
         );
-      }
-
-      await browserClient.send({
-        type: "request",
-        id: "schema-from-installed-r",
-        session: sessionOpen.session,
-        method: "view/schema",
-        params: { view: tableId, generation: 1 },
-      });
-      const response = await browserClient.read();
-      assertMessage(response, "response");
-      if (response.id !== "schema-from-installed-r") {
-        throw new Error(
-          "R schema response did not preserve the browser request id.",
+        let sessionOpen: Record<string, unknown>;
+        try {
+          sessionOpen = await withTimeout(
+            browserClient.read(),
+            10_000,
+            "Timed out waiting for the R session to connect.",
+          );
+        } catch (error) {
+          try {
+            await stopRChild(rChild, rExited);
+            rExited = true;
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [error, cleanupError],
+              "R session connection and termination failed.",
+              { cause: error },
+            );
+          }
+          const status = await cleanupDeadline(
+            rChild.status,
+            10_000,
+            "R status timed out.",
+          );
+          rExited = true;
+          const stderr = await cleanupDeadline(
+            stderrOutput,
+            5_000,
+            "R stderr EOF timed out.",
+          );
+          const discovery = await Deno.readTextFile(server.discoveryPath)
+            .catch(() => "unavailable");
+          throw new Error(
+            `${error instanceof Error ? error.message : String(error)} ` +
+              `R exit=${status.code}; server socket=${server.socketPath}; ` +
+              `discovery=${discovery}; stderr=${stderr}`,
+          );
+        }
+        assertMessage(sessionOpen, "session/open");
+        const tableOpen = await browserClient.read();
+        assertMessage(tableOpen, "view/open");
+        const descriptor = tableOpen.message as Record<string, unknown>;
+        const params = descriptor.params as Record<string, unknown>;
+        console.log(
+          `[installed R view/open] ${
+            JSON.stringify({
+              expected: { view: tableId, generation: 1 },
+              actual: params,
+            })
+          }`,
         );
-      }
-      const result = response.result as Record<string, unknown>;
-      if (!Array.isArray(result.columns) || result.columns.length !== 1) {
-        throw new Error(
-          "Installed R package returned an unexpected table schema.",
-        );
-      }
+        if (params.view !== tableId || params.generation !== 1) {
+          throw new Error(
+            `R view/open mismatch: expected=${
+              JSON.stringify({ view: tableId, generation: 1 })
+            }; actual=${JSON.stringify(params)}; READY=${
+              JSON.stringify(readyLine)
+            }`,
+          );
+        }
 
-      await Deno.writeTextFile(donePath, "done\n");
-      const closedLine = await readLine(outputReader, 10_000);
-      if (closedLine !== "CLOSED") {
+        const schemaRequestStartedAt = performance.now();
+        await browserClient.send({
+          type: "request",
+          id: "schema-from-installed-r",
+          session: sessionOpen.session,
+          method: "view/schema",
+          params: { view: tableId, generation: 1 },
+        });
+        const response = await browserClient.read();
+        console.log(
+          `[installed R schema round trip] ${
+            JSON.stringify({
+              mode,
+              elapsed_ms: Number(
+                (performance.now() - schemaRequestStartedAt).toFixed(3),
+              ),
+            })
+          }`,
+        );
+        assertMessage(response, "response");
+        if (response.id !== "schema-from-installed-r") {
+          throw new Error(
+            "R schema response did not preserve the browser request id.",
+          );
+        }
+        const result = response.result as Record<string, unknown>;
+        if (!Array.isArray(result.columns) || result.columns.length !== 1) {
+          throw new Error(
+            "Installed R package returned an unexpected table schema.",
+          );
+        }
+
+        await Deno.writeTextFile(donePath, "done\n");
+        const closedLine = await readLine(outputReader, 10_000);
+        if (closedLine !== "CLOSED") {
+          const status = await cleanupDeadline(
+            rChild.status,
+            10_000,
+            "R status timed out.",
+          );
+          rExited = true;
+          const error = await cleanupDeadline(
+            stderrOutput,
+            5_000,
+            "R stderr EOF timed out.",
+          );
+          throw new Error(
+            `Installed R package did not close cleanly: ${status.code}: ${error}`,
+          );
+        }
         const status = await cleanupDeadline(
           rChild.status,
           10_000,
           "R status timed out.",
         );
         rExited = true;
-        const error = await cleanupDeadline(
-          stderrOutput,
-          5_000,
-          "R stderr EOF timed out.",
-        );
-        throw new Error(
-          `Installed R package did not close cleanly: ${status.code}: ${error}`,
-        );
+        if (!status.success) {
+          const error = await cleanupDeadline(
+            stderrOutput,
+            5_000,
+            "R stderr EOF timed out.",
+          );
+          throw new Error(
+            `Installed R package exited ${status.code}: ${error}`,
+          );
+        }
+        assertMessage(await browserClient.read(), "view/closed");
+        assertMessage(await browserClient.read(), "session/closed");
+      } catch (error) {
+        originalFailure.push(error);
+        throw error;
+      } finally {
+        await finishIntegrationCleanup([
+          () =>
+            rChild && stderrOutput
+              ? finishRFixture(rChild, donePath, stderrOutput, rPid)
+              : undefined,
+          () => browser?.close(),
+          () =>
+            outputReader
+              ? cleanupDeadline(
+                outputReader.cancel(),
+                5_000,
+                "R stdout did not close during cleanup.",
+              )
+              : undefined,
+          () => outputReader?.releaseLock(),
+          () =>
+            stderrOutput
+              ? cleanupDeadline(
+                stderrOutput,
+                5_000,
+                "R stderr did not close during cleanup.",
+              )
+              : undefined,
+          () =>
+            server
+              ? cleanupDeadline(
+                server.close(),
+                5_000,
+                "Server shutdown did not finish during cleanup.",
+              )
+              : undefined,
+          () => server ? assertServerReleased(server) : undefined,
+          () => removeCacheDirectory(cacheRoot),
+        ], originalFailure);
       }
-      const status = await cleanupDeadline(
-        rChild.status,
-        10_000,
-        "R status timed out.",
-      );
-      rExited = true;
-      if (!status.success) {
-        const error = await cleanupDeadline(
-          stderrOutput,
-          5_000,
-          "R stderr EOF timed out.",
-        );
-        throw new Error(`Installed R package exited ${status.code}: ${error}`);
-      }
-      assertMessage(await browserClient.read(), "view/closed");
-      assertMessage(await browserClient.read(), "session/closed");
-    } catch (error) {
-      originalFailure.push(error);
-      throw error;
-    } finally {
-      await finishIntegrationCleanup([
-        () =>
-          rChild && stderrOutput
-            ? finishRFixture(rChild, donePath, stderrOutput, rPid)
-            : undefined,
-        () => browser?.close(),
-        () =>
-          outputReader
-            ? cleanupDeadline(
-              outputReader.cancel(),
-              5_000,
-              "R stdout did not close during cleanup.",
-            )
-            : undefined,
-        () => outputReader?.releaseLock(),
-        () =>
-          stderrOutput
-            ? cleanupDeadline(
-              stderrOutput,
-              5_000,
-              "R stderr did not close during cleanup.",
-            )
-            : undefined,
-        () =>
-          server
-            ? cleanupDeadline(
-              server.close(),
-              5_000,
-              "Server shutdown did not finish during cleanup.",
-            )
-            : undefined,
-        () => server ? assertServerReleased(server) : undefined,
-        () => removeCacheDirectory(cacheRoot),
-      ], originalFailure);
-    }
-  },
-});
+    },
+  });
+}
 
 Deno.test({
   name: "URL startup loads the complete module graph from HTTP in an empty cwd",

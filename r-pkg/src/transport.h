@@ -6,7 +6,7 @@
 
 typedef struct jdv_transport_state jdv_transport_state;
 
-void jdv_loop_start(uintptr_t fd);
+void jdv_loop_start(uintptr_t fd, uintptr_t pipe_handle);
 void jdv_loop_stop(void);
 int jdv_loop_source_active(void);
 void jdv_transport_on_readable(void);
