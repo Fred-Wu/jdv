@@ -113,6 +113,18 @@
   if (isTRUE(l10n_info()[["UTF-8"]])) {
     return(encodeString(x, quote = quote))
   }
+  escape_points <- c(1:31, 92L, 127:159)
+  escapes <- c(
+    sprintf("\\%03o", 1:31),
+    "\\\\",
+    "\\177",
+    sprintf("\\u%04x", 128:159)
+  )
+  escapes[7:13] <- c("\\a", "\\b", "\\t", "\\n", "\\v", "\\f", "\\r")
+  if (nzchar(quote)) {
+    escape_points <- c(escape_points, utf8ToInt(quote)[[1L]])
+    escapes <- c(escapes, paste0("\\", quote))
+  }
   encode_one <- function(value) {
     if (is.na(value) || identical(Encoding(value), "bytes")) {
       return(encodeString(value, quote = quote))
@@ -122,39 +134,13 @@
       return(encodeString(value, quote = quote))
     }
     points <- utf8ToInt(utf8_value)
-    escaped <- vapply(
-      points,
-      function(point) {
-        if (point == 92L) {
-          return("\\\\")
-        }
-        if (nzchar(quote) && point == utf8ToInt(quote)[[1L]]) {
-          return(paste0("\\", quote))
-        }
-        control <- c(
-          `7` = "\\a",
-          `8` = "\\b",
-          `9` = "\\t",
-          `10` = "\\n",
-          `11` = "\\v",
-          `12` = "\\f",
-          `13` = "\\r"
-        )
-        key <- as.character(point)
-        if (key %in% names(control)) {
-          return(unname(control[[key]]))
-        }
-        if (point < 32L || (point >= 127L && point <= 159L)) {
-          if (point < 128L) {
-            return(sprintf("\\%03o", point))
-          }
-          return(sprintf("\\u%04x", point))
-        }
-        intToUtf8(point)
-      },
-      character(1L),
-      USE.NAMES = FALSE
-    )
+    at <- match(points, escape_points)
+    replace <- !is.na(at)
+    if (!any(replace)) {
+      return(paste0(quote, utf8_value, quote))
+    }
+    escaped <- intToUtf8(points, multiple = TRUE)
+    escaped[replace] <- escapes[at[replace]]
     paste0(
       if (nzchar(quote)) quote else "",
       paste0(escaped, collapse = ""),
