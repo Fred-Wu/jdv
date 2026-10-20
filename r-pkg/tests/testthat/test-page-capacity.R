@@ -101,7 +101,7 @@ test_that("plain strings with missing values retain exact page capacity", {
 test_that(
   "missing and literal NA strings encode their values and display mask",
   {
-    values <- c(NA_character_, "NA", "plain", NA_character_)
+    values <- c(NA_character_, "NA", "", "plain", NA_character_)
     column <- column_extract(
       values,
       channels = c("display", "na", "values"),
@@ -109,15 +109,15 @@ test_that(
     )
     wire <- .jdv_json_column(column)
 
-    expect_identical(column$data$display, c("NA", "NA", "plain", "NA"))
-    expect_identical(column$data$na, c(TRUE, FALSE, FALSE, TRUE))
+    expect_identical(column$data$display, c("NA", "NA", "", "plain", "NA"))
+    expect_identical(column$data$na, c(TRUE, FALSE, FALSE, FALSE, TRUE))
     expect_identical(column$data$values, values)
     expect_false("display" %in% names(wire))
     expect_identical(
       .jdv_json_encode(wire$values),
-      "[null,\"NA\",\"plain\",null]"
+      "[null,\"NA\",\"\",\"plain\",null]"
     )
-    expect_identical(.jdv_json_encode(wire$na_rows), "[0,3]")
+    expect_identical(.jdv_json_encode(wire$na_rows), "[0,4]")
     expect_false("na" %in% names(wire))
 
     all_missing <- column_extract(

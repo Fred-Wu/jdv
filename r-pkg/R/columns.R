@@ -150,6 +150,14 @@ col_display.default <- function(x, ...) {
   if (identical(class(x), "AsIs") && is.list(x)) {
     return(col_display.list(x, ...))
   }
+  if (
+    !is.object(x) &&
+      is.null(dim(x)) &&
+      typeof(x) == "character" &&
+      .jdv_plain_format_dispatch()
+  ) {
+    return(x)
+  }
   fun <- if (isS4(x)) column_s4_generic("format", format) else format
   fun(x, trim = TRUE, justify = "none")
 }
@@ -503,7 +511,7 @@ cell_preview <- function(x, frame_cell = FALSE) {
       return(paste0("list(", paste(parts, collapse = ", "), ")"))
     }
     if (is.character(value)) {
-      parts <- encodeString(substr(value, 1L, 1000L), quote = '"')
+      parts <- .jdv_encode_string(substr(value, 1L, 1000L), quote = '"')
     } else {
       parts <- format(value, trim = TRUE, justify = "none")
     }

@@ -107,16 +107,73 @@
 
 .jdv_title_limit <- 4096L
 
+# Preserve Unicode when quoting text in a non-UTF-8 locale while retaining
+# encodeString()'s escapes for quotes, backslashes, and control characters.
+.jdv_encode_string <- function(x, quote = "") {
+  if (isTRUE(l10n_info()[["UTF-8"]])) {
+    return(encodeString(x, quote = quote))
+  }
+  encode_one <- function(value) {
+    if (is.na(value) || identical(Encoding(value), "bytes")) {
+      return(encodeString(value, quote = quote))
+    }
+    utf8_value <- tryCatch(enc2utf8(value), error = function(error) NULL)
+    if (is.null(utf8_value) || !validUTF8(utf8_value)) {
+      return(encodeString(value, quote = quote))
+    }
+    points <- utf8ToInt(utf8_value)
+    escaped <- vapply(
+      points,
+      function(point) {
+        if (point == 92L) {
+          return("\\\\")
+        }
+        if (nzchar(quote) && point == utf8ToInt(quote)[[1L]]) {
+          return(paste0("\\", quote))
+        }
+        control <- c(
+          `7` = "\\a",
+          `8` = "\\b",
+          `9` = "\\t",
+          `10` = "\\n",
+          `11` = "\\v",
+          `12` = "\\f",
+          `13` = "\\r"
+        )
+        key <- as.character(point)
+        if (key %in% names(control)) {
+          return(unname(control[[key]]))
+        }
+        if (point < 32L || (point >= 127L && point <= 159L)) {
+          if (point < 128L) {
+            return(sprintf("\\%03o", point))
+          }
+          return(sprintf("\\u%04x", point))
+        }
+        intToUtf8(point)
+      },
+      character(1L),
+      USE.NAMES = FALSE
+    )
+    paste0(
+      if (nzchar(quote)) quote else "",
+      paste0(escaped, collapse = ""),
+      if (nzchar(quote)) quote else ""
+    )
+  }
+  vapply(x, encode_one, character(1L), USE.NAMES = FALSE)
+}
+
 # Display titles for child views. They only label a child for the user and are
 # never parsed back or evaluated.
 .jdv_title_symbol <- function(name) {
   if (identical(make.names(name), name)) {
     return(name)
   }
-  paste0("`", gsub("`", "\\`", encodeString(name), fixed = TRUE), "`")
+  paste0("`", gsub("`", "\\`", .jdv_encode_string(name), fixed = TRUE), "`")
 }
 
-.jdv_title_string <- function(name) encodeString(name, quote = '"')
+.jdv_title_string <- function(name) .jdv_encode_string(name, quote = '"')
 
 # The name of element `index` when it is a usable key: present, nonempty, and
 # unique among `names`.
