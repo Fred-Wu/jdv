@@ -488,7 +488,7 @@ for (const mode of ["default", "tcp"] as const) {
           'cat("READY\\t", id, "\\t", Sys.getpid(), "\\n", sep = "")',
           "flush.console()",
           "repeat {",
-          '  if (.Platform$OS.type != "windows") jdv_rpc(NULL)',
+          "  jdv_rpc(NULL)",
           "  if (file.exists(done_path)) break",
           "  Sys.sleep(0.01)",
           "}",

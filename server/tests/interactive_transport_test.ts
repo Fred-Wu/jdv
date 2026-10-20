@@ -493,6 +493,24 @@ Deno.test({
       const response = (id: string) => (message: Record<string, unknown>) =>
         message.type === "response" && message.id === id;
 
+      const idleSchemaId = "interactive-top-level-idle-schema";
+      const idleSchemaStartedAt = performance.now();
+      await sendSchema(idleSchemaId);
+      await frameLog.waitFor(
+        rSchemaRequest(idleSchemaStartedAt),
+        5_000,
+        "top-level idle schema request on the R TCP stream",
+      );
+      await browserMessages.waitFor(
+        response(idleSchemaId),
+        5_000,
+        "top-level idle schema response",
+      );
+      console.log(
+        "interactive top-level idle schema round trip: " +
+          (performance.now() - idleSchemaStartedAt).toFixed(0) + " ms",
+      );
+
       const sleepId = "interactive-sleep-rows";
       const sleepCommandTime = performance.now();
       const sleepMarker = await markerPath();
