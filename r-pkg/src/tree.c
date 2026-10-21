@@ -139,8 +139,30 @@ static SEXP tree_atomic_element(SEXP x, R_xlen_t index)
         UNPROTECT(1);
         return R_NilValue;
     }
-    SEXP klass = Rf_getAttrib(x, R_ClassSymbol);
-    if (TYPEOF(klass) == STRSXP) Rf_setAttrib(out, R_ClassSymbol, klass);
+    /* Preserve semantic metadata used by classed scalar formatters. */
+#if JDV_HAS_R46_API
+    SEXP attribute_names = PROTECT(R_getAttribNames(x));
+    for (R_xlen_t i = 0; i < XLENGTH(attribute_names); i++) {
+        SEXP name = STRING_ELT(attribute_names, i);
+        if (name == NA_STRING) continue;
+        SEXP tag = Rf_installChar(name);
+        if (tag == R_NamesSymbol || tag == R_DimSymbol ||
+            tag == R_DimNamesSymbol) {
+            continue;
+        }
+        Rf_setAttrib(out, tag, Rf_getAttrib(x, tag));
+    }
+    UNPROTECT(1);
+#else
+    for (SEXP node = ATTRIB(x); node != R_NilValue; node = CDR(node)) {
+        SEXP tag = TAG(node);
+        if (tag == R_NamesSymbol || tag == R_DimSymbol ||
+            tag == R_DimNamesSymbol) {
+            continue;
+        }
+        Rf_setAttrib(out, tag, CAR(node));
+    }
+#endif
     UNPROTECT(1);
     return out;
 }
