@@ -728,13 +728,18 @@ missing code is \code{NA}, and a code outside the levels is shown as
 one element, or if attributes are listed and it has any, so a length-one
 vector without attributes is a leaf.
 
-A list object with a class-specific \code{format} method includes the formatted
-first five values in its summary, using the class's length and subset methods
-and the column display format. Invalid lengths, failed or inconsistent
-subsets, or invalid display results omit the preview. The summary count
-continues to use the object's structural length. \code{POSIXlt} and classed vctrs
-records use this rule when their display method succeeds. Plain lists, data
-frames, and \code{AsIs} lists omit the preview. This formatting applies only to
+A list object with a class-specific \code{format} method shows its logical value
+count as \verb{(N values)} in the summary, using the class's \code{length} method; one
+value is written \verb{(1 value)}. The summary may preview up to five formatted
+values using the class's subset method and the column display format; this
+preview does not change the count. A zero length shows \verb{(0 values)} without
+calling subset or format. If \code{length} fails or returns an invalid value, the
+summary shows the class without a count. If subset or display fails, the
+valid count remains. At the summary depth limit, only the class is shown,
+with no count, and \code{length} and \code{format} are not called. \code{POSIXlt} and
+classed vctrs records use this rule. Plain lists, data frames, and \code{AsIs}
+lists retain their existing summaries. Attributes can change \code{total_children}
+without changing this logical value count. This formatting applies only to
 summaries; listing children does not dispatch list subset methods.
 
 With \code{attributes: false}, the attribute children (\code{attr} steps) are left out:

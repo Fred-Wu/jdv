@@ -424,35 +424,56 @@
   .jdv_tree_text_cleanup(text)
 }
 
-.jdv_tree_scalar_preview <- function(x, info = .jdv_tree_info(x)) {
-  list_format <- .jdv_tree_has_list_format(x, info)
+# Atomic previews are character vectors. Eligible list previews return the
+# validated logical length with the formatted values so summaries share it.
+.jdv_tree_scalar_preview <- function(
+  x,
+  info = .jdv_tree_info(x),
+  list_format = .jdv_tree_has_list_format(x, info)
+) {
   if (!isTRUE(info$type %in% .jdv_tree_atomic_types) && !list_format) {
     return(NULL)
   }
   if (list_format) {
     n <- tryCatch(
-      suppressMessages(suppressWarnings(length(x))),
+      suppressMessages(suppressWarnings({
+        value_count <- length(x)
+        if (
+          !is.numeric(value_count) ||
+            is.object(value_count) ||
+            isS4(value_count) ||
+            !is.null(dim(value_count)) ||
+            length(value_count) != 1L
+        ) {
+          NULL
+        } else {
+          value_count <- as.double(value_count)
+          if (
+            is.na(value_count) ||
+              !is.finite(value_count) ||
+              value_count < 0 ||
+              value_count != floor(value_count)
+          ) {
+            NULL
+          } else {
+            value_count
+          }
+        }
+      })),
       error = function(error) NULL
     )
-    if (
-      !is.numeric(n) ||
-        length(n) != 1L ||
-        is.na(n) ||
-        !is.finite(n) ||
-        n < 0 ||
-        n != floor(n)
-    ) {
-      return(NULL)
+    if (is.null(n)) {
+      return(list(length = NULL, values = NULL))
     }
-    n <- as.integer(min(5, n))
-    if (!n) {
-      return(character())
+    total <- n
+    count <- as.integer(min(5, n))
+    values <- if (count) {
+      preview <- .jdv_tree_class_display(x, seq_len(count))
+      if (is.null(preview)) NULL else .jdv_tree_text_cleanup(preview)
+    } else {
+      character()
     }
-    preview <- .jdv_tree_class_display(x, seq_len(n))
-    if (is.null(preview)) {
-      return(NULL)
-    }
-    return(.jdv_tree_text_cleanup(preview))
+    return(list(length = total, values = values))
   }
   n <- as.integer(min(5, max(0, info$length)))
   if (!n) {
@@ -466,13 +487,40 @@
 
 .jdv_tree_summary <- function(x, depth = 0L, info = .jdv_tree_info(x)) {
   type <- info$type
+  class_text <- .jdv_tree_class_text(info)
+  list_format <- .jdv_tree_has_list_format(x, info)
+  if (list_format && depth >= 3L) {
+    return(enc2utf8(substr(class_text, 1L, .jdv_tree_text_limit)))
+  }
+  preview <- if (depth < 3L) {
+    .jdv_tree_scalar_preview(x, info, list_format)
+  } else {
+    NULL
+  }
+  if (list_format) {
+    if (is.null(preview$length)) {
+      return(enc2utf8(substr(class_text, 1L, .jdv_tree_text_limit)))
+    }
+    count <- preview$length
+    unit <- if (count == 1) "value" else "values"
+    text <- paste0(
+      class_text,
+      " (",
+      format(count, scientific = FALSE),
+      " ",
+      unit,
+      ")"
+    )
+    if (length(preview$values)) {
+      text <- paste0(text, ": ", paste(preview$values, collapse = ", "))
+    }
+    return(enc2utf8(substr(text, 1L, .jdv_tree_text_limit)))
+  }
   count <- if (identical(type, "environment")) {
     length(base::ls(envir = x, all.names = TRUE))
   } else {
     max(0, info$length)
   }
-  class_text <- .jdv_tree_class_text(info)
-  preview <- if (depth < 3L) .jdv_tree_scalar_preview(x, info) else NULL
   text <- paste0(class_text, " (", format(count, scientific = FALSE), ")")
   if (!is.null(preview) && length(preview)) {
     text <- paste0(text, ": ", paste(preview, collapse = ", "))

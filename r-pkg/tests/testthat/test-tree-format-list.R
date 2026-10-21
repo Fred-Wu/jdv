@@ -1,20 +1,39 @@
 test_that("tree summaries format classed list previews", {
   skip_if_not_installed("withr")
+  count_calls <- new.env(parent = emptyenv())
+  count_calls$parent <- 0L
   value <- structure(as.list(1:7), class = "jdvTreeFormattedList")
   with_column_method(
     "[",
     "jdvTreeFormattedList",
-    function(x, i, ...) structure(unclass(x)[i], class = class(x)),
+    function(x, i, ...) {
+      out <- structure(unclass(x)[i], class = class(x))
+      attr(out, "preview_slice") <- TRUE
+      out
+    },
     {
       with_column_method(
         "format",
         "jdvTreeFormattedList",
         function(x, ...) paste0("item-", unlist(unclass(x), use.names = FALSE)),
         {
-          summary <- .jdv_tree_summary(value)
-          expect_identical(
-            summary,
-            "jdvTreeFormattedList (7): item-1, item-2, item-3, item-4, item-5"
+          with_column_method(
+            "length",
+            "jdvTreeFormattedList",
+            function(x) {
+              if (!isTRUE(attr(x, "preview_slice"))) {
+                count_calls$parent <- count_calls$parent + 1L
+              }
+              length(unclass(x))
+            },
+            {
+              summary <- .jdv_tree_summary(value)
+              expect_identical(
+                summary,
+                "jdvTreeFormattedList (7 values): item-1, item-2, item-3, item-4, item-5"
+              )
+              expect_identical(count_calls$parent, 1L)
+            }
           )
         }
       )
@@ -43,11 +62,7 @@ test_that("tree list previews validate length, slicing, and display results", {
                 result <- bad_length
                 function(x) result
               }),
-              expect_false(grepl(
-                ": item-",
-                .jdv_tree_summary(value),
-                fixed = TRUE
-              ))
+              expect_identical(.jdv_tree_summary(value), "jdvTreeInvalidLength")
             )
           }
           with_column_method(
@@ -88,8 +103,19 @@ test_that("tree list previews validate length, slicing, and display results", {
             {
               expect_identical(
                 .jdv_tree_summary(length_error),
-                "jdvTreeLengthErrorList (2)"
+                "jdvTreeLengthErrorList"
               )
+              child <- .jdv_tree_list_children(
+                list(child = length_error),
+                list(),
+                0,
+                10,
+                attributes = FALSE
+              )$children[[1L]]
+              expect_identical(child$summary, "jdvTreeLengthErrorList")
+              expect_true(child$viewable)
+              expect_true(child$has_children)
+              expect_null(child$unavailable)
             }
           )
         }
@@ -112,7 +138,10 @@ test_that("tree list previews validate length, slicing, and display results", {
         wrong_class = function(x, i, ...) unclass(x)[i]
       )
       with_column_method("[", class_name, slice_method, {
-        expect_identical(.jdv_tree_summary(object), paste0(class_name, " (3)"))
+        expect_identical(
+          .jdv_tree_summary(object),
+          paste0(class_name, " (3 values)")
+        )
       })
     })
   }
@@ -130,7 +159,7 @@ test_that("tree list previews validate length, slicing, and display results", {
         {
           expect_identical(
             .jdv_tree_summary(broken),
-            "jdvTreeBrokenListFormat (2)"
+            "jdvTreeBrokenListFormat (2 values)"
           )
         }
       )
@@ -155,7 +184,7 @@ test_that("tree list previews validate length, slicing, and display results", {
         {
           expect_identical(
             .jdv_tree_summary(wrong_type),
-            "jdvTreeWrongTypeListFormat (2)"
+            "jdvTreeWrongTypeListFormat (2 values)"
           )
         }
       )
@@ -173,7 +202,7 @@ test_that("tree list previews validate length, slicing, and display results", {
         {
           expect_identical(
             .jdv_tree_summary(wrong_length),
-            "jdvTreeWrongLengthListFormat (2)"
+            "jdvTreeWrongLengthListFormat (2 values)"
           )
         }
       )
@@ -193,7 +222,7 @@ test_that("tree list previews validate length, slicing, and display results", {
         {
           expect_identical(
             .jdv_tree_summary(sliced),
-            "jdvTreeSliceFailureList (4)"
+            "jdvTreeSliceFailureList (4 values)"
           )
         }
       )
@@ -213,7 +242,7 @@ test_that("tree list previews validate length, slicing, and display results", {
         {
           expect_identical(
             .jdv_tree_summary(wrong_format),
-            "jdvTreeWrongListFormat (2)"
+            "jdvTreeWrongListFormat (2 values)"
           )
         }
       )
@@ -240,7 +269,7 @@ test_that("tree list previews suppress formatter warnings and messages", {
         {
           expect_no_warning(expect_no_message(expect_identical(
             .jdv_tree_summary(value),
-            "jdvTreeNoisyListFormat (2): item-1, item-2"
+            "jdvTreeNoisyListFormat (2 values): item-1, item-2"
           )))
         }
       )
@@ -271,7 +300,7 @@ test_that(
             expect_identical(
               .jdv_tree_summary(value),
               paste0(
-                "jdvTreeListTextCleanup (3): NA, ",
+                "jdvTreeListTextCleanup (3 values): NA, ",
                 expected_long,
                 ", <invalid string>"
               )
@@ -291,13 +320,59 @@ test_that("tree list previews support POSIXlt and classed vctrs records", {
   expect_identical(
     .jdv_tree_summary(time),
     paste0(
-      "POSIXlt/POSIXt (11): ",
+      "POSIXlt/POSIXt (2 values): ",
       paste(format(time, trim = TRUE), collapse = ", ")
     )
   )
   time_info <- .jdv_tree_info(time)
   expect_identical(time_info$length, 11)
   expect_length(.jdv_tree_list_children(time, list(), 0, 11)$children, 11)
+  summary_before_attributes <- .jdv_tree_summary(time)
+  without_attributes <- .jdv_tree_list_children(
+    time,
+    list(),
+    0,
+    100,
+    attributes = FALSE
+  )
+  with_attributes <- .jdv_tree_list_children(
+    time,
+    list(),
+    0,
+    100,
+    attributes = TRUE
+  )
+  expect_equal(without_attributes$total_children, 11)
+  expect_gt(with_attributes$total_children, without_attributes$total_children)
+  expect_identical(.jdv_tree_summary(time), summary_before_attributes)
+  parent <- list(child = time)
+  parent_without_attributes <- .jdv_tree_list_children(
+    parent,
+    list(),
+    0,
+    10,
+    attributes = FALSE
+  )
+  parent_with_attributes <- .jdv_tree_list_children(
+    parent,
+    list(),
+    0,
+    10,
+    attributes = TRUE
+  )
+  expect_equal(parent_without_attributes$total_children, 1)
+  expect_gt(
+    parent_with_attributes$total_children,
+    parent_without_attributes$total_children
+  )
+  expect_identical(
+    parent_without_attributes$children[[1L]]$summary,
+    "POSIXlt/POSIXt (2 values): 2020-01-02 03:04:05, 2020-02-03 04:05:06"
+  )
+  expect_identical(
+    parent_with_attributes$children[[1L]]$summary,
+    parent_without_attributes$children[[1L]]$summary
+  )
 
   skip_if_not_installed("vctrs")
   record <- vctrs::new_rcrd(list(value = 1:2), class = "jdvTreeRecord")
@@ -308,8 +383,28 @@ test_that("tree list previews support POSIXlt and classed vctrs records", {
     {
       expect_identical(
         .jdv_tree_summary(record),
-        "jdvTreeRecord/vctrs_rcrd/vctrs_vctr (1): record-1, record-2"
+        "jdvTreeRecord/vctrs_rcrd/vctrs_vctr (2 values): record-1, record-2"
       )
+    }
+  )
+
+  record_fields <- vctrs::new_rcrd(
+    list(left = 1:3, right = letters[1:3]),
+    class = "jdvTreeRecordFields"
+  )
+  with_column_method(
+    "format",
+    "jdvTreeRecordFields",
+    function(x, ...) {
+      fields <- unclass(x)
+      paste0(fields$left, "-", fields$right)
+    },
+    {
+      expect_identical(
+        .jdv_tree_summary(record_fields),
+        "jdvTreeRecordFields/vctrs_rcrd/vctrs_vctr (3 values): 1-a, 2-b, 3-c"
+      )
+      expect_identical(.jdv_tree_info(record_fields)$length, 2)
     }
   )
 })
@@ -320,6 +415,87 @@ test_that("tree summaries omit previews without an eligible list formatter", {
   expect_identical(.jdv_tree_summary(I(as.list(1:2))), "AsIs (2)")
   expect_identical(.jdv_tree_summary(data.frame(value = 1:2)), "data.frame (1)")
 })
+
+test_that(
+  "tree list value counts handle zero, one, errors, and the depth limit",
+  {
+    skip_if_not_installed("withr")
+    zero <- structure(as.list(1:2), class = "jdvTreeZeroLength")
+    with_column_method("length", "jdvTreeZeroLength", function(x) 0, {
+      with_column_method(
+        "[",
+        "jdvTreeZeroLength",
+        function(...) stop("zero-length preview must not subset"),
+        {
+          with_column_method(
+            "format",
+            "jdvTreeZeroLength",
+            function(...) stop("zero-length preview must not format"),
+            {
+              expect_identical(
+                .jdv_tree_summary(zero),
+                "jdvTreeZeroLength (0 values)"
+              )
+            }
+          )
+        }
+      )
+    })
+
+    one <- structure(as.list(1:2), class = "jdvTreeOneLength")
+    with_column_method("length", "jdvTreeOneLength", function(x) 1, {
+      with_column_method(
+        "[",
+        "jdvTreeOneLength",
+        function(x, i, ...) structure(unclass(x)[i], class = class(x)),
+        {
+          with_column_method(
+            "format",
+            "jdvTreeOneLength",
+            function(x, ...) "one",
+            {
+              expect_identical(
+                .jdv_tree_summary(one),
+                "jdvTreeOneLength (1 value): one"
+              )
+            }
+          )
+        }
+      )
+    })
+
+    deep_calls <- new.env(parent = emptyenv())
+    deep_calls$length <- 0L
+    deep_calls$format <- 0L
+    deep <- structure(as.list(1:2), class = "jdvTreeDeepList")
+    with_column_method(
+      "length",
+      "jdvTreeDeepList",
+      function(x) {
+        deep_calls$length <- deep_calls$length + 1L
+        2
+      },
+      {
+        with_column_method(
+          "format",
+          "jdvTreeDeepList",
+          function(x, ...) {
+            deep_calls$format <- deep_calls$format + 1L
+            "deep"
+          },
+          {
+            expect_identical(
+              .jdv_tree_summary(deep, depth = 3L),
+              "jdvTreeDeepList"
+            )
+            expect_identical(deep_calls$length, 0L)
+            expect_identical(deep_calls$format, 0L)
+          }
+        )
+      }
+    )
+  }
+)
 
 test_that("tree child listing does not dispatch list subset methods", {
   skip_if_not_installed("withr")
