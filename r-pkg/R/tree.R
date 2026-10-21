@@ -326,8 +326,64 @@
   }
 }
 
-# Format `count` elements starting at the one-based position `first` in one
-# pass. Only the requested range is read from the vector.
+# Format the selected elements in one pass. Only the requested range is read.
+.jdv_tree_class_display <- function(x, indices) {
+  expected <- length(indices)
+  tryCatch(
+    suppressMessages(suppressWarnings({
+      slice <- query_slice(x, indices)
+      valid_slice <- identical(class(slice), class(x)) &&
+        typeof(slice) == typeof(x) &&
+        length(slice) == expected &&
+        is.null(dim(slice))
+      if (!valid_slice) {
+        return(NULL)
+      }
+      value <- col_display(slice)
+      if (
+        is.character(value) && is.null(dim(value)) && length(value) == expected
+      ) {
+        value
+      } else {
+        NULL
+      }
+    })),
+    error = function(error) NULL
+  )
+}
+
+.jdv_tree_text_cleanup <- function(text) {
+  text[is.na(text)] <- "NA"
+  text <- enc2utf8(text)
+  text[!validUTF8(text)] <- "<invalid string>"
+  substr(text, 1L, 160L)
+}
+
+.jdv_tree_has_list_format <- function(x, info) {
+  if (
+    !identical(info$type, "list") ||
+      !is.object(x) ||
+      isS4(x) ||
+      inherits(x, "data.frame") ||
+      "AsIs" %in% info$class
+  ) {
+    return(FALSE)
+  }
+  classes <- info$class[!is.na(info$class) & nzchar(info$class)]
+  if (!length(classes)) {
+    return(FALSE)
+  }
+  for (class in classes) {
+    if (
+      !identical(class, "default") &&
+        !is.null(utils::getS3method("format", class, optional = TRUE))
+    ) {
+      return(TRUE)
+    }
+  }
+  FALSE
+}
+
 .jdv_tree_element_text <- function(x, info, first, count) {
   if (identical(info$type, "integer") && "factor" %in% info$class) {
     values <- .Call(
@@ -349,28 +405,7 @@
       is.atomic(x) &&
       is.null(dim(x))
     displayed <- if (classed_atomic) {
-      tryCatch(
-        {
-          slice <- suppressMessages(suppressWarnings(query_slice(
-            x,
-            seq.int(first, length.out = count)
-          )))
-          value <- suppressMessages(suppressWarnings(col_display(slice)))
-          if (
-            is.atomic(slice) &&
-              typeof(slice) == typeof(x) &&
-              length(slice) == count &&
-              is.character(value) &&
-              is.null(dim(value)) &&
-              length(value) == count
-          ) {
-            value
-          } else {
-            NULL
-          }
-        },
-        error = function(error) NULL
-      )
+      .jdv_tree_class_display(x, seq.int(first, length.out = count))
     } else {
       NULL
     }
@@ -386,15 +421,38 @@
       text <- as.character(values)
     }
   }
-  text[is.na(text)] <- "NA"
-  text <- enc2utf8(text)
-  text[!validUTF8(text)] <- "<invalid string>"
-  substr(text, 1L, 160L)
+  .jdv_tree_text_cleanup(text)
 }
 
 .jdv_tree_scalar_preview <- function(x, info = .jdv_tree_info(x)) {
-  if (!isTRUE(info$type %in% .jdv_tree_atomic_types)) {
+  list_format <- .jdv_tree_has_list_format(x, info)
+  if (!isTRUE(info$type %in% .jdv_tree_atomic_types) && !list_format) {
     return(NULL)
+  }
+  if (list_format) {
+    n <- tryCatch(
+      suppressMessages(suppressWarnings(length(x))),
+      error = function(error) NULL
+    )
+    if (
+      !is.numeric(n) ||
+        length(n) != 1L ||
+        is.na(n) ||
+        !is.finite(n) ||
+        n < 0 ||
+        n != floor(n)
+    ) {
+      return(NULL)
+    }
+    n <- as.integer(min(5, n))
+    if (!n) {
+      return(character())
+    }
+    preview <- .jdv_tree_class_display(x, seq_len(n))
+    if (is.null(preview)) {
+      return(NULL)
+    }
+    return(.jdv_tree_text_cleanup(preview))
   }
   n <- as.integer(min(5, max(0, info$length)))
   if (!n) {
