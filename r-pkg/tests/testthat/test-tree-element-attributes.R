@@ -119,3 +119,44 @@ test_that("tree index extraction preserves class formatting attributes", {
     .jdv_close_internal(root$id)
   }
 })
+
+test_that("tree index extraction drops time-series parameters", {
+  values <- list(ts = ts(1:10), mts = ts(cbind(first = 1:10, second = 11:20)))
+  values <- lapply(values, function(value) {
+    attr(value, "marker") <- "kept"
+    value
+  })
+
+  for (value in values) {
+    original_tsp <- tsp(value)
+    extracted <- .Call(C_jdv_tree_child, value, "index", 2, "")
+    expect_identical(extracted$status, "value")
+    expect_identical(class(extracted$value), class(value))
+    expect_null(tsp(extracted$value))
+    expect_identical(attr(extracted$value, "marker"), "kept")
+    expect_identical(tsp(value), original_tsp)
+  }
+
+  value <- values$ts
+  root <- register_view(list(values = value))
+  on.exit(.jdv_close_internal(root$id), add = TRUE)
+  original_tsp <- tsp(value)
+  opened <- .jdv_json_parse(jdv_rpc(.jdv_json_encode(list(
+    id = 1,
+    method = "object/open",
+    params = list(
+      view = root$id,
+      generation = 1,
+      path = list(
+        list(type = "index", index = 1),
+        list(type = "index", index = 2)
+      )
+    )
+  ))))$result
+  scalar_entry <- get(opened$view, envir = .jdv_state$entries, inherits = FALSE)
+  expect_null(tsp(scalar_entry$tree_value))
+  expect_identical(attr(scalar_entry$tree_value, "marker"), "kept")
+  root_entry <- get(root$id, envir = .jdv_state$entries, inherits = FALSE)
+  expect_identical(tsp(root_entry$tree_value$values), original_tsp)
+  .jdv_close_internal(opened$view)
+})

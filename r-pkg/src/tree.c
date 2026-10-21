@@ -147,7 +147,7 @@ static SEXP tree_atomic_element(SEXP x, R_xlen_t index)
         if (name == NA_STRING) continue;
         SEXP tag = Rf_installChar(name);
         if (tag == R_NamesSymbol || tag == R_DimSymbol ||
-            tag == R_DimNamesSymbol) {
+            tag == R_DimNamesSymbol || tag == R_TspSymbol) {
             continue;
         }
         Rf_setAttrib(out, tag, Rf_getAttrib(x, tag));
@@ -157,7 +157,7 @@ static SEXP tree_atomic_element(SEXP x, R_xlen_t index)
     for (SEXP node = ATTRIB(x); node != R_NilValue; node = CDR(node)) {
         SEXP tag = TAG(node);
         if (tag == R_NamesSymbol || tag == R_DimSymbol ||
-            tag == R_DimNamesSymbol) {
+            tag == R_DimNamesSymbol || tag == R_TspSymbol) {
             continue;
         }
         Rf_setAttrib(out, tag, CAR(node));
