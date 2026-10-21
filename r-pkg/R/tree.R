@@ -329,8 +329,13 @@
 # Format `count` elements starting at the one-based position `first` in one
 # pass. Only the requested range is read from the vector.
 .jdv_tree_element_text <- function(x, info, first, count) {
-  values <- .Call(C_jdv_tree_vector_page, x, as.double(first), as.double(count))
   if (identical(info$type, "integer") && "factor" %in% info$class) {
+    values <- .Call(
+      C_jdv_tree_vector_page,
+      x,
+      as.double(first),
+      as.double(count)
+    )
     levels <- .jdv_tree_levels(x)
     text <- rep.int("NA", length(values))
     present <- !is.na(values)
@@ -339,7 +344,47 @@
     invalid <- present & !valid
     text[invalid] <- paste0("<invalid code ", values[invalid], ">")
   } else {
-    text <- as.character(values)
+    classed_atomic <- is.object(x) &&
+      !isS4(x) &&
+      is.atomic(x) &&
+      is.null(dim(x))
+    displayed <- if (classed_atomic) {
+      tryCatch(
+        {
+          slice <- suppressMessages(suppressWarnings(query_slice(
+            x,
+            seq.int(first, length.out = count)
+          )))
+          value <- suppressMessages(suppressWarnings(col_display(slice)))
+          if (
+            is.atomic(slice) &&
+              typeof(slice) == typeof(x) &&
+              length(slice) == count &&
+              is.character(value) &&
+              is.null(dim(value)) &&
+              length(value) == count
+          ) {
+            value
+          } else {
+            NULL
+          }
+        },
+        error = function(error) NULL
+      )
+    } else {
+      NULL
+    }
+    if (!is.null(displayed)) {
+      text <- displayed
+    } else {
+      values <- .Call(
+        C_jdv_tree_vector_page,
+        x,
+        as.double(first),
+        as.double(count)
+      )
+      text <- as.character(values)
+    }
   }
   text[is.na(text)] <- "NA"
   text <- enc2utf8(text)

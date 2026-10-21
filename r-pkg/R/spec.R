@@ -749,13 +749,15 @@
 #' element is a leaf with `has_children: false`. Its `summary` has the form
 #' `<class> (1): <value>`, for example `double (1): 1.5`, and always includes
 #' the value regardless of depth. A page of elements is read and formatted as
-#' one range, so only the requested range of an ALTREP vector is read. A missing
-#' value is shown as `NA`, and strings and formatted values are cut at 160
-#' characters. A factor element, and every value in a factor's summary, is shown
-#' as its level name; a missing code is `NA`, and a code outside the levels is
-#' shown as `<invalid code N>`. An atomic vector has children only if it has
-#' more than one element, or if attributes are listed and it has any, so a
-#' length-one vector without attributes is a leaf.
+#' one range, so only the requested range of an ALTREP vector is read. Atomic
+#' vectors with a class use the column display format for the requested range;
+#' if that formatting fails, their underlying atomic values are shown instead. A
+#' missing value is shown as `NA`, and strings and formatted values are cut at
+#' 160 characters. A factor element, and every value in a factor's summary, is
+#' shown as its level name; a missing code is `NA`, and a code outside the
+#' levels is shown as `<invalid code N>`. An atomic vector has children only if
+#' it has more than one element, or if attributes are listed and it has any, so
+#' a length-one vector without attributes is a leaf.
 #'
 #' With `attributes: false`, the attribute children (`attr` steps) are left out:
 #' of every vector and other object, including a vector's `names`, which remains

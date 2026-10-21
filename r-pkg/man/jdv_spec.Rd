@@ -717,13 +717,15 @@ atomic vector (logical, integer, double, complex, character, or raw), every
 element is a leaf with \code{has_children: false}. Its \code{summary} has the form
 \verb{<class> (1): <value>}, for example \code{double (1): 1.5}, and always includes
 the value regardless of depth. A page of elements is read and formatted as
-one range, so only the requested range of an ALTREP vector is read. A missing
-value is shown as \code{NA}, and strings and formatted values are cut at 160
-characters. A factor element, and every value in a factor's summary, is shown
-as its level name; a missing code is \code{NA}, and a code outside the levels is
-shown as \verb{<invalid code N>}. An atomic vector has children only if it has
-more than one element, or if attributes are listed and it has any, so a
-length-one vector without attributes is a leaf.
+one range, so only the requested range of an ALTREP vector is read. Atomic
+vectors with a class use the column display format for the requested range;
+if that formatting fails, their underlying atomic values are shown instead. A
+missing value is shown as \code{NA}, and strings and formatted values are cut at
+160 characters. A factor element, and every value in a factor's summary, is
+shown as its level name; a missing code is \code{NA}, and a code outside the
+levels is shown as \verb{<invalid code N>}. An atomic vector has children only if
+it has more than one element, or if attributes are listed and it has any, so
+a length-one vector without attributes is a leaf.
 
 With \code{attributes: false}, the attribute children (\code{attr} steps) are left out:
 of every vector and other object, including a vector's \code{names}, which remains
